@@ -6,8 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/uuagent/uuagent/internal/agent"
-	"github.com/uuagent/uuagent/internal/config"
+	"github.com/yeyan00/uuagent/internal/agent"
+	"github.com/yeyan00/uuagent/internal/config"
 )
 
 func TestToolCallsPersistInSession(t *testing.T) {

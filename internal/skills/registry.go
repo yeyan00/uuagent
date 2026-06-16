@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/uuagent/uuagent/internal/config"
+	"github.com/yeyan00/uuagent/internal/config"
 )
 
 // Skill is a lightweight prompt extension. P0 keeps skills simple and local;

@@ -1,0 +1,46 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "UUAgent Server (go run)",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}/cmd/uuagent",
+      "args": ["--no-browser"],
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/tests/.env",
+      "env": {
+        "NO_COLOR": "1",
+        "FORCE_COLOR": "0"
+      }
+    },
+    {
+      "name": "UUAgent Server (custom port 18463)",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}/cmd/uuagent",
+      "args": ["--no-browser", "--port", "18463"],
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/tests/.env",
+      "env": {
+        "NO_COLOR": "1",
+        "FORCE_COLOR": "0"
+      }
+    },
+    {
+      "name": "UUAgent Setup",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}/cmd/uuagent",
+      "args": ["--setup"],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "NO_COLOR": "1",
+        "FORCE_COLOR": "0"
+      }
+    }
+  ]
+}

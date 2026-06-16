@@ -10,23 +10,23 @@ import (
 	"time"
 )
 
-// Tool 工具定义
+// Tool defines an executable tool.
 type Tool struct {
 	Name        string
 	Description string
 	Execute     func(ctx context.Context, args map[string]any) (string, error)
 }
 
-// Registry 工具注册表
+// Registry stores available tools.
 type Registry struct {
 	tools map[string]*Tool
 }
 
-// NewRegistry 创建工具注册表
+// NewRegistry creates a tool registry.
 func NewRegistry(workspace string) *Registry {
 	r := &Registry{tools: make(map[string]*Tool)}
 
-	// 注册内置工具
+	// Register built-in tools.
 	r.register(readFile(workspace))
 	r.register(writeFile(workspace))
 	r.register(shell(workspace))
@@ -36,13 +36,13 @@ func NewRegistry(workspace string) *Registry {
 	return r
 }
 
-// Get 获取工具
+// Get returns a tool by name.
 func (r *Registry) Get(name string) (*Tool, bool) {
 	t, ok := r.tools[name]
 	return t, ok
 }
 
-// List 列出所有工具
+// List returns all tool names.
 func (r *Registry) List() []string {
 	names := make([]string, 0, len(r.tools))
 	for name := range r.tools {
@@ -51,7 +51,7 @@ func (r *Registry) List() []string {
 	return names
 }
 
-// Definitions 返回 OpenAI function calling 格式的工具定义
+// Definitions returns OpenAI function-calling tool definitions.
 func (r *Registry) Definitions() []map[string]any {
 	return r.DefinitionsFor(nil)
 }
@@ -79,7 +79,7 @@ func (r *Registry) register(t *Tool) {
 	r.tools[t.Name] = t
 }
 
-// ==================== 内置工具 ====================
+// Built-in tools.
 
 func readFile(ws string) *Tool {
 	return &Tool{
@@ -95,7 +95,7 @@ func readFile(ws string) *Tool {
 			if err != nil {
 				return "", err
 			}
-			// 限制大小: 100KB
+			// Limit file reads to 100KB.
 			if len(data) > 100*1024 {
 				return string(data[:100*1024]) + "\n... [truncated]", nil
 			}
@@ -135,7 +135,7 @@ func shell(ws string) *Tool {
 			if command == "" {
 				return "", fmt.Errorf("command is required")
 			}
-			// 超时: 30秒
+			// Timeout after 30 seconds.
 			ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			defer cancel()
 
@@ -143,7 +143,7 @@ func shell(ws string) *Tool {
 			cmd.Dir = ws
 			out, err := cmd.CombinedOutput()
 			result := string(out)
-			// 限制输出: 10KB
+			// Limit command output to 10KB.
 			if len(result) > 10*1024 {
 				result = result[:10*1024] + "\n... [truncated]"
 			}
@@ -200,11 +200,11 @@ func listDir(ws string) *Tool {
 	}
 }
 
-// safePath 安全路径: 防止路径遍历
+// safePath prevents path traversal outside the workspace.
 func safePath(ws, rel string) string {
 	rel = filepath.Clean(rel)
 	if strings.HasPrefix(rel, "..") {
-		return ws // 拒绝 .. 路径
+		return ws // reject .. paths
 	}
 	return filepath.Join(ws, rel)
 }

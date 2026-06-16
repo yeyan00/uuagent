@@ -6,10 +6,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/uuagent/uuagent/internal/agent"
-	"github.com/uuagent/uuagent/internal/config"
-	"github.com/uuagent/uuagent/internal/router"
-	"github.com/uuagent/uuagent/internal/subagent"
+	"github.com/yeyan00/uuagent/internal/agent"
+	"github.com/yeyan00/uuagent/internal/config"
+	"github.com/yeyan00/uuagent/internal/router"
+	"github.com/yeyan00/uuagent/internal/subagent"
 )
 
 func TestDelegateRunsSubagentsWithMockLLM(t *testing.T) {

@@ -1,4 +1,4 @@
-module github.com/uuagent/uuagent
+module github.com/yeyan00/uuagent
 
 go 1.23
 

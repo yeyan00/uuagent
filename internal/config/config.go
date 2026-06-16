@@ -6,13 +6,13 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/uuagent/uuagent/internal/paths"
+	"github.com/yeyan00/uuagent/internal/paths"
 	"gopkg.in/yaml.v3"
 )
 
-// Config UUAgent 完整配置. YAML is the canonical on-disk format because it is
-// friendly for hand editing and can represent nested agent/tools/skills/mcp
-// configuration without becoming noisy.
+// Config is the complete UUAgent configuration. YAML is the canonical on-disk
+// format because it is friendly for hand editing and can represent nested
+// agent/tools/skills/mcp configuration without becoming noisy.
 type Config struct {
 	Port       int               `yaml:"port" json:"port"`
 	Agent      AgentConfig       `yaml:"agent" json:"agent"`
@@ -21,7 +21,7 @@ type Config struct {
 	MCPServers []MCPServerConfig `yaml:"mcp_servers" json:"mcp_servers"`
 }
 
-// AgentConfig Agent 行为配置
+// AgentConfig controls global agent behavior.
 type AgentConfig struct {
 	ProxyURL          string         `yaml:"proxy-url" json:"proxy_url"`
 	Routing           RoutingConfig  `yaml:"routing" json:"routing"`
@@ -70,14 +70,14 @@ type MCPServerConfig struct {
 	Scope     string            `yaml:"scope" json:"scope"` // global / project
 }
 
-// RoutingConfig 智能路由配置
+// RoutingConfig controls model routing.
 type RoutingConfig struct {
-	Tiers    map[string][]string `yaml:"tiers" json:"tiers"`       // tier → 模型列表
-	Rules    []RouteRule         `yaml:"rules" json:"rules"`       // 路由规则
-	Fallback string              `yaml:"fallback" json:"fallback"` // 默认 tier
+	Tiers    map[string][]string `yaml:"tiers" json:"tiers"`       // tier to model list
+	Rules    []RouteRule         `yaml:"rules" json:"rules"`       // routing rules
+	Fallback string              `yaml:"fallback" json:"fallback"` // default tier
 }
 
-// RouteRule 单条路由规则
+// RouteRule describes one routing rule.
 type RouteRule struct {
 	Name      string   `yaml:"name" json:"name"`
 	Patterns  []string `yaml:"patterns" json:"patterns"`
@@ -85,7 +85,7 @@ type RouteRule struct {
 	Tier      string   `yaml:"tier" json:"tier"`
 }
 
-// MemoryConfig Memory 配置
+// MemoryConfig controls memory behavior.
 type MemoryConfig struct {
 	AutoDraft        bool `yaml:"auto_draft" json:"auto_draft"`
 	MaxEntries       int  `yaml:"max_entries" json:"max_entries"`
@@ -100,14 +100,14 @@ type ContextConfig struct {
 	AutoCompress      bool    `yaml:"auto_compress" json:"auto_compress"`
 }
 
-// SubagentConfig Subagent 配置
+// SubagentConfig controls delegated subagents.
 type SubagentConfig struct {
 	MaxConcurrent int      `yaml:"max_concurrent" json:"max_concurrent"`
 	MaxTurns      int      `yaml:"max_turns" json:"max_turns"`
 	BlockedTools  []string `yaml:"blocked_tools" json:"blocked_tools"`
 }
 
-// UIConfig UI 配置
+// UIConfig controls UI preferences.
 type UIConfig struct {
 	Theme string `yaml:"theme" json:"theme"`
 }
@@ -197,7 +197,7 @@ func CandidatePaths(projectWorkspace string) []string {
 	return paths
 }
 
-// Load 加载单个配置文件 over defaults.
+// Load loads a single config file over defaults.
 func Load(path string) (*Config, error) {
 	cfg := Default()
 	if err := OverlayFile(cfg, path); err != nil {

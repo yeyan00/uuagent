@@ -3,7 +3,7 @@ package session_test
 import (
 	"testing"
 
-	"github.com/uuagent/uuagent/internal/session"
+	"github.com/yeyan00/uuagent/internal/session"
 )
 
 func TestSessionCompressionSummaries(t *testing.T) {

@@ -8,31 +8,31 @@ import (
 	"sync"
 	"time"
 
-	"github.com/uuagent/uuagent/internal/paths"
+	"github.com/yeyan00/uuagent/internal/paths"
 )
 
-// Status Memory 条目状态
+// Status is the lifecycle state for a memory entry.
 type Status string
 
 const (
-	StatusDraft     Status = "draft"     // AI 自动记录，待审核
-	StatusConfirmed Status = "confirmed" // 用户确认
-	StatusDeleted   Status = "deleted"   // 已删除
+	StatusDraft     Status = "draft"     // AI-created, awaiting review
+	StatusConfirmed Status = "confirmed" // user-confirmed
+	StatusDeleted   Status = "deleted"   // soft-deleted
 )
 
-// Entry 单条 Memory
+// Entry is one memory record.
 type Entry struct {
 	ID        string `json:"id"`
 	Content   string `json:"content"`
 	Status    Status `json:"status"`  // draft / confirmed / deleted
-	Source    string `json:"source"`  // "ai" 或 "user"
-	Project   string `json:"project"` // 项目路径/ID
+	Source    string `json:"source"`  // "ai" or "user"
+	Project   string `json:"project"` // project path or ID
 	Scope     string `json:"scope"`   // global / project / agent / session
 	CreatedAt int64  `json:"created_at"`
 	UpdatedAt int64  `json:"updated_at"`
 }
 
-// Manager Memory 管理器
+// Manager stores and persists memory entries.
 type Manager struct {
 	entries []Entry
 	path    string
@@ -97,7 +97,7 @@ func (m *Manager) saveLocked() error {
 // Path returns the persistence file path.
 func (m *Manager) Path() string { return m.path }
 
-// AddDraft AI 自动添加 draft memory (不直接进入 system prompt)
+// AddDraft adds an AI-created draft memory that is not injected into the system prompt yet.
 func (m *Manager) AddDraft(content, project string) Entry {
 	return m.Add(content, project, "project", "ai", StatusDraft)
 }
@@ -133,7 +133,7 @@ func (m *Manager) Add(content, project, scope, source string, status Status) Ent
 	return entry
 }
 
-// Confirm 确认 draft memory
+// Confirm promotes a draft memory to confirmed.
 func (m *Manager) Confirm(id string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -148,7 +148,7 @@ func (m *Manager) Confirm(id string) bool {
 	return false
 }
 
-// Edit 编辑 memory 内容
+// Edit updates memory content.
 func (m *Manager) Edit(id, newContent string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -163,7 +163,7 @@ func (m *Manager) Edit(id, newContent string) bool {
 	return false
 }
 
-// Delete 删除 memory
+// Delete soft-deletes a memory entry.
 func (m *Manager) Delete(id string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -185,17 +185,17 @@ func (m *Manager) List(status Status, project string) []Entry {
 	return m.filterLocked(status, project)
 }
 
-// ListDrafts 列出所有 draft memory (待审核)
+// ListDrafts returns draft memories awaiting review.
 func (m *Manager) ListDrafts(project string) []Entry {
 	return m.List(StatusDraft, project)
 }
 
-// ListConfirmed 列出所有已确认 memory (注入 system prompt)
+// ListConfirmed returns confirmed memories that can be injected into the system prompt.
 func (m *Manager) ListConfirmed(project string) []Entry {
 	return m.List(StatusConfirmed, project)
 }
 
-// BuildSystemPrompt 构建 memory 注入到 system prompt 的文本
+// BuildSystemPrompt builds the memory section injected into the system prompt.
 func (m *Manager) BuildSystemPrompt(project string) string {
 	confirmed := m.ListConfirmed(project)
 	if len(confirmed) == 0 {

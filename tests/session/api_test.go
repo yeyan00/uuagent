@@ -9,9 +9,9 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/uuagent/uuagent/api/server"
-	"github.com/uuagent/uuagent/internal/agent"
-	"github.com/uuagent/uuagent/internal/config"
+	"github.com/yeyan00/uuagent/api/server"
+	"github.com/yeyan00/uuagent/internal/agent"
+	"github.com/yeyan00/uuagent/internal/config"
 )
 
 func TestSessionAPIGetPatchDelete(t *testing.T) {

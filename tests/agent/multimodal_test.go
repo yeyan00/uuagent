@@ -7,9 +7,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/uuagent/uuagent/internal/agent"
-	"github.com/uuagent/uuagent/internal/config"
-	"github.com/uuagent/uuagent/internal/types"
+	"github.com/yeyan00/uuagent/internal/agent"
+	"github.com/yeyan00/uuagent/internal/config"
+	"github.com/yeyan00/uuagent/internal/types"
 )
 
 func TestRunWithAgentPartsSendsImageURL(t *testing.T) {

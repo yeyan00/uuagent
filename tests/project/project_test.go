@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/uuagent/uuagent/internal/project"
+	"github.com/yeyan00/uuagent/internal/project"
 )
 
 func TestCreateTemporaryProject(t *testing.T) {

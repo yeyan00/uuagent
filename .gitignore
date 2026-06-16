@@ -21,7 +21,9 @@ web/dist/
 
 # IDE
 .idea/
-.vscode/
+.vscode/*
+!.vscode/launch.json
+!.vscode/tasks.json
 *.swp
 *.swo
 
@@ -39,9 +41,12 @@ data/
 *.db
 *.sqlite
 
-# Logs
+# Logs and local runtime state
 *.log
 logs/
+.uuagent-server.pid
+.uuagent-server.log
+cmd/uuagent/__debug_bin.exe
 
 # Pi local state
 .pi/

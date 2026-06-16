@@ -12,15 +12,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/uuagent/uuagent/internal/config"
-	"github.com/uuagent/uuagent/internal/mcp"
-	"github.com/uuagent/uuagent/internal/memory"
-	"github.com/uuagent/uuagent/internal/project"
-	"github.com/uuagent/uuagent/internal/router"
-	"github.com/uuagent/uuagent/internal/session"
-	"github.com/uuagent/uuagent/internal/skills"
-	"github.com/uuagent/uuagent/internal/tools"
-	"github.com/uuagent/uuagent/internal/types"
+	"github.com/yeyan00/uuagent/internal/config"
+	"github.com/yeyan00/uuagent/internal/mcp"
+	"github.com/yeyan00/uuagent/internal/memory"
+	"github.com/yeyan00/uuagent/internal/project"
+	"github.com/yeyan00/uuagent/internal/router"
+	"github.com/yeyan00/uuagent/internal/session"
+	"github.com/yeyan00/uuagent/internal/skills"
+	"github.com/yeyan00/uuagent/internal/tools"
+	"github.com/yeyan00/uuagent/internal/types"
 )
 
 // Re-export shared chat types for compatibility with callers in this package.
@@ -28,7 +28,7 @@ type Event = types.Event
 type Message = types.Message
 type ToolCall = types.ToolCall
 
-// Agent 核心 Agent 结构体
+// Agent is the core runtime object.
 type Agent struct {
 	cfg           *config.Config
 	router        *router.Router
@@ -44,7 +44,7 @@ type Agent struct {
 	httpClient    *http.Client
 }
 
-// New 创建新 Agent
+// New creates an Agent.
 func New(cfg *config.Config) *Agent {
 	workspace, _ := os.Getwd()
 	return &Agent{
@@ -238,7 +238,7 @@ func (a *Agent) normalizeProfile(profile config.AgentProfile) config.AgentProfil
 	return profile
 }
 
-// Run 运行一轮对话 (Agent 7步循环)
+// Run executes one conversation turn.
 func (a *Agent) Run(ctx context.Context, sessionID string, prompt string) (<-chan Event, error) {
 	return a.RunWithAgent(ctx, sessionID, "", prompt)
 }

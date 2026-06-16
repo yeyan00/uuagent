@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/uuagent/uuagent/internal/types"
+	"github.com/yeyan00/uuagent/internal/types"
 )
 
 // Summary records a context compression event.

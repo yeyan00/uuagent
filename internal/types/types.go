@@ -1,6 +1,6 @@
 package types
 
-// Event Agent 事件 (SSE 推送)
+// Event is an Agent event streamed over SSE.
 type Event struct {
 	Type     string `json:"type"` // route, status, content, tool_start, tool_result, error, done
 	Model    string `json:"model,omitempty"`

@@ -1,138 +1,184 @@
+<p align="right">
+  <a href="./README.zh-CN.md"><img src="https://img.shields.io/badge/Language-%E4%B8%AD%E6%96%87-blue" alt="中文"></a>
+</p>
+
 # UUAgent
 
-> 轻量级智能 Coding Agent — 自动路由模型，透明 Memory，Web UI 优先
+A lightweight, Web-first coding agent platform for local projects. UUAgent provides configurable agents, persistent sessions, memory, tool calling, mock MCP/skills, and an OpenAI-compatible model interface.
 
-## 快速开始
+## Highlights
+
+- **Web-first workflow**: manage projects, sessions, agents, memory, and chat from a browser UI.
+- **Configurable agents**: edit system prompt, model, tools, skills, MCP servers, permissions, and max turns.
+- **Persistent sessions**: readable JSON session history under `~/.uuagent/sessions`, including tool calls and tool results.
+- **Tool loop support**: assistant tool calls are executed, tool results are saved, and the model is called again for the final answer.
+- **Memory support**: confirmed memory is persisted under `~/.uuagent/memory.json` and injected into the system prompt.
+- **OpenAI-compatible models**: uses `/v1/chat/completions` style requests with streaming and non-streaming support.
+- **Multimodal-ready backend**: supports OpenAI-compatible `image_url` content parts.
+- **Windows-first development**: scripts and paths are tested with Windows/Git Bash in mind.
+
+## Quick Start
 
 ```bash
-# 安装 (单二进制，零依赖)
-go install github.com/uuagent/uuagent@latest
+# Install from source once published
+# Main package lives under cmd/uuagent.
+go install github.com/yeyan00/uuagent/cmd/uuagent@latest
 
-# 或下载预编译版本
-curl -fsSL https://uuagent.dev/install.sh | bash
-
-# 首次配置：生成 ~/.uuagent/config.yaml 等本地文件
+# First-time local setup: creates ~/.uuagent/config.yaml and local directories.
 uuagent --setup
 
-# 启动服务端 + Web UI，默认会自动打开浏览器
-uuagent              # → http://localhost:18463/ui/
+# Start backend + Web UI. The browser opens automatically by default.
+uuagent
+# Web UI: http://localhost:18463/ui/
 
-# 如果不想自动打开浏览器
-uuagent --no-browser # 然后手动访问 http://localhost:18463/ui/
+# Start without opening a browser.
+uuagent --no-browser
 
-# 指定端口
-uuagent --port 19080 # → http://localhost:19080/ui/
-
-# 终端模式
-uuagent --tui
+# Use a custom port.
+uuagent --port 19080
+# Web UI: http://localhost:19080/ui/
 ```
 
-## 核心特性
+For local development from this repository:
 
-- 🧠 **智能模型路由** — 简单问题用便宜模型，复杂任务自动升级，实时展示路由决策
-- 📝 **透明 Memory** — AI 记忆标记为 draft，用户审核确认后才生效
-- 🌐 **Web UI 优先** — 浏览器即界面，输入框永不锁定，同时支持桌面模式(Wails)
-- ⚡ **极轻量** — 单二进制 15-20MB，零依赖，3秒启动
-- 🔌 **CLIProxyAPI 集成** — 模型管理面板开箱即用，支持 OpenAI/Claude/Gemini 全家桶
-
-## 架构
-
-```
-UUAgent 二进制
-├── CLIProxyAPI (embed)     — 模型代理 + 管理面板
-│   ├── /v1/chat/completions  LLM 代理
-│   ├── /v0/management/*      40+ 管理 API
-│   └── /management.html      管理面板 UI
-├── LightAgent 业务层
-│   ├── /api/chat             SSE 聊天
-│   ├── /api/memory           Memory CRUD
-│   ├── /api/route            路由决策展示
-│   └── /                     Agent 前端 SPA
+```bash
+go run ./cmd/uuagent --no-browser
+# Open http://localhost:18463/ui/
 ```
 
-## 配置
+## Configuration
 
-`~/.uuagent/config.yaml`:
+The user config is stored at:
+
+```text
+~/.uuagent/config.yaml
+```
+
+Secrets should be provided through environment variables and should not be committed:
+
+```bash
+export UUAGENT_API_KEY="..."
+export OPENAI_API_KEY="..."
+export UUAGENT_PROXY_URL="https://api.openai.com/v1"
+export UUAGENT_MODEL="gpt-4o-mini"
+```
+
+Example config:
 
 ```yaml
-# 模型代理 (CLIProxyAPI)
 port: 18463
-remote-management:
-  secret-key: "admin"
-  disable-control-panel: false
-
-claude-api-key:
-  - api-key: "sk-ant-..."
-openai-api-key:
-  - api-key: "sk-..."
-gemini-api-key:
-  - api-key: "AIzaSy..."
-
-# 智能路由
 agent:
+  proxy-url: "http://localhost:18463/v1"
   routing:
+    fallback: strong
     tiers:
-      fast: ["gpt-4o-mini", "gemini-2.5-flash", "deepseek-chat"]
-      strong: ["claude-sonnet-4", "gpt-4o", "deepseek-coder"]
+      fast: ["gpt-4o-mini", "deepseek-chat"]
+      strong: ["claude-sonnet-4", "gpt-4o"]
       large_ctx: ["gemini-2.5-pro"]
-    rules:
-      - name: simple_qa
-        patterns: ["什么意思", "解释", "what is", "explain"]
-        tier: fast
-      - name: code_edit
-        patterns: ["修改", "重构", "fix", "implement"]
-        tier: strong
-      - name: long_context
-        condition: "tokens > 50000"
-        tier: large_ctx
-  memory:
-    auto_draft: true
-    max_entries: 100
+  context:
+    max_tokens: 32000
+    compress_threshold: 0.8
+    keep_last_messages: 12
+    auto_compress: true
+  max_turns: 50
+  default_permission: "workspace-write"
+
+agents:
+  - id: default
+    name: Default Agent
+    description: General-purpose coding assistant
+    system_prompt: ""
+    enabled_tools: ["read", "write", "grep", "list_dir"]
+    enabled_skills: ["mock-planner"]
+    enabled_mcp_servers: ["mock"]
+    permission_mode: "workspace-write"
+    max_turns: 50
 ```
 
-## 运行与访问
+## Runtime Data Layout
 
-Web UI 不是单独的静态网页服务，默认由 Go 后端一起提供。因此需要先启动 UUAgent 服务端：
+UUAgent stores user data under `~/.uuagent` by default:
+
+```text
+~/.uuagent/
+├── config.yaml          # User configuration: agents, skills, MCP, routing
+├── projects.json        # Project registry
+├── memory.json          # Persistent memory entries
+├── sessions/            # One JSON file per chat session
+├── skills/              # User skills
+└── mcp/                 # Future MCP-related files
+```
+
+Each session JSON stores:
+
+- user and assistant messages
+- assistant `tool_calls`
+- `tool` result messages with `tool_call_id` and `tool_name`
+- final assistant answers after tool execution
+- per-run metadata such as agent, model, exposed tools, and MCP servers
+- compression summaries
+
+## Web UI
+
+Start the backend first:
 
 ```bash
 go run ./cmd/uuagent --no-browser
 ```
 
-然后访问：
+Then open:
 
 ```text
 http://localhost:18463/ui/
 ```
 
-常用 API：
+Useful API endpoints:
 
 ```text
 http://localhost:18463/api/health
 http://localhost:18463/api/agents
 http://localhost:18463/api/sessions
+http://localhost:18463/api/memory
 ```
 
-## 开发
+## Development
 
 ```bash
-# 后端开发，提供 /api 和 /ui
+# Backend server serving /api and /ui.
 go run ./cmd/uuagent --no-browser
 
-# 前端开发模式：Vite 会把 /api 代理到 http://localhost:18463
+# Frontend dev server. Vite proxies /api to http://localhost:18463.
 cd web
 npm install
 npm run dev
-# 访问 http://localhost:5173
+# Open http://localhost:5173
 
-# 全量测试：Go tests + Web Vitest + Web build
+# Full validation: Go tests + Web Vitest + Web build.
 bash scripts/test.sh
 
-# 构建 Go 二进制
+# Build Go binary.
 go build -o uuagent ./cmd/uuagent
-
-# 桌面版 (需要 wails)
-wails build
 ```
+
+## VS Code
+
+The repository includes VS Code launch/tasks files:
+
+- `UUAgent Server (go run)` starts the backend with `--no-browser`.
+- `UUAgent Setup` runs first-time setup.
+- `test: all` runs the full test script.
+
+If Go debugging reports that `dlv` is missing, install Delve:
+
+```bash
+go install github.com/go-delve/delve/cmd/dlv@latest
+```
+
+## Project Status
+
+UUAgent is under active development. Current capabilities include the Web UI, agent profiles, OpenAI-compatible model calls, tool calls, persistent sessions, persistent memory, mock MCP, mock skills, multimodal backend content parts, and automated tests.
+
+Planned work includes real MCP client support, project-scoped sessions, knowledge base indexing, model-based compression, packaging, and richer UI testing.
 
 ## License
 

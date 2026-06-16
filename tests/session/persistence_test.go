@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/uuagent/uuagent/internal/session"
+	"github.com/yeyan00/uuagent/internal/session"
 )
 
 func TestSessionPersistsToJSON(t *testing.T) {

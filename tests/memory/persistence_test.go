@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/uuagent/uuagent/internal/memory"
+	"github.com/yeyan00/uuagent/internal/memory"
 )
 
 func TestMemoryPersistsToDisk(t *testing.T) {

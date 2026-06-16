@@ -11,9 +11,9 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/uuagent/uuagent/api/server"
-	"github.com/uuagent/uuagent/internal/agent"
-	"github.com/uuagent/uuagent/internal/config"
+	"github.com/yeyan00/uuagent/api/server"
+	"github.com/yeyan00/uuagent/internal/agent"
+	"github.com/yeyan00/uuagent/internal/config"
 )
 
 func main() {
@@ -23,7 +23,7 @@ func main() {
 	noBrowser := flag.Bool("no-browser", false, "do not automatically open browser")
 	flag.Parse()
 
-	// 1. 加载配置。顺序：defaults < ~/.uuagent/config.yaml < ./config.yaml < <project>/.uuagent/project.yaml < UUAGENT_CONFIG。
+	// 1. Load configuration: defaults < user config < cwd config < project config < UUAGENT_CONFIG.
 	root, err := config.EnsureUserLayout()
 	if err != nil {
 		fmt.Printf("Setup failed: %v\n", err)
@@ -51,20 +51,20 @@ func main() {
 		fmt.Printf("Workspace: %s\n", *projectPath)
 	}
 
-	// 2. 创建 Agent
+	// 2. Create the Agent runtime.
 	agt := agent.New(cfg)
 
-	// 3. 启动 HTTP Server
+	// 3. Start the HTTP server.
 	r := gin.Default()
 
 	// UUAgent API
 	api := r.Group("/api")
 	server.RegisterRoutes(api, agt)
 
-	// CLIProxyAPI 管理面板 (模型管理)
-	// TODO: embed CLIProxyAPI SDK, 注册 /v1/* 和 /v0/management/* 路由
+	// CLIProxyAPI management panel and model proxy.
+	// TODO: embed CLIProxyAPI SDK and register /v1/* plus /v0/management/* routes.
 
-	// 前端静态文件。开发/测试时直接服务仓库 web/dist；发布打包时可在构建脚本中确保先运行 npm run build。
+	// Serve the Web UI from web/dist during development and tests. Release builds should run npm build first.
 	r.StaticFS("/ui", http.Dir("web/dist"))
 	r.GET("/", func(c *gin.Context) {
 		c.Redirect(http.StatusMovedPermanently, "/ui/")
@@ -73,15 +73,15 @@ func main() {
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	url := fmt.Sprintf("http://localhost%s", addr)
 
-	// 4. 自动打开浏览器
+	// 4. Open the browser unless disabled.
 	if !*noBrowser {
 		go openBrowser(url)
 	}
 
 	fmt.Printf("╔══════════════════════════════════════╗\n")
-	fmt.Printf("║  UUAgent - 轻量智能 Coding Agent      ║\n")
+	fmt.Printf("║  UUAgent - Web Coding Agent           ║\n")
 	fmt.Printf("║  %s              ║\n", padRight(url, 29))
-	fmt.Printf("║  管理: %s/management.html   ║\n", padRight(url, 22))
+	fmt.Printf("║  Admin: %s/management.html  ║\n", padRight(url, 22))
 	fmt.Printf("╚══════════════════════════════════════╝\n")
 
 	if err := r.Run(addr); err != nil {
@@ -89,7 +89,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// TODO: Wails 桌面模式
+	// TODO: Wails desktop mode.
 	// if cfg.UIMode == "desktop" { ... }
 }
 

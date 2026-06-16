@@ -9,13 +9,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/uuagent/uuagent/internal/contextmgr"
-	"github.com/uuagent/uuagent/internal/paths"
-	"github.com/uuagent/uuagent/internal/types"
+	"github.com/yeyan00/uuagent/internal/contextmgr"
+	"github.com/yeyan00/uuagent/internal/paths"
+	"github.com/yeyan00/uuagent/internal/types"
 )
 
-// Store 会话存储。P0 persistence stores each session as JSON so users can
-// inspect conversation history directly under ~/.uuagent/sessions.
+// Store persists sessions as JSON so users can inspect conversation history
+// directly under ~/.uuagent/sessions.
 type Store struct {
 	sessions map[string]*Session
 	root     string
@@ -33,7 +33,7 @@ type RunInfo struct {
 	CreatedAt  int64    `json:"created_at"`
 }
 
-// Session 单个会话
+// Session is one conversation thread.
 type Session struct {
 	ID        string               `json:"id"`
 	Title     string               `json:"title,omitempty"`
@@ -47,7 +47,7 @@ type Session struct {
 	mu        sync.Mutex
 }
 
-// NewStore 创建会话存储，默认持久化到 ~/.uuagent/sessions。
+// NewStore creates a session store persisted under ~/.uuagent/sessions.
 func NewStore() *Store {
 	return NewStoreAt(paths.SessionsDir())
 }
@@ -100,7 +100,7 @@ func (s *Store) Load() error {
 	return nil
 }
 
-// GetOrCreate 获取或创建会话
+// GetOrCreate returns an existing session or creates a new one.
 func (s *Store) GetOrCreate(id string) *Session {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -125,7 +125,7 @@ func (s *Store) Get(id string) (*Session, bool) {
 	return sess, ok
 }
 
-// Append 追加文本消息
+// Append adds a text message.
 func (s *Session) Append(role, content string) {
 	s.AppendMessage(types.Message{Role: role, Content: content})
 }
@@ -168,7 +168,7 @@ func (s *Session) AppendTool(toolCallID, toolName, content string) {
 	s.AppendMessage(types.Message{Role: "tool", ToolCallID: toolCallID, ToolName: toolName, Content: content})
 }
 
-// BuildMessages 组装发送给 LLM 的消息列表
+// BuildMessages assembles messages for the LLM.
 func (s *Session) BuildMessages(prompt string) []types.Message {
 	return s.BuildMessagesParts([]types.ContentPart{{Type: "text", Text: prompt}})
 }

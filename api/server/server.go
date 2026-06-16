@@ -7,13 +7,13 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/uuagent/uuagent/internal/agent"
-	"github.com/uuagent/uuagent/internal/config"
-	"github.com/uuagent/uuagent/internal/memory"
-	"github.com/uuagent/uuagent/internal/types"
+	"github.com/yeyan00/uuagent/internal/agent"
+	"github.com/yeyan00/uuagent/internal/config"
+	"github.com/yeyan00/uuagent/internal/memory"
+	"github.com/yeyan00/uuagent/internal/types"
 )
 
-// RegisterRoutes 注册 UUAgent API 路由
+// RegisterRoutes registers UUAgent API routes.
 func RegisterRoutes(r *gin.RouterGroup, agt *agent.Agent) {
 	r.GET("/projects", handleListProjects(agt))
 	r.POST("/projects", handleCreateProject(agt))
@@ -175,7 +175,7 @@ func handleCloneAgent(agt *agent.Agent) gin.HandlerFunc {
 	}
 }
 
-// handleChatSSE SSE 流式聊天
+// handleChatSSE streams chat events over SSE.
 func handleChatSSE(agt *agent.Agent) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		prompt := c.Query("prompt")
@@ -219,7 +219,7 @@ func writeSSE(c *gin.Context, evt agent.Event) {
 	c.Writer.Flush()
 }
 
-// handleRouteInfo 查看路由决策 (不执行)
+// handleRouteInfo returns the routing decision without executing a chat turn.
 func handleRouteInfo(agt *agent.Agent) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		prompt := c.Query("prompt")
@@ -373,14 +373,14 @@ func handleDeleteMemory(agt *agent.Agent) gin.HandlerFunc {
 	}
 }
 
-// handleConfig 配置查看
+// handleConfig returns the redacted active configuration.
 func handleConfig(agt *agent.Agent) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok", "config": agt.Config().Safe()})
 	}
 }
 
-// handleHealth 健康检查
+// handleHealth returns the service health status.
 func handleHealth(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "version": "0.1.0"})
 }

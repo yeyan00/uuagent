@@ -2,6 +2,12 @@ $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 Set-Location $Root
 
+# Keep test output stable in Pi/Git Bash/Windows terminals.
+$env:CI = '1'
+$env:NO_COLOR = '1'
+$env:FORCE_COLOR = '0'
+if (-not $env:TERM) { $env:TERM = 'xterm-256color' }
+
 $envFile = Join-Path $Root 'tests/.env'
 if (Test-Path $envFile) {
   Get-Content $envFile | ForEach-Object {
