@@ -118,6 +118,15 @@ func (m *Manager) Add(content, project, scope, source string, status Status) Ent
 	if source == "" {
 		source = "user"
 	}
+	if scope == "project" && isProjectMemoryPath(project) && (status == StatusConfirmed || status == StatusDraft) {
+		if status == StatusDraft {
+			_ = appendDraftMarkdown(content, project)
+		} else {
+			_ = appendConfirmedMarkdown(content, project)
+		}
+		now := nowUnix()
+		return Entry{ID: generateID(), Content: content, Status: status, Source: "markdown", Project: project, Scope: scope, CreatedAt: now, UpdatedAt: now}
+	}
 	now := nowUnix()
 	entry := Entry{
 		ID:        generateID(),
@@ -236,7 +245,9 @@ func (m *Manager) List(status Status, project string) []Entry {
 func (m *Manager) ListFiltered(status Status, project, scope string) []Entry {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.filterLocked(status, project, scope)
+	result := m.filterLocked(status, project, scope)
+	result = append(result, m.markdownEntriesLocked(status, project, scope)...)
+	return result
 }
 
 // ListDrafts returns draft memories awaiting review.
@@ -258,6 +269,7 @@ func (m *Manager) BuildSystemPrompt(project string) string {
 func (m *Manager) BuildScopedSystemPrompt(project, agentID, sessionID string) string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	sections := markdownMemorySections(m.path, project)
 	var confirmed []Entry
 	for _, e := range m.entries {
 		if e.Status != StatusConfirmed {
@@ -280,15 +292,88 @@ func (m *Manager) BuildScopedSystemPrompt(project, agentID, sessionID string) st
 			}
 		}
 	}
-	if len(confirmed) == 0 {
+	if len(confirmed) == 0 && len(sections) == 0 {
 		return ""
 	}
 
 	text := "[Memory]\n"
+	for _, section := range sections {
+		text += section
+		if !strings.HasSuffix(section, "\n") {
+			text += "\n"
+		}
+	}
 	for _, e := range confirmed {
 		text += "- " + e.Content + "\n"
 	}
 	return text
+}
+
+func markdownMemorySections(jsonPath, project string) []string {
+	var sections []string
+	if userDir := filepath.Dir(jsonPath); jsonPath != "" {
+		sections = appendMemoryFile(sections, filepath.Join(userDir, "user.md"), "Global User")
+		sections = appendMemoryFile(sections, filepath.Join(userDir, "memory.md"), "Global Memory")
+	}
+	if isProjectMemoryPath(project) {
+		sections = appendMemoryFile(sections, filepath.Join(project, ".uuagent", "user.md"), "Project User")
+		sections = appendMemoryFile(sections, filepath.Join(project, ".uuagent", "memory.md"), "Project Memory")
+	}
+	return sections
+}
+
+func appendMemoryFile(sections []string, path, title string) []string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return sections
+	}
+	content := strings.TrimSpace(string(data))
+	if content == "" {
+		return sections
+	}
+	return append(sections, fmt.Sprintf("## %s (%s)\n%s\n", title, path, content))
+}
+
+func appendDraftMarkdown(content, project string) error {
+	if strings.TrimSpace(content) == "" || !isProjectMemoryPath(project) {
+		return nil
+	}
+	path := filepath.Join(project, ".uuagent", "memory.draft.md")
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	line := fmt.Sprintf("\n- %s\n", strings.TrimSpace(content))
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		line = "# Draft Memory\n\nAI-generated candidates. Review and move confirmed items to memory.md. Drafts are not injected into prompts.\n" + line
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.WriteString(line)
+	return err
+}
+
+func appendConfirmedMarkdown(content, project string) error {
+	if strings.TrimSpace(content) == "" || !isProjectMemoryPath(project) {
+		return nil
+	}
+	path := filepath.Join(project, ".uuagent", "memory.md")
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	line := fmt.Sprintf("\n- %s\n", strings.TrimSpace(content))
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		line = "# Project Memory\n\nConfirmed long-term project memory. This file is injected into new session snapshots.\n" + line
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.WriteString(line)
+	return err
 }
 
 func (m *Manager) filterLocked(status Status, project, scope string) []Entry {
@@ -306,6 +391,58 @@ func (m *Manager) filterLocked(status Status, project, scope string) []Entry {
 		result = append(result, e)
 	}
 	return result
+}
+
+func (m *Manager) markdownEntriesLocked(status Status, project, scope string) []Entry {
+	if scope != "" && scope != "project" && scope != "global" {
+		return nil
+	}
+	var entries []Entry
+	if m.path != "" && project == "" {
+		userDir := filepath.Dir(m.path)
+		entries = append(entries, markdownEntriesFromFile(filepath.Join(userDir, "memory.md"), "global", "global", StatusConfirmed)...)
+		entries = append(entries, markdownEntriesFromFile(filepath.Join(userDir, "memory.draft.md"), "global", "global", StatusDraft)...)
+	}
+	if isProjectMemoryPath(project) && (scope == "" || scope == "project") {
+		entries = append(entries, markdownEntriesFromFile(filepath.Join(project, ".uuagent", "memory.md"), project, "project", StatusConfirmed)...)
+		entries = append(entries, markdownEntriesFromFile(filepath.Join(project, ".uuagent", "memory.draft.md"), project, "project", StatusDraft)...)
+	}
+	if status == "" {
+		return entries
+	}
+	var filtered []Entry
+	for _, entry := range entries {
+		if entry.Status == status {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered
+}
+
+func markdownEntriesFromFile(path, project, scope string, status Status) []Entry {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var entries []Entry
+	for _, line := range strings.Split(string(data), "\n") {
+		content := strings.TrimSpace(line)
+		content = strings.TrimPrefix(content, "- ")
+		content = strings.TrimSpace(content)
+		if content == "" || strings.HasPrefix(content, "#") || strings.HasPrefix(content, "AI-generated candidates") || strings.HasPrefix(content, "Confirmed long-term") {
+			continue
+		}
+		entries = append(entries, Entry{ID: "md:" + path + ":" + content, Content: content, Status: status, Source: "markdown", Project: project, Scope: scope})
+	}
+	return entries
+}
+
+func isProjectMemoryPath(project string) bool {
+	if project == "" || !filepath.IsAbs(project) {
+		return false
+	}
+	info, err := os.Stat(project)
+	return err == nil && info.IsDir()
 }
 
 func generateID() string {

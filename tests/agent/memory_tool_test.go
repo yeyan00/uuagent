@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -110,11 +111,15 @@ func TestAutoDraftMemoryExtractionRunsAfterFinalAnswerWithoutExtraLLMCall(t *tes
 	cfg.Agent.ProxyURL = llm.URL + "/v1"
 	cfg.Agent.Memory.AutoDraft = true
 	agt := agent.New(cfg)
-	runAgentTurn(t, agt, "auto-draft", "project-a", "remember that my preferred test runner is go test ./...")
+	project := filepath.Join(t.TempDir(), "project")
+	if err := os.MkdirAll(project, 0755); err != nil {
+		t.Fatal(err)
+	}
+	runAgentTurn(t, agt, "auto-draft", project, "remember that my preferred test runner is go test ./...")
 	if calls != 1 {
 		t.Fatalf("auto draft should not make an extra LLM call, got %d calls", calls)
 	}
-	drafts := agt.Memories().ListFiltered(memory.StatusDraft, "project-a", "project")
+	drafts := agt.Memories().ListFiltered(memory.StatusDraft, project, "project")
 	found := false
 	for _, entry := range drafts {
 		if strings.Contains(entry.Content, "preferred test runner is go test ./...") {
@@ -126,6 +131,13 @@ func TestAutoDraftMemoryExtractionRunsAfterFinalAnswerWithoutExtraLLMCall(t *tes
 	}
 	if strings.Contains(systemPrompt, "preferred test runner") {
 		t.Fatalf("draft memory should not be injected into current prompt: %q", systemPrompt)
+	}
+	draftFile, err := os.ReadFile(filepath.Join(project, ".uuagent", "memory.draft.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(draftFile), "preferred test runner is go test ./...") {
+		t.Fatalf("expected auto draft in markdown file, got %s", string(draftFile))
 	}
 }
 

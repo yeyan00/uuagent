@@ -61,4 +61,36 @@ describe('App', () => {
     fireEvent.click(await screen.findByText('Stop'))
     await waitFor(() => expect(calls).toContain('POST /api/runs/run-ui/stop'))
   })
+
+  it('loads and creates memory for the selected project', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    globalThis.fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push({ url, init })
+      if (url === '/api/projects') return Response.json({ projects: [{ id: 'proj-1', name: 'Repo', workspace_path: 'C:/repo', temporary: false }] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/sessions') return Response.json({ sessions: [] })
+      if (url === '/api/memory') return Response.json({ memories: [] })
+      if (url === '/api/memory?project=proj-1') return Response.json({ memories: [{ id: 'm1', content: 'Existing project memory', status: 'confirmed', source: 'markdown', project: 'C:/repo', scope: 'project' }] })
+      if (url === '/api/projects/proj-1/open') return Response.json({ config_sources: [] })
+      if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
+      if (url === '/api/memory' && init?.method === 'POST') return Response.json({ id: 'm2', content: 'New project memory' })
+      return Response.json({})
+    }) as any
+
+    render(<App />)
+    fireEvent.change(await screen.findByDisplayValue('None'), { target: { value: 'proj-1' } })
+    fireEvent.click(await screen.findByText('Memory'))
+    expect(await screen.findByText('Existing project memory')).toBeTruthy()
+
+    fireEvent.change(await screen.findByPlaceholderText('Add confirmed memory...'), { target: { value: 'New project memory' } })
+    fireEvent.click(await screen.findByText('Add Memory'))
+
+    await waitFor(() => {
+      const post = calls.find(c => c.url === '/api/memory' && c.init?.method === 'POST')
+      expect(post).toBeTruthy()
+      expect(JSON.parse(String(post?.init?.body))).toMatchObject({ project: 'proj-1', content: 'New project memory' })
+    })
+    expect(calls.some(c => c.url === '/api/memory?project=proj-1')).toBe(true)
+  })
 })

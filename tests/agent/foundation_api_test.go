@@ -122,6 +122,117 @@ func TestFoundationRegistryAPIsExposeSkillsMCPAndTools(t *testing.T) {
 	}
 }
 
+func TestMemoryAPIUsesProjectWorkspaceForMarkdownMemory(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	t.Setenv("UUAGENT_HOME", home)
+	if err := os.MkdirAll(workspace, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	agt := agent.New(config.Default())
+	r := gin.New()
+	server.RegisterRoutes(r.Group("/api"), agt)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/projects", strings.NewReader(`{"name":"P","workspace_path":"`+strings.ReplaceAll(workspace, `\`, `\\`)+`"}`)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("create project status=%d body=%s", w.Code, w.Body.String())
+	}
+	var p struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &p); err != nil {
+		t.Fatal(err)
+	}
+
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/memory", strings.NewReader(`{"content":"Use markdown via project id","project":"`+p.ID+`","scope":"project","status":"confirmed","source":"user"}`)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("create memory status=%d body=%s", w.Code, w.Body.String())
+	}
+	data, err := os.ReadFile(filepath.Join(workspace, ".uuagent", "memory.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "Use markdown via project id") {
+		t.Fatalf("workspace memory.md missing entry: %s", string(data))
+	}
+
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/memory?project="+p.ID+"&scope=project&status=confirmed", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("list memory status=%d body=%s", w.Code, w.Body.String())
+	}
+	var listResp struct {
+		Memories []memory.Entry `json:"memories"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &listResp); err != nil {
+		t.Fatal(err)
+	}
+	if len(listResp.Memories) != 1 || listResp.Memories[0].Content != "Use markdown via project id" || listResp.Memories[0].Project != workspace {
+		t.Fatalf("memory list should include markdown workspace entry: %+v", listResp.Memories)
+	}
+}
+
+func TestChatResolvesProjectIDToWorkspaceForMarkdownMemory(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	t.Setenv("UUAGENT_HOME", home)
+	if err := os.MkdirAll(filepath.Join(workspace, ".uuagent"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, ".uuagent", "memory.md"), []byte("# Project Memory\n\n- markdown memory by project id\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	var systemPrompt string
+	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if len(req.Messages) > 0 && req.Messages[0].Role == "system" {
+			systemPrompt = req.Messages[0].Content
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer llm.Close()
+
+	cfg := config.Default()
+	cfg.Agent.ProxyURL = llm.URL + "/v1"
+	gin.SetMode(gin.TestMode)
+	agt := agent.New(cfg)
+	r := gin.New()
+	server.RegisterRoutes(r.Group("/api"), agt)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/projects", strings.NewReader(`{"name":"P","workspace_path":"`+strings.ReplaceAll(workspace, `\`, `\\`)+`"}`)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("create project status=%d body=%s", w.Code, w.Body.String())
+	}
+	var p struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &p); err != nil {
+		t.Fatal(err)
+	}
+
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/chat?prompt=hello&session_id=project-id-chat&project_id="+p.ID, nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("chat status=%d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(systemPrompt, "markdown memory by project id") {
+		t.Fatalf("chat should inject markdown memory resolved from project id: %q", systemPrompt)
+	}
+}
+
 func TestProjectSkillOverridesUserSkillAndCanLoadFullContent(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "home")
 	workspace := filepath.Join(t.TempDir(), "workspace")

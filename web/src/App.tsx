@@ -107,13 +107,14 @@ function App() {
   const activeAgent = agents.find(a => a.id === agentId)
   const activeSession = sessions.find(s => s.id === sessionId)
   const availableModels = useMemo(() => ['auto', ...Array.from(new Set(agents.map(a => a.model).filter(Boolean) as string[]))], [agents])
+  const memoryURL = projectId ? `/api/memory?project=${encodeURIComponent(projectId)}` : '/api/memory'
 
   const refresh = async () => {
     const [p, a, s, m] = await Promise.all([
       api<{projects: Project[]}>('/api/projects'),
       api<{agents: AgentProfile[]}>('/api/agents'),
       api<{sessions: Session[]}>('/api/sessions'),
-      api<{memories: MemoryEntry[]}>('/api/memory'),
+      api<{memories: MemoryEntry[]}>(memoryURL),
     ])
     setProjects(p.projects || [])
     setAgents(a.agents || [])
@@ -122,6 +123,7 @@ function App() {
   }
 
   useEffect(() => { refresh().catch(err => setStatus(String(err))) }, [])
+  useEffect(() => { api<{memories: MemoryEntry[]}>(memoryURL).then(m => setMemories(m.memories || [])).catch(err => setStatus(String(err))) }, [memoryURL])
   useEffect(() => { messagesEndRef.current?.scrollIntoView?.({ behavior: 'smooth' }) }, [messages])
   useEffect(() => {
     api<{summaries: Summary[]}>(`/api/sessions/${encodeURIComponent(sessionId)}/summaries`)
@@ -192,8 +194,8 @@ function App() {
 
   const addMemory = async () => {
     if (!memoryText.trim()) return
-    await api('/api/memory', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ content: memoryText, status: 'confirmed', source: 'user', scope: 'project' }) })
-    setMemoryText(''); const m = await api<{memories: MemoryEntry[]}>('/api/memory'); setMemories(m.memories || []); setStatus('Memory saved')
+    await api('/api/memory', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ content: memoryText, project: projectId, status: 'confirmed', source: 'user', scope: 'project' }) })
+    setMemoryText(''); const m = await api<{memories: MemoryEntry[]}>(memoryURL); setMemories(m.memories || []); setStatus('Memory saved')
   }
 
   const onAttachClick = () => fileInputRef.current?.click()
@@ -211,7 +213,7 @@ function App() {
     setMessages(prev => [...prev, { role: 'user', content: prompt }])
     setInput(''); setIsStreaming(true); setCurrentRunId(''); setRouteInfo(null); setStatus('Thinking...')
     try {
-      const url = `/api/chat?prompt=${encodeURIComponent(prompt)}&session_id=${encodeURIComponent(sessionId)}&agent_id=${encodeURIComponent(agentId)}`
+      const url = `/api/chat?prompt=${encodeURIComponent(prompt)}&session_id=${encodeURIComponent(sessionId)}&agent_id=${encodeURIComponent(agentId)}${projectId ? `&project_id=${encodeURIComponent(projectId)}` : ''}`
       const response = await fetch(url, { signal: controller.signal })
       const reader = response.body?.getReader(); const decoder = new TextDecoder(); if (!reader) return
       let assistantContent = ''; let currentModel = ''

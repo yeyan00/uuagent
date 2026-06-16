@@ -268,7 +268,7 @@ func handleChatSSE(agt *agent.Agent) gin.HandlerFunc {
 				parts = append(parts, types.ContentPart{Type: "image_url", ImageURL: &types.ImageURL{URL: imageURL}})
 			}
 		}
-		projectID := c.Query("project_id")
+		projectID := resolveProjectMemoryKey(agt, c.Query("project_id"))
 		events, err := agt.RunWithAgentProjectParts(c.Request.Context(), sessionID, agentID, projectID, parts)
 		if err != nil {
 			writeSSE(c, agent.Event{Type: "error", Text: err.Error()})
@@ -417,7 +417,7 @@ func handleForkSession(agt *agent.Agent) gin.HandlerFunc {
 
 func handleRefreshSessionMemory(agt *agent.Agent) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		snapshot := agt.RefreshSessionMemorySnapshot(c.Param("id"), c.Query("project_id"), c.Query("agent_id"))
+		snapshot := agt.RefreshSessionMemorySnapshot(c.Param("id"), resolveProjectMemoryKey(agt, c.Query("project_id")), c.Query("agent_id"))
 		c.JSON(http.StatusOK, gin.H{"memory_snapshot": snapshot})
 	}
 }
@@ -433,7 +433,7 @@ type memoryRequest struct {
 func handleListMemory(agt *agent.Agent) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		status := memory.Status(c.Query("status"))
-		project := c.Query("project")
+		project := resolveProjectMemoryKey(agt, c.Query("project"))
 		scope := c.Query("scope")
 		c.JSON(http.StatusOK, gin.H{"memories": agt.Memories().ListFiltered(status, project, scope), "path": agt.Memories().Path()})
 	}
@@ -453,9 +453,17 @@ func handleCreateMemory(agt *agent.Agent) gin.HandlerFunc {
 		if req.Status == "" {
 			req.Status = memory.StatusConfirmed
 		}
+		req.Project = resolveProjectMemoryKey(agt, req.Project)
 		entry := agt.Memories().Add(req.Content, req.Project, req.Scope, req.Source, req.Status)
 		c.JSON(http.StatusOK, entry)
 	}
+}
+
+func resolveProjectMemoryKey(agt *agent.Agent, project string) string {
+	if p, ok := agt.Projects().Get(project); ok && p.WorkspacePath != "" {
+		return p.WorkspacePath
+	}
+	return project
 }
 
 func handleEditMemory(agt *agent.Agent) gin.HandlerFunc {
