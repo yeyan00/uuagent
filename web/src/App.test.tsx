@@ -18,6 +18,7 @@ describe('App', () => {
     expect(await screen.findByText('Projects')).toBeTruthy()
     expect(await screen.findByText('Extensions')).toBeTruthy()
     expect(await screen.findByPlaceholderText('Ask UUAgent to inspect, edit or explain code... Ctrl+Enter to send')).toBeTruthy()
+    expect(screen.getByText('Start a coding session')).toBeTruthy()
     expect(screen.queryByText('Agent Settings')).toBeNull()
     fireEvent.click(await screen.findByText('Settings'))
     fireEvent.click(await screen.findByText('Agents'))

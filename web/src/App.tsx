@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import './App.css'
 
 interface ChatEvent { type: string; model?: string; tier?: string; text?: string; tool_name?: string; tool_id?: string }
@@ -35,6 +35,45 @@ const api = async <T,>(url: string, init?: RequestInit): Promise<T> => {
 
 const joinList = (value?: string[]) => (value || []).join(', ')
 const parseList = (value: string) => value.split(',').map(x => x.trim()).filter(Boolean)
+
+const renderInlineMarkdown = (text: string): ReactNode[] => {
+  const nodes: ReactNode[] = []
+  const pattern = /(\*\*[^*]+\*\*|`[^`]+`)/g
+  let last = 0
+  for (const match of text.matchAll(pattern)) {
+    if (match.index === undefined) continue
+    if (match.index > last) nodes.push(text.slice(last, match.index))
+    const token = match[0]
+    if (token.startsWith('**')) nodes.push(<strong key={`${match.index}-b`}>{token.slice(2, -2)}</strong>)
+    else nodes.push(<code key={`${match.index}-c`}>{token.slice(1, -1)}</code>)
+    last = match.index + token.length
+  }
+  if (last < text.length) nodes.push(text.slice(last))
+  return nodes
+}
+
+const renderMarkdown = (content: unknown) => {
+  const text = typeof content === 'string' ? content : JSON.stringify(content, null, 2)
+  const blocks = text.split(/\n{2,}/)
+  return <div className="markdownBody">{blocks.map((block, i) => {
+    const trimmed = block.trimEnd()
+    if (!trimmed) return null
+    if (trimmed.startsWith('```')) {
+      const code = trimmed.replace(/^```[^\n]*\n?/, '').replace(/\n?```$/, '')
+      return <pre key={i} className="codeBlock"><code>{code}</code></pre>
+    }
+    const lines = trimmed.split('\n')
+    if (lines.every(line => /^\s*[-*]\s+/.test(line))) {
+      return <ul key={i}>{lines.map((line, j) => <li key={j}>{renderInlineMarkdown(line.replace(/^\s*[-*]\s+/, ''))}</li>)}</ul>
+    }
+    if (/^#{1,3}\s+/.test(trimmed)) {
+      const level = Math.min(3, trimmed.match(/^#+/)?.[0].length || 2)
+      const body = trimmed.replace(/^#{1,3}\s+/, '')
+      return level === 1 ? <h1 key={i}>{renderInlineMarkdown(body)}</h1> : level === 2 ? <h2 key={i}>{renderInlineMarkdown(body)}</h2> : <h3 key={i}>{renderInlineMarkdown(body)}</h3>
+    }
+    return <p key={i}>{lines.map((line, j) => <span key={j}>{j > 0 && <br />}{renderInlineMarkdown(line)}</span>)}</p>
+  })}</div>
+}
 
 function App() {
   const [mainPage, setMainPage] = useState<MainPage>('projects')
@@ -267,7 +306,7 @@ function App() {
 
         <section className="messagesPane">
           {messages.length === 0 && <div className="emptyState"><div>✨</div><h2>Start a coding session</h2><p>Open a project, choose an agent and ask UUAgent to inspect, explain or modify your code.</p></div>}
-          {messages.map((msg,i)=><div key={i} className={`messageBubble ${msg.role}`}><div className="messageMeta">{msg.role==='user'?'You':msg.role==='system'?'System':msg.role==='tool'?'Tool':msg.model || 'Assistant'}</div><pre>{msg.content}</pre></div>)}
+          {messages.map((msg,i)=><div key={i} className={`messageBubble ${msg.role}`}><div className="messageMeta">{msg.role==='user'?'You':msg.role==='system'?'System':msg.role==='tool'?'Tool':msg.model || 'Assistant'}</div>{renderMarkdown(msg.content)}</div>)}
           <div ref={messagesEndRef}/>
         </section>
 
