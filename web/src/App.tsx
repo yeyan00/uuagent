@@ -218,12 +218,6 @@ function App() {
       </div>
     </>
 
-    if (projectTab === 'agents') return <>
-      <div className="sideActions"><button onClick={newAgent}>New Agent</button><button onClick={()=>setAgentSettingsOpen(true)}>Edit</button></div>
-      <div className="itemList">
-        {agents.map(a => <button key={a.id} className={a.id === agentId ? 'listItem active' : 'listItem'} onClick={() => selectAgent(a.id)}><span>{a.name || a.id}</span><small>{a.description || a.id}</small></button>)}
-      </div>
-    </>
 
     if (projectTab === 'memory') return <>
       <textarea className="sideTextarea" value={memoryText} onChange={e=>setMemoryText(e.target.value)} placeholder="Add confirmed memory..." />
