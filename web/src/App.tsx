@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 
 interface ChatEvent { type: string; model?: string; tier?: string; text?: string; tool_name?: string; tool_id?: string }
@@ -8,6 +8,27 @@ interface AgentProfile { id: string; name: string; description?: string; system_
 interface Session { id: string; title?: string; parent_id?: string; messages: Message[] }
 interface MemoryEntry { id: string; content: string; status: string; source: string; project: string; scope: string }
 interface Summary { id: string; summary: string; token_before: number; token_after: number; created_at: number }
+
+type MainPage = 'projects' | 'extensions' | 'schedules' | 'settings'
+type ProjectTab = 'sessions' | 'agents' | 'subagents' | 'models' | 'skills' | 'mcp' | 'memory' | 'context'
+
+const navItems: Array<{ id: MainPage; label: string; icon: string }> = [
+  { id: 'projects', label: 'Projects', icon: 'P' },
+  { id: 'extensions', label: 'Extensions', icon: 'X' },
+  { id: 'schedules', label: 'Schedules', icon: 'Q' },
+  { id: 'settings', label: 'Settings', icon: 'S' },
+]
+
+const projectTabs: Array<{ id: ProjectTab; label: string }> = [
+  { id: 'sessions', label: 'Sessions' },
+  { id: 'agents', label: 'Agents' },
+  { id: 'subagents', label: 'Subagents' },
+  { id: 'models', label: 'Models' },
+  { id: 'skills', label: 'Skills' },
+  { id: 'mcp', label: 'MCP' },
+  { id: 'memory', label: 'Memory' },
+  { id: 'context', label: 'Context' },
+]
 
 const api = async <T,>(url: string, init?: RequestInit): Promise<T> => {
   const res = await fetch(url, init)
@@ -19,6 +40,8 @@ const joinList = (value?: string[]) => (value || []).join(', ')
 const parseList = (value: string) => value.split(',').map(x => x.trim()).filter(Boolean)
 
 function App() {
+  const [mainPage, setMainPage] = useState<MainPage>('projects')
+  const [projectTab, setProjectTab] = useState<ProjectTab>('sessions')
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [isStreaming, setIsStreaming] = useState(false)
@@ -31,16 +54,21 @@ function App() {
   const [projectId, setProjectId] = useState('')
   const [agentId, setAgentId] = useState('default')
   const [sessionId, setSessionId] = useState('default')
+  const [modelOverride, setModelOverride] = useState('auto')
   const [newProjectName, setNewProjectName] = useState('')
   const [newProjectPath, setNewProjectPath] = useState('')
   const [memoryText, setMemoryText] = useState('')
   const [status, setStatus] = useState('Ready')
   const [agentDraft, setAgentDraft] = useState<AgentProfile | null>(null)
   const [isAgentSettingsOpen, setAgentSettingsOpen] = useState(false)
+  const [attachmentNotice, setAttachmentNotice] = useState('')
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
+  const activeProject = projects.find(p => p.id === projectId)
   const activeAgent = agents.find(a => a.id === agentId)
   const activeSession = sessions.find(s => s.id === sessionId)
+  const availableModels = useMemo(() => ['auto', ...Array.from(new Set(agents.map(a => a.model).filter(Boolean) as string[]))], [agents])
 
   const refresh = async () => {
     const [p, a, s, m] = await Promise.all([
@@ -101,6 +129,7 @@ function App() {
     setAgentId(id)
     const profile = agents.find(a => a.id === id)
     setAgentDraft(profile ? { ...profile } : null)
+    if (profile?.model) setModelOverride(profile.model)
   }
 
   const updateAgentDraft = (patch: Partial<AgentProfile>) => setAgentDraft(prev => ({ ...(prev || { id: `agent-${Date.now()}`, name: 'New Agent' }), ...patch }))
@@ -127,6 +156,13 @@ function App() {
     if (!memoryText.trim()) return
     await api('/api/memory', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ content: memoryText, status: 'confirmed', source: 'user', scope: 'project' }) })
     setMemoryText(''); const m = await api<{memories: MemoryEntry[]}>('/api/memory'); setMemories(m.memories || []); setStatus('Memory saved')
+  }
+
+  const onAttachClick = () => fileInputRef.current?.click()
+  const onFilesSelected = (files: FileList | null) => {
+    if (!files || files.length === 0) return
+    const names = Array.from(files).map(f => f.name).join(', ')
+    setAttachmentNotice(`Selected: ${names}. Attachment upload will be wired to chat next.`)
   }
 
   const sendMessage = async () => {
@@ -161,80 +197,126 @@ function App() {
     finally { setIsStreaming(false) }
   }
 
-  return <div className="appShell">
-    <aside className="sidebar">
-      <div className="brandCard">
-        <div className="brandIcon">◎</div>
-        <div><h1>UUAgent</h1><p>Web-first coding agent</p></div>
-      </div>
+  const renderSidebarBody = () => {
+    if (mainPage !== 'projects') {
+      const text = mainPage === 'extensions'
+        ? 'Manage tools, skills, MCP integrations and future extension packs.'
+        : mainPage === 'schedules'
+          ? 'Create recurring project scans, tests, reports and knowledge refresh jobs.'
+          : 'Configure global preferences, storage, permissions and appearance.'
+      return <div className="sidePlaceholder"><h3>{navItems.find(n => n.id === mainPage)?.label}</h3><p>{text}</p><button className="softButton">Coming soon</button></div>
+    }
 
-      <section className="panel">
-        <div className="panelTitle"><span>📁 Projects</span></div>
-        <select value={projectId} onChange={e => openProject(e.target.value)}><option value=''>Select project</option>{projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select>
-        <div className="compactForm">
-          <input placeholder='Project name' value={newProjectName} onChange={e=>setNewProjectName(e.target.value)} />
-          <input placeholder='Workspace path (optional)' value={newProjectPath} onChange={e=>setNewProjectPath(e.target.value)} />
-          <button className="secondaryButton" onClick={createProject}>Create Project</button>
+    if (projectTab === 'sessions') return <>
+      <div className="sideActions"><button onClick={createSession}>New</button><button onClick={forkSession}>Fork</button></div>
+      <div className="sideActions"><button onClick={renameSession}>Rename</button><button onClick={deleteSession}>Delete</button></div>
+      <div className="itemList">
+        {[sessionId, ...sessions.map(s=>s.id)].filter((v,i,a)=>v&&a.indexOf(v)===i).map(id => {
+          const s = sessions.find(x => x.id === id)
+          return <button key={id} className={id === sessionId ? 'listItem active' : 'listItem'} onClick={() => loadSession(id).catch(err=>setStatus(String(err)))}><span>{s?.title || id}</span><small>{s?.messages?.length || 0} messages</small></button>
+        })}
+      </div>
+    </>
+
+    if (projectTab === 'agents') return <>
+      <div className="sideActions"><button onClick={newAgent}>New Agent</button><button onClick={()=>setAgentSettingsOpen(true)}>Edit</button></div>
+      <div className="itemList">
+        {agents.map(a => <button key={a.id} className={a.id === agentId ? 'listItem active' : 'listItem'} onClick={() => selectAgent(a.id)}><span>{a.name || a.id}</span><small>{a.description || a.id}</small></button>)}
+      </div>
+    </>
+
+    if (projectTab === 'memory') return <>
+      <textarea className="sideTextarea" value={memoryText} onChange={e=>setMemoryText(e.target.value)} placeholder="Add confirmed memory..." />
+      <button className="primaryButton" onClick={addMemory}>Add Memory</button>
+      <div className="itemList memoryItems">{memories.map(m => <div key={m.id} className="listItem static"><span>{m.content}</span><small>{m.status} · {m.scope}</small></div>)}</div>
+    </>
+
+    if (projectTab === 'context') return <>
+      {summaries.length === 0 && <div className="emptyPanel">No compression summaries yet.</div>}
+      {summaries.map(s => <details key={s.id} className="summaryCard"><summary>{s.token_before} → {s.token_after}</summary><pre>{s.summary}</pre></details>)}
+    </>
+
+    const map: Record<ProjectTab, string> = {
+      sessions: '', agents: '', memory: '', context: '',
+      subagents: 'Subagent profiles will share the AgentProfile schema with narrower tools and isolated sessions.',
+      models: 'Model routing and provider management will appear here. Current composer supports Auto and agent model values.',
+      skills: 'Enable built-in and user skills from ~/.uuagent/skills or project .uuagent/skills.',
+      mcp: 'Configure MCP servers and inspect their connection state here.',
+    }
+    return <div className="sidePlaceholder"><h3>{projectTabs.find(t => t.id === projectTab)?.label}</h3><p>{map[projectTab]}</p><button className="softButton">Planned</button></div>
+  }
+
+  return <div className="appDesktop">
+    <div className="appWindow">
+      <aside className="navRail">
+        <div className="brandBlock"><div className="brandMark">U</div><div className="brandMini">UA</div></div>
+        <nav className="navList">
+          {navItems.map(item => <button key={item.id} className={mainPage === item.id ? 'navItem active' : 'navItem'} onClick={() => setMainPage(item.id)} title={item.label}><span className="navIcon">{item.icon}</span><span>{item.label}</span></button>)}
+        </nav>
+      </aside>
+
+      <aside className="contextSidebar">
+        <div className="sidebarHeader">
+          <h2>{mainPage === 'projects' ? 'Project' : navItems.find(n => n.id === mainPage)?.label}</h2>
+          <p>{activeProject?.name || 'No project selected'}</p>
         </div>
-      </section>
+        {mainPage === 'projects' && <>
+          <div className="projectPicker">
+            <select value={projectId} onChange={e => openProject(e.target.value)}><option value="">Select project</option>{projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select>
+            <input value={newProjectName} onChange={e=>setNewProjectName(e.target.value)} placeholder="Project name" />
+            <input value={newProjectPath} onChange={e=>setNewProjectPath(e.target.value)} placeholder="Workspace path optional" />
+            <button onClick={createProject}>Create</button>
+          </div>
+          <div className="tabGrid">{projectTabs.map(tab => <button key={tab.id} className={projectTab === tab.id ? 'tab active' : 'tab'} onClick={() => setProjectTab(tab.id)}>{tab.label}</button>)}</div>
+        </>}
+        <div className="sidebarBody">{renderSidebarBody()}</div>
+        <div className="statusStrip"><span className="pulse" />{status}</div>
+      </aside>
 
-      <section className="panel">
-        <div className="panelTitle"><span>💬 Sessions</span></div>
-        <div className="buttonRow"><button onClick={createSession}>New</button><button onClick={forkSession}>Fork</button><button onClick={renameSession}>Rename</button><button onClick={deleteSession}>Delete</button></div>
-        <select value={sessionId} onChange={e=>loadSession(e.target.value).catch(err=>setStatus(String(err)))}>{[sessionId, ...sessions.map(s=>s.id)].filter((v,i,a)=>v&&a.indexOf(v)===i).map(id=>{ const s=sessions.find(x=>x.id===id); return <option key={id} value={id}>{s?.title || id}</option> })}</select>
-      </section>
+      <main className="workspace">
+        <header className="workspaceHeader">
+          <div><h1>{activeSession?.title || sessionId}</h1><p>{activeProject?.workspace_path || 'Local workspace'} · {activeAgent?.name || agentId}</p></div>
+          {routeInfo && <div className="routePill">{routeInfo.model}<span>{routeInfo.tier}</span></div>}
+        </header>
 
-      <section className="panel">
-        <div className="panelTitle"><span>🤖 Agent</span><button className="iconButton" title="Agent settings" onClick={()=>setAgentSettingsOpen(true)}>⚙</button></div>
-        <select value={agentId} onChange={e=>selectAgent(e.target.value)}>{agents.map(a=><option key={a.id} value={a.id}>{a.name || a.id}</option>)}</select>
-        <div className="agentSummary"><b>{activeAgent?.name || agentId}</b><span>{activeAgent?.description || 'General-purpose assistant'}</span></div>
-        <div className="buttonRow"><button onClick={newAgent}>New Agent</button><button onClick={()=>setAgentSettingsOpen(true)}>Settings</button></div>
-      </section>
+        <section className="messagesPane">
+          {messages.length === 0 && <div className="emptyState"><div>✨</div><h2>Start a coding session</h2><p>Open a project, choose an agent and ask UUAgent to inspect, explain or modify your code.</p></div>}
+          {messages.map((msg,i)=><div key={i} className={`messageBubble ${msg.role}`}><div className="messageMeta">{msg.role==='user'?'You':msg.role==='system'?'System':msg.role==='tool'?'Tool':msg.model || 'Assistant'}</div><pre>{msg.content}</pre></div>)}
+          <div ref={messagesEndRef}/>
+        </section>
 
-      <div className="statusCard"><span className="pulse"/> {status}</div>
-    </aside>
-
-    <main className="chatColumn">
-      <header className="chatHeader">
-        <div><h2>{activeSession?.title || sessionId}</h2><p>Agent: {activeAgent?.name || agentId}</p></div>
-        {routeInfo && <div className="routePill">{routeInfo.model} <span>{routeInfo.tier}</span></div>}
-      </header>
-      <div className="messagesPane">
-        {messages.length === 0 && <div className="emptyState"><div>✨</div><h3>Start a focused coding session</h3><p>Choose an agent, open a project, then ask UUAgent to inspect, edit, or explain your code.</p></div>}
-        {messages.map((msg,i)=><div key={i} className={`messageBubble ${msg.role}`}><div className="messageMeta">{msg.role==='user'?'👤 You':msg.role==='system'?'⚠ System':msg.role==='tool'?'🛠 Tool':`🤖 ${msg.model || 'Assistant'}`}</div><pre>{msg.content}</pre></div>)}
-        <div ref={messagesEndRef}/>
-      </div>
-      <div className="composer"><input value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); sendMessage() } }} placeholder='Ask UUAgent to work on your code...' /><button className="primaryButton" onClick={sendMessage} disabled={isStreaming || !input.trim()}>{isStreaming?'Working...':'Send'}</button></div>
-    </main>
-
-    <aside className="inspector">
-      <section className="panel glass">
-        <div className="panelTitle"><span>🧠 Memory</span></div>
-        <textarea value={memoryText} onChange={e=>setMemoryText(e.target.value)} placeholder='Add a confirmed memory for future runs...' />
-        <button className="secondaryButton" onClick={addMemory}>Add Memory</button>
-        <div className="memoryList">{memories.slice(0, 8).map(m=><div key={m.id} className="memoryItem"><small>{m.status} · {m.scope}</small><div>{m.content}</div></div>)}</div>
-      </section>
-      <section className="panel glass">
-        <div className="panelTitle"><span>🗜 Compression</span></div>
-        {summaries.length === 0 && <p className="muted">No summaries yet.</p>}
-        {summaries.map(s=><details key={s.id} className="summaryItem"><summary>{s.token_before} → {s.token_after}</summary><pre>{s.summary}</pre></details>)}
-      </section>
-    </aside>
+        <footer className="composerShell">
+          {attachmentNotice && <div className="attachmentNotice">{attachmentNotice}</div>}
+          <div className="composerBox">
+            <button className="attachButton" onClick={onAttachClick} title="Attach image or file">+</button>
+            <textarea value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter' && (e.ctrlKey || e.metaKey)){ e.preventDefault(); sendMessage() } }} placeholder="Ask UUAgent to inspect, edit or explain code... Ctrl+Enter to send" />
+            <button className="sendButton" onClick={sendMessage} disabled={isStreaming || !input.trim()}>{isStreaming?'Working':'Send'}</button>
+            <input ref={fileInputRef} type="file" multiple accept="image/*,.txt,.md,.json,.yaml,.yml,.go,.ts,.tsx" hidden onChange={e=>onFilesSelected(e.target.files)} />
+          </div>
+          <div className="composerMeta">
+            <label>Project<select value={projectId} onChange={e=>openProject(e.target.value)}><option value="">None</option>{projects.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
+            <label>Agent<select value={agentId} onChange={e=>selectAgent(e.target.value)}>{agents.map(a=><option key={a.id} value={a.id}>{a.name || a.id}</option>)}</select></label>
+            <label>Model<select value={modelOverride} onChange={e=>setModelOverride(e.target.value)}>{availableModels.map(m=><option key={m} value={m}>{m === 'auto' ? 'Auto' : m}</option>)}</select></label>
+            <button className="softButton" onClick={()=>setAgentSettingsOpen(true)}>Agent Settings</button>
+          </div>
+        </footer>
+      </main>
+    </div>
 
     {isAgentSettingsOpen && <div className="modalBackdrop" onMouseDown={()=>setAgentSettingsOpen(false)}>
       <div className="modal" onMouseDown={e=>e.stopPropagation()}>
-        <div className="modalHeader"><div><h2>Agent Settings</h2><p>Configure prompt, model routing, tools, skills and MCP access.</p></div><button className="iconButton" onClick={()=>setAgentSettingsOpen(false)}>✕</button></div>
+        <div className="modalHeader"><div><h2>Agent Settings</h2><p>Configure prompt, model routing, tools, skills and MCP access.</p></div><button className="iconButton" onClick={()=>setAgentSettingsOpen(false)}>×</button></div>
         {agentDraft && <div className="settingsGrid">
           <label>ID<input value={agentDraft.id || ''} onChange={e=>updateAgentDraft({ id:e.target.value })} disabled={agentDraft.id === 'default'} /></label>
           <label>Name<input value={agentDraft.name || ''} onChange={e=>updateAgentDraft({ name:e.target.value })} /></label>
           <label className="wide">Description<input value={agentDraft.description || ''} onChange={e=>updateAgentDraft({ description:e.target.value })} /></label>
           <label className="wide">System Prompt<textarea value={agentDraft.system_prompt || ''} onChange={e=>updateAgentDraft({ system_prompt:e.target.value })} /></label>
-          <label>Model<input value={agentDraft.model || ''} onChange={e=>updateAgentDraft({ model:e.target.value })} placeholder='empty = route automatically' /></label>
+          <label>Model<input value={agentDraft.model || ''} onChange={e=>updateAgentDraft({ model:e.target.value })} placeholder="empty = route automatically" /></label>
           <label>Permission<input value={agentDraft.permission_mode || ''} onChange={e=>updateAgentDraft({ permission_mode:e.target.value })} /></label>
-          <label>Max Turns<input type='number' value={agentDraft.max_turns || 0} onChange={e=>updateAgentDraft({ max_turns:Number(e.target.value) })} /></label>
-          <label className="wide">Tools<input value={joinList(agentDraft.enabled_tools)} onChange={e=>updateAgentDraft({ enabled_tools:parseList(e.target.value) })} placeholder='read, write, grep, list_dir' /></label>
-          <label className="wide">Skills<input value={joinList(agentDraft.enabled_skills)} onChange={e=>updateAgentDraft({ enabled_skills:parseList(e.target.value) })} placeholder='mock-planner' /></label>
-          <label className="wide">MCP Servers<input value={joinList(agentDraft.enabled_mcp_servers)} onChange={e=>updateAgentDraft({ enabled_mcp_servers:parseList(e.target.value) })} placeholder='mock' /></label>
+          <label>Max Turns<input type="number" value={agentDraft.max_turns || 0} onChange={e=>updateAgentDraft({ max_turns:Number(e.target.value) })} /></label>
+          <label className="wide">Tools<input value={joinList(agentDraft.enabled_tools)} onChange={e=>updateAgentDraft({ enabled_tools:parseList(e.target.value) })} placeholder="read, write, grep, list_dir" /></label>
+          <label className="wide">Skills<input value={joinList(agentDraft.enabled_skills)} onChange={e=>updateAgentDraft({ enabled_skills:parseList(e.target.value) })} placeholder="mock-planner" /></label>
+          <label className="wide">MCP Servers<input value={joinList(agentDraft.enabled_mcp_servers)} onChange={e=>updateAgentDraft({ enabled_mcp_servers:parseList(e.target.value) })} placeholder="mock" /></label>
         </div>}
         <div className="modalActions"><button onClick={newAgent}>New</button><button onClick={cloneAgent}>Clone</button><button onClick={deleteAgent} disabled={agentDraft?.id === 'default'}>Delete</button><button className="primaryButton" onClick={saveAgent}>Save Agent</button></div>
       </div>
