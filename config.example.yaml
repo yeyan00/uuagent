@@ -1,83 +1,107 @@
-# UUAgent 配置文件
+# UUAgent 配置文件（YAML 是默认/推荐格式）
+#
+# 配置合并顺序（后者覆盖前者）：
+# 1. 内置 defaults
+# 2. 用户配置：~/.uuagent/config.yaml
+# 3. 当前目录：./config.yaml
+# 4. 项目配置：<workspace>/.uuagent/project.yaml（后续项目打开时加载）
+# 5. 显式配置：UUAGENT_CONFIG 指向的 yaml
+# 6. 环境变量：UUAGENT_PROXY_URL / UUAGENT_MODEL / UUAGENT_API_KEY
+#
+# 注意：API key/secrets 建议放环境变量，不写入项目配置、不提交仓库。
 
 # ============================================
-# CLIProxyAPI 配置 (模型代理 + 管理面板)
+# 服务配置
 # ============================================
-port: 8765
-
-remote-management:
-  allow-remote: false
-  secret-key: "uuagent-admin"
-  disable-control-panel: false
-
-api-keys:
-  - "uuagent-local"
-
-# Gemini API Key
-# gemini-api-key:
-#   - api-key: "AIzaSy..."
-
-# Claude API Key
-# claude-api-key:
-#   - api-key: "sk-ant-..."
-
-# OpenAI API Key
-# openai-api-key:
-#   - api-key: "sk-..."
-
-# 本地 Ollama
-# ollama:
-#   base-url: "http://127.0.0.1:11434"
-
-routing:
-  strategy: "round-robin"
+port: 18463
 
 # ============================================
-# UUAgent 配置 (智能路由 + Agent 行为)
+# UUAgent 全局默认行为
 # ============================================
 agent:
-  # LLM 代理地址 (指向自己嵌入的 CLIProxyAPI)
-  proxy-url: "http://localhost:8765"
+  # OpenAI-compatible base URL，最终请求为：{proxy-url}/chat/completions
+  # 例如 OpenAI 官方通常是 https://api.openai.com/v1
+  proxy-url: "http://localhost:18463/v1"
 
-  # 智能路由 — 按任务复杂度自动选模型
   routing:
     tiers:
       fast: ["gpt-4o-mini", "gemini-2.5-flash", "deepseek-chat", "qwen2.5:7b"]
       strong: ["claude-sonnet-4", "gpt-4o", "deepseek-coder"]
       large_ctx: ["gemini-2.5-pro", "claude-sonnet-4"]
-
     rules:
       - name: simple_qa
         patterns: ["什么意思", "解释", "what is", "explain", "是什么", "怎么看"]
         tier: fast
-
       - name: code_edit
         patterns: ["修改", "重构", "实现", "fix", "implement", "refactor", "编辑"]
         tier: strong
-
       - name: long_context
         condition: "tokens > 50000"
         tier: large_ctx
-
-    # 规则匹配不到时的默认 tier
     fallback: strong
 
-  # Memory 配置
   memory:
-    auto_draft: true       # AI 写的 memory 标记为 draft
-    max_entries: 100       # 每个 project 最大 memory 条目
+    auto_draft: true
+    max_entries: 100
     max_chars_per_entry: 2000
 
-  # Subagent 配置
+  context:
+    max_tokens: 32000
+    compress_threshold: 0.8
+    keep_last_messages: 12
+    auto_compress: true
+
   subagent:
-    max_concurrent: 3      # 最大并行子任务
-    max_turns: 20          # 子任务最大轮数
-    blocked_tools: ["delegate", "memory"]  # 子任务禁用的工具
+    max_concurrent: 3
+    max_turns: 20
+    blocked_tools: ["delegate", "memory"]
 
-  # Agent 行为
-  max_turns: 50            # 主循环最大轮数
-  default_permission: "workspace-write"  # read-only / workspace-write / danger-full-access
+  max_turns: 50
+  default_permission: "workspace-write" # read-only / workspace-write / danger-full-access
 
-  # UI
   ui:
     theme: dark
+
+# ============================================
+# Web 可配置 Agent Profiles
+# 用户级建议放 ~/.uuagent/config.yaml；项目级建议放 <workspace>/.uuagent/project.yaml
+# ============================================
+agents:
+  - id: default
+    name: Default Agent
+    description: General-purpose coding assistant
+    system_prompt: ""
+    model: ""                 # 空则走 routing
+    enabled_tools: ["read", "write", "grep", "list_dir"]
+    enabled_skills: ["mock-planner"]
+    enabled_mcp_servers: ["mock"]
+    permission_mode: "workspace-write"
+    max_turns: 50
+
+# ============================================
+# Skills 配置
+# 用户自定义 skill 建议放 ~/.uuagent/skills/<name>/SKILL.md
+# 项目自定义 skill 建议放 <workspace>/.uuagent/skills/<name>/SKILL.md
+# ============================================
+skills:
+  - name: mock-planner
+    description: Built-in simulated planning skill
+    path: ""                  # 可指向 SKILL.md；为空则使用 prompt
+    prompt: "First state a short plan, then execute concisely."
+    enabled: true
+    scope: global
+
+# ============================================
+# MCP Servers 配置
+# 用户级建议放 ~/.uuagent/config.yaml；项目级建议放 <workspace>/.uuagent/project.yaml
+# secrets/env 不建议写入项目文件，优先从系统环境变量读取。
+# ============================================
+mcp_servers:
+  - id: mock
+    name: Mock MCP
+    command: ""
+    args: []
+    env: {}
+    transport: mock          # mock / stdio / sse / http
+    enabled: true
+    scope: global

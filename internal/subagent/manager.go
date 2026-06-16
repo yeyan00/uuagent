@@ -45,13 +45,13 @@ func (m *Manager) Delegate(parent *agent.Agent, goals []string) []Result {
 			defer func() { <-sem }() // 释放信号量
 
 			// 智能路由: 简单子任务用便宜模型
-			model, tier := m.router.Route(g, 0)
+			model, _ := m.router.Route(g, 0)
 
 			childID := fmt.Sprintf("sa-%d", idx)
 
 			// 创建隔离的子 Agent
-			// 子 Agent 用路由决定的模型，受限工具集
-			child := agent.NewWithModel(model, m.blockedTools())
+			// 子 Agent 用路由决定的模型，受限工具集，并继承父 Agent 的模型代理配置。
+			child := parent.NewChild(model, m.blockedTools())
 
 			result, err := child.RunOnce(context.Background(), g)
 			if err != nil {

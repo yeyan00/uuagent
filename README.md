@@ -11,14 +11,20 @@ go install github.com/uuagent/uuagent@latest
 # 或下载预编译版本
 curl -fsSL https://uuagent.dev/install.sh | bash
 
-# 启动 (自动打开浏览器)
-uuagent              # → http://localhost:8765
+# 首次配置：生成 ~/.uuagent/config.yaml 等本地文件
+uuagent --setup
+
+# 启动服务端 + Web UI，默认会自动打开浏览器
+uuagent              # → http://localhost:18463/ui/
+
+# 如果不想自动打开浏览器
+uuagent --no-browser # 然后手动访问 http://localhost:18463/ui/
+
+# 指定端口
+uuagent --port 19080 # → http://localhost:19080/ui/
 
 # 终端模式
 uuagent --tui
-
-# 首次配置
-uuagent --setup
 ```
 
 ## 核心特性
@@ -50,7 +56,7 @@ UUAgent 二进制
 
 ```yaml
 # 模型代理 (CLIProxyAPI)
-port: 8765
+port: 18463
 remote-management:
   secret-key: "admin"
   disable-control-panel: false
@@ -84,16 +90,44 @@ agent:
     max_entries: 100
 ```
 
+## 运行与访问
+
+Web UI 不是单独的静态网页服务，默认由 Go 后端一起提供。因此需要先启动 UUAgent 服务端：
+
+```bash
+go run ./cmd/uuagent --no-browser
+```
+
+然后访问：
+
+```text
+http://localhost:18463/ui/
+```
+
+常用 API：
+
+```text
+http://localhost:18463/api/health
+http://localhost:18463/api/agents
+http://localhost:18463/api/sessions
+```
+
 ## 开发
 
 ```bash
-# 前端开发
-cd web && npm install && npm run dev
+# 后端开发，提供 /api 和 /ui
+go run ./cmd/uuagent --no-browser
 
-# 后端开发
-go run ./cmd/uuagent
+# 前端开发模式：Vite 会把 /api 代理到 http://localhost:18463
+cd web
+npm install
+npm run dev
+# 访问 http://localhost:5173
 
-# 构建
+# 全量测试：Go tests + Web Vitest + Web build
+bash scripts/test.sh
+
+# 构建 Go 二进制
 go build -o uuagent ./cmd/uuagent
 
 # 桌面版 (需要 wails)

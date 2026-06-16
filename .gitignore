@@ -6,9 +6,11 @@
 *.so
 *.dylib
 
-# Test
+# Test artifacts and local secrets
 *.test
 *.out
+tests/.env
+tests/models.txt
 
 # Go
 vendor/
@@ -29,6 +31,8 @@ Thumbs.db
 
 # Config (不要提交含 API Key 的配置)
 config.yaml
+.env
+*.local.env
 
 # Data
 data/
@@ -38,3 +42,12 @@ data/
 # Logs
 *.log
 logs/
+
+# Pi local state
+.pi/
+findings.md
+progress.md
+task_plan.md
+docs/DEVELOPMENT_TODO.md
+docs/TEST_TODO.md
+.tools

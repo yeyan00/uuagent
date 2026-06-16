@@ -53,8 +53,17 @@ func (r *Registry) List() []string {
 
 // Definitions 返回 OpenAI function calling 格式的工具定义
 func (r *Registry) Definitions() []map[string]any {
+	return r.DefinitionsFor(nil)
+}
+
+// DefinitionsFor returns OpenAI function calling definitions filtered by an
+// optional allow-list. Empty allow-list means all tools are exposed.
+func (r *Registry) DefinitionsFor(allowed map[string]bool) []map[string]any {
 	defs := make([]map[string]any, 0, len(r.tools))
 	for name, t := range r.tools {
+		if len(allowed) > 0 && !allowed[name] {
+			continue
+		}
 		defs = append(defs, map[string]any{
 			"type": "function",
 			"function": map[string]any{
