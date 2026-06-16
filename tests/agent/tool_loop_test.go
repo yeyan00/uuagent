@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/yeyan00/uuagent/internal/agent"
@@ -68,5 +70,99 @@ func TestAgentToolLoopSendsToolResultBackToModel(t *testing.T) {
 	}
 	if !foundOpenAIToolCall {
 		t.Fatalf("second model call did not include OpenAI-compatible assistant tool call: %#v", secondMessages)
+	}
+}
+
+func TestAgentProfileAskPermissionReturnsApprovalPayloadForOutsideRead(t *testing.T) {
+	t.Setenv("UUAGENT_HOME", t.TempDir())
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	calls := 0
+	var toolResult string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		if calls == 1 {
+			args, _ := json.Marshal(map[string]string{"path": outside})
+			_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"tool_calls": []any{map[string]any{"id": "tc-read", "type": "function", "function": map[string]any{"name": "read", "arguments": string(args)}}}}}}})
+			return
+		}
+		var req struct {
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		for _, msg := range req.Messages {
+			if msg.Role == "tool" {
+				toolResult = msg.Content
+			}
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"done"}}]}`))
+	}))
+	defer ts.Close()
+
+	cfg := config.Default()
+	cfg.Agent.ProxyURL = ts.URL + "/v1"
+	cfg.Agents = []config.AgentProfile{{ID: "asker", Name: "Asker", PermissionMode: "ask"}}
+	a := agent.New(cfg)
+	events, err := a.RunWithAgent(context.Background(), "approval-agent", "asker", "read outside")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for evt := range events {
+		if evt.Type == "error" {
+			t.Fatal(evt.Text)
+		}
+	}
+	if !strings.Contains(toolResult, `"approval_required":true`) || !strings.Contains(toolResult, `"tool":"read"`) {
+		t.Fatalf("expected approval payload tool result, got %s", toolResult)
+	}
+}
+
+func TestAgentDefaultAskPermissionReturnsApprovalPayload(t *testing.T) {
+	t.Setenv("UUAGENT_HOME", t.TempDir())
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	calls := 0
+	var toolResult string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		if calls == 1 {
+			args, _ := json.Marshal(map[string]string{"path": outside})
+			_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"tool_calls": []any{map[string]any{"id": "tc-read", "type": "function", "function": map[string]any{"name": "read", "arguments": string(args)}}}}}}})
+			return
+		}
+		var req struct {
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		for _, msg := range req.Messages {
+			if msg.Role == "tool" {
+				toolResult = msg.Content
+			}
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"done"}}]}`))
+	}))
+	defer ts.Close()
+
+	cfg := config.Default()
+	cfg.Agent.ProxyURL = ts.URL + "/v1"
+	cfg.Agent.DefaultPermission = "ask"
+	a := agent.New(cfg)
+	events, err := a.RunWithAgent(context.Background(), "approval-default", "", "read outside")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for evt := range events {
+		if evt.Type == "error" {
+			t.Fatal(evt.Text)
+		}
+	}
+	if !strings.Contains(toolResult, `"approval_required":true`) || !strings.Contains(toolResult, `"tool":"read"`) {
+		t.Fatalf("expected approval payload tool result, got %s", toolResult)
 	}
 }

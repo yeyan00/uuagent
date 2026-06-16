@@ -102,9 +102,26 @@ type ContextConfig struct {
 
 // SubagentConfig controls delegated subagents.
 type SubagentConfig struct {
-	MaxConcurrent int      `yaml:"max_concurrent" json:"max_concurrent"`
-	MaxTurns      int      `yaml:"max_turns" json:"max_turns"`
-	BlockedTools  []string `yaml:"blocked_tools" json:"blocked_tools"`
+	MaxConcurrent int               `yaml:"max_concurrent" json:"max_concurrent"`
+	MaxTurns      int               `yaml:"max_turns" json:"max_turns"`
+	BlockedTools  []string          `yaml:"blocked_tools" json:"blocked_tools"`
+	Profiles      []SubagentProfile `yaml:"profiles" json:"profiles"`
+}
+
+// SubagentProfile configures a delegated child agent.
+type SubagentProfile struct {
+	ID                string   `yaml:"id" json:"id"`
+	Name              string   `yaml:"name" json:"name"`
+	Description       string   `yaml:"description" json:"description"`
+	SystemPrompt      string   `yaml:"system_prompt" json:"system_prompt"`
+	Model             string   `yaml:"model" json:"model"`
+	EnabledTools      []string `yaml:"enabled_tools" json:"enabled_tools"`
+	EnabledSkills     []string `yaml:"enabled_skills" json:"enabled_skills"`
+	EnabledMCPServers []string `yaml:"enabled_mcp_servers" json:"enabled_mcp_servers"`
+	BlockedTools      []string `yaml:"blocked_tools" json:"blocked_tools"`
+	PermissionMode    string   `yaml:"permission_mode" json:"permission_mode"`
+	MaxTurns          int      `yaml:"max_turns" json:"max_turns"`
+	WorkspacePath     string   `yaml:"workspace_path" json:"workspace_path"`
 }
 
 // UIConfig controls UI preferences.
@@ -147,11 +164,10 @@ func Default() *Config {
 			UI:                UIConfig{Theme: "dark"},
 		},
 		Agents: []AgentProfile{{
-			ID:             "default",
-			Name:           "Default Agent",
-			Description:    "General-purpose coding assistant",
-			PermissionMode: "workspace-write",
-			MaxTurns:       50,
+			ID:          "default",
+			Name:        "Default Agent",
+			Description: "General-purpose coding assistant",
+			MaxTurns:    50,
 		}},
 		Skills: []SkillConfig{{
 			Name:        "mock-planner",

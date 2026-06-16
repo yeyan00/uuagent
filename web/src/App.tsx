@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import './App.css'
 
-interface ChatEvent { type: string; model?: string; tier?: string; text?: string; tool_name?: string; tool_id?: string }
+interface ChatEvent { type: string; run_id?: string; model?: string; tier?: string; text?: string; tool_name?: string; tool_id?: string }
 interface Message { role: 'user' | 'assistant' | 'system' | 'tool'; content: string; model?: string; tier?: string }
 interface Project { id: string; name: string; workspace_path: string; temporary: boolean }
 interface AgentProfile { id: string; name: string; description?: string; system_prompt?: string; model?: string; enabled_tools?: string[]; enabled_skills?: string[]; enabled_mcp_servers?: string[]; permission_mode?: string; max_turns?: number }
@@ -95,11 +95,13 @@ function App() {
   const [newProjectPath, setNewProjectPath] = useState('')
   const [memoryText, setMemoryText] = useState('')
   const [status, setStatus] = useState('Ready')
+  const [currentRunId, setCurrentRunId] = useState('')
   const [agentDraft, setAgentDraft] = useState<AgentProfile | null>(null)
   const [isAgentSettingsOpen, setAgentSettingsOpen] = useState(false)
   const [attachmentNotice, setAttachmentNotice] = useState('')
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const abortRef = useRef<AbortController | null>(null)
 
   const activeProject = projects.find(p => p.id === projectId)
   const activeAgent = agents.find(a => a.id === agentId)
@@ -204,11 +206,13 @@ function App() {
   const sendMessage = async () => {
     if (!input.trim() || isStreaming) return
     const prompt = input
+    const controller = new AbortController()
+    abortRef.current = controller
     setMessages(prev => [...prev, { role: 'user', content: prompt }])
-    setInput(''); setIsStreaming(true); setRouteInfo(null); setStatus('Thinking...')
+    setInput(''); setIsStreaming(true); setCurrentRunId(''); setRouteInfo(null); setStatus('Thinking...')
     try {
       const url = `/api/chat?prompt=${encodeURIComponent(prompt)}&session_id=${encodeURIComponent(sessionId)}&agent_id=${encodeURIComponent(agentId)}`
-      const response = await fetch(url)
+      const response = await fetch(url, { signal: controller.signal })
       const reader = response.body?.getReader(); const decoder = new TextDecoder(); if (!reader) return
       let assistantContent = ''; let currentModel = ''
       while (true) {
@@ -218,7 +222,8 @@ function App() {
           if (!line.startsWith('data: ')) continue
           try {
             const evt: ChatEvent = JSON.parse(line.slice(6))
-            if (evt.type === 'route') { currentModel = evt.model || ''; setRouteInfo({ model: evt.model || '', tier: evt.tier || '' }) }
+            if (evt.type === 'run') setCurrentRunId(evt.run_id || '')
+            else if (evt.type === 'route') { currentModel = evt.model || ''; setRouteInfo({ model: evt.model || '', tier: evt.tier || '' }) }
             else if (evt.type === 'content') {
               assistantContent += evt.text || ''
               setMessages(prev => { const updated = [...prev]; const last = updated[updated.length - 1]; if (last?.role === 'assistant') updated[updated.length - 1] = { ...last, content: assistantContent }; else updated.push({ role: 'assistant', content: assistantContent, model: currentModel }); return updated })
@@ -229,8 +234,18 @@ function App() {
         }
       }
       await refresh(); setStatus('Done')
-    } catch (err) { setMessages(prev => [...prev, { role: 'system', content: `Error: ${err}` }]); setStatus(String(err)) }
-    finally { setIsStreaming(false) }
+    } catch (err) {
+      if ((err as Error)?.name === 'AbortError') setStatus('Stopped')
+      else { setMessages(prev => [...prev, { role: 'system', content: `Error: ${err}` }]); setStatus(String(err)) }
+    }
+    finally { setIsStreaming(false); setCurrentRunId(''); abortRef.current = null }
+  }
+
+  const stopRun = async () => {
+    const runId = currentRunId
+    if (runId) await fetch(`/api/runs/${encodeURIComponent(runId)}/stop`, { method: 'POST' }).catch(() => undefined)
+    abortRef.current?.abort()
+    setStatus('Stopping...')
   }
 
   const renderSidebarBody = () => {
@@ -315,7 +330,7 @@ function App() {
           <div className="composerBox">
             <textarea value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter' && (e.ctrlKey || e.metaKey)){ e.preventDefault(); sendMessage() } }} placeholder="Ask UUAgent to inspect, edit or explain code... Ctrl+Enter to send" />
             <button className="attachButton" onClick={onAttachClick} title="Attach image or file">＋</button>
-            <button className="sendButton" onClick={sendMessage} disabled={isStreaming || !input.trim()}>{isStreaming?'Working':'Send'}</button>
+            {isStreaming ? <button className="sendButton" onClick={stopRun}>Stop</button> : <button className="sendButton" onClick={sendMessage} disabled={!input.trim()}>Send</button>}
             <input ref={fileInputRef} type="file" multiple accept="image/*,.txt,.md,.json,.yaml,.yml,.go,.ts,.tsx" hidden onChange={e=>onFilesSelected(e.target.files)} />
           </div>
           <div className="composerMeta">

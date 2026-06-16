@@ -10,6 +10,7 @@ import (
 	"github.com/yeyan00/uuagent/internal/agent"
 	"github.com/yeyan00/uuagent/internal/config"
 	"github.com/yeyan00/uuagent/internal/memory"
+	"github.com/yeyan00/uuagent/internal/subagent"
 	"github.com/yeyan00/uuagent/internal/types"
 )
 
@@ -25,6 +26,15 @@ func RegisterRoutes(r *gin.RouterGroup, agt *agent.Agent) {
 	r.PATCH("/agents/:id", handlePatchAgent(agt))
 	r.DELETE("/agents/:id", handleDeleteAgent(agt))
 	r.POST("/agents/:id/clone", handleCloneAgent(agt))
+	r.GET("/subagents", handleListSubagents(agt))
+	r.POST("/subagents", handleUpsertSubagent(agt))
+	r.PATCH("/subagents/:id", handlePatchSubagent(agt))
+	r.DELETE("/subagents/:id", handleDeleteSubagent(agt))
+	r.GET("/subagent/tasks", handleListSubagentTasks(agt))
+	r.GET("/skills", handleListSkills(agt))
+	r.GET("/skills/:name/content", handleGetSkillContent(agt))
+	r.GET("/mcp/servers", handleListMCPServers(agt))
+	r.GET("/tools", handleListTools(agt))
 	r.GET("/chat", handleChatSSE(agt))
 	r.GET("/route", handleRouteInfo(agt))
 	r.GET("/sessions", handleListSessions(agt))
@@ -33,11 +43,13 @@ func RegisterRoutes(r *gin.RouterGroup, agt *agent.Agent) {
 	r.DELETE("/sessions/:id", handleDeleteSession(agt))
 	r.GET("/sessions/:id/summaries", handleSessionSummaries(agt))
 	r.POST("/sessions/:id/fork", handleForkSession(agt))
+	r.POST("/sessions/:id/memory/refresh", handleRefreshSessionMemory(agt))
 	r.GET("/memory", handleListMemory(agt))
 	r.POST("/memory", handleCreateMemory(agt))
 	r.PATCH("/memory/:id", handleEditMemory(agt))
 	r.POST("/memory/:id/confirm", handleConfirmMemory(agt))
 	r.DELETE("/memory/:id", handleDeleteMemory(agt))
+	r.POST("/runs/:id/stop", handleStopRun(agt))
 	r.GET("/config", handleConfig(agt))
 	r.GET("/health", handleHealth)
 }
@@ -93,6 +105,7 @@ func handleOpenProject(agt *agent.Agent) gin.HandlerFunc {
 			return
 		}
 		agt.ReloadConfig(cfg)
+		agt.ReloadProjectSkills(p.WorkspacePath)
 		c.JSON(http.StatusOK, gin.H{"project": p, "config_sources": sources, "config": cfg.Safe()})
 	}
 }
@@ -175,6 +188,62 @@ func handleCloneAgent(agt *agent.Agent) gin.HandlerFunc {
 	}
 }
 
+func handleListSubagents(agt *agent.Agent) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"subagents": agt.SubagentProfiles()})
+	}
+}
+
+func handleUpsertSubagent(agt *agent.Agent) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var profile config.SubagentProfile
+		if err := c.ShouldBindJSON(&profile); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		profile, err := agt.UpsertSubagentProfile(profile)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, profile)
+	}
+}
+
+func handlePatchSubagent(agt *agent.Agent) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var profile config.SubagentProfile
+		if err := c.ShouldBindJSON(&profile); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		profile.ID = c.Param("id")
+		profile, err := agt.UpsertSubagentProfile(profile)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, profile)
+	}
+}
+
+func handleDeleteSubagent(agt *agent.Agent) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if err := agt.DeleteSubagentProfile(c.Param("id")); err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	}
+}
+
+func handleListSubagentTasks(agt *agent.Agent) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		m := subagent.NewManager(agt.Config().Agent.Subagent, nil)
+		c.JSON(http.StatusOK, gin.H{"tasks": m.Tasks()})
+	}
+}
+
 // handleChatSSE streams chat events over SSE.
 func handleChatSSE(agt *agent.Agent) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -199,7 +268,8 @@ func handleChatSSE(agt *agent.Agent) gin.HandlerFunc {
 				parts = append(parts, types.ContentPart{Type: "image_url", ImageURL: &types.ImageURL{URL: imageURL}})
 			}
 		}
-		events, err := agt.RunWithAgentParts(c.Request.Context(), sessionID, agentID, parts)
+		projectID := c.Query("project_id")
+		events, err := agt.RunWithAgentProjectParts(c.Request.Context(), sessionID, agentID, projectID, parts)
 		if err != nil {
 			writeSSE(c, agent.Event{Type: "error", Text: err.Error()})
 			return
@@ -208,6 +278,48 @@ func handleChatSSE(agt *agent.Agent) gin.HandlerFunc {
 		for evt := range events {
 			writeSSE(c, evt)
 		}
+	}
+}
+
+func handleListSkills(agt *agent.Agent) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"skills": agt.Skills().List(), "diagnostics": agt.Skills().Diagnostics()})
+	}
+}
+
+func handleGetSkillContent(agt *agent.Agent) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		content, ok := agt.Skills().Content(c.Param("name"))
+		if !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "skill not found"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"name": c.Param("name"), "content": content})
+	}
+}
+
+func handleListMCPServers(agt *agent.Agent) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		servers := []gin.H{}
+		for _, srv := range agt.Config().MCPServers {
+			status := "disabled"
+			if srv.Enabled {
+				status = "connected"
+			}
+			servers = append(servers, gin.H{"id": srv.ID, "name": srv.Name, "transport": srv.Transport, "enabled": srv.Enabled, "status": status})
+		}
+		c.JSON(http.StatusOK, gin.H{"servers": servers})
+	}
+}
+
+func handleListTools(agt *agent.Agent) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		tools := []string{}
+		tools = append(tools, agt.ToolNames()...)
+		for _, tool := range agt.MCPTools(c.Request.Context()) {
+			tools = append(tools, tool.Name)
+		}
+		c.JSON(http.StatusOK, gin.H{"tools": tools})
 	}
 }
 
@@ -303,6 +415,13 @@ func handleForkSession(agt *agent.Agent) gin.HandlerFunc {
 	}
 }
 
+func handleRefreshSessionMemory(agt *agent.Agent) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		snapshot := agt.RefreshSessionMemorySnapshot(c.Param("id"), c.Query("project_id"), c.Query("agent_id"))
+		c.JSON(http.StatusOK, gin.H{"memory_snapshot": snapshot})
+	}
+}
+
 type memoryRequest struct {
 	Content string        `json:"content"`
 	Project string        `json:"project"`
@@ -315,7 +434,8 @@ func handleListMemory(agt *agent.Agent) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		status := memory.Status(c.Query("status"))
 		project := c.Query("project")
-		c.JSON(http.StatusOK, gin.H{"memories": agt.Memories().List(status, project), "path": agt.Memories().Path()})
+		scope := c.Query("scope")
+		c.JSON(http.StatusOK, gin.H{"memories": agt.Memories().ListFiltered(status, project, scope), "path": agt.Memories().Path()})
 	}
 }
 
@@ -370,6 +490,16 @@ func handleDeleteMemory(agt *agent.Agent) gin.HandlerFunc {
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	}
+}
+
+func handleStopRun(agt *agent.Agent) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !agt.StopRun(c.Param("id")) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "run not found"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "stopping"})
 	}
 }
 

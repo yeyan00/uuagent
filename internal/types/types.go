@@ -5,6 +5,7 @@ import "encoding/json"
 // Event is an Agent event streamed over SSE.
 type Event struct {
 	Type     string `json:"type"` // route, status, content, tool_start, tool_result, error, done
+	RunID    string `json:"run_id,omitempty"`
 	Model    string `json:"model,omitempty"`
 	Tier     string `json:"tier,omitempty"`
 	Text     string `json:"text,omitempty"`

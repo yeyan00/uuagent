@@ -49,3 +49,18 @@ func TestMemoryBuildSystemPromptOnlyConfirmed(t *testing.T) {
 		t.Fatalf("unexpected prompt: %q", prompt)
 	}
 }
+
+func TestMemoryListFiltersByScope(t *testing.T) {
+	m := memory.NewManagerAt("")
+	m.Add("project memory", "p", "project", "user", memory.StatusConfirmed)
+	m.Add("session memory", "p", "session", "user", memory.StatusConfirmed)
+	m.Add("other project session memory", "other", "session", "user", memory.StatusConfirmed)
+
+	list := m.ListFiltered(memory.StatusConfirmed, "p", "session")
+	if len(list) != 1 {
+		t.Fatalf("expected one scoped memory, got %+v", list)
+	}
+	if list[0].Content != "session memory" || list[0].Scope != "session" || list[0].Project != "p" {
+		t.Fatalf("unexpected scoped memory: %+v", list[0])
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/yeyan00/uuagent/internal/config"
@@ -42,6 +43,8 @@ type Agent struct {
 	blockedTools  map[string]bool
 	enabledSkills []string
 	httpClient    *http.Client
+	runs          map[string]context.CancelFunc
+	runsMu        sync.Mutex
 }
 
 // New creates an Agent.
@@ -57,6 +60,7 @@ func New(cfg *config.Config) *Agent {
 		memory:     memory.NewManager(),
 		projects:   project.NewStore(""),
 		httpClient: &http.Client{Timeout: 120 * time.Second},
+		runs:       map[string]context.CancelFunc{},
 	}
 }
 
@@ -76,6 +80,15 @@ func (a *Agent) NewChild(model string, blockedTools map[string]bool) *Agent {
 	child.fixedModel = model
 	child.blockedTools = blockedTools
 	child.enabledSkills = append([]string(nil), a.enabledSkills...)
+	return child
+}
+
+// NewChildWithSession creates a restricted child agent with an isolated session store.
+func (a *Agent) NewChildWithSession(model string, blockedTools map[string]bool, store *session.Store) *Agent {
+	child := a.NewChild(model, blockedTools)
+	if store != nil {
+		child.session = store
+	}
 	return child
 }
 
@@ -112,14 +125,80 @@ func (a *Agent) ReloadConfig(cfg *config.Config) {
 	a.skills = skills.NewRegistryFromConfig(cfg)
 }
 
+// ReloadProjectSkills overlays project-local skills onto the active registry.
+func (a *Agent) ReloadProjectSkills(workspace string) {
+	a.skills.ScanProject(workspace)
+}
+
 // Sessions exposes the session store for API handlers.
 func (a *Agent) Sessions() *session.Store { return a.session }
 
 // Memories exposes the memory manager for API handlers.
 func (a *Agent) Memories() *memory.Manager { return a.memory }
 
+// RefreshSessionMemorySnapshot rebuilds the frozen memory snapshot for a session.
+func (a *Agent) RefreshSessionMemorySnapshot(sessionID, projectID, agentID string) string {
+	sess := a.session.GetOrCreate(sessionID)
+	snapshot := a.memory.BuildScopedSystemPrompt(projectID, agentID, sessionID)
+	sess.RefreshMemorySnapshot(snapshot)
+	return snapshot
+}
+
 // Projects exposes the project store for API handlers.
 func (a *Agent) Projects() *project.Store { return a.projects }
+
+// Skills returns the active skill registry for API handlers.
+func (a *Agent) Skills() *skills.Registry { return a.skills }
+
+// MCPTools returns tool descriptors exposed by the MCP client.
+func (a *Agent) MCPTools(ctx context.Context) []mcp.Tool {
+	if a.mcp == nil || !a.isMCPServerEnabled("mock") {
+		return nil
+	}
+	tools, err := a.mcp.ListTools(ctx)
+	if err != nil {
+		return nil
+	}
+	return tools
+}
+
+func (a *Agent) isMCPServerEnabled(id string) bool {
+	for _, srv := range a.cfg.MCPServers {
+		if srv.ID == id {
+			return srv.Enabled
+		}
+	}
+	return false
+}
+
+// ToolNames returns built-in tool names.
+func (a *Agent) ToolNames() []string { return a.tools.List() }
+
+// StopRun cancels an active agent run by id.
+func (a *Agent) StopRun(runID string) bool {
+	a.runsMu.Lock()
+	cancel, ok := a.runs[runID]
+	a.runsMu.Unlock()
+	if !ok {
+		return false
+	}
+	cancel()
+	return true
+}
+
+func (a *Agent) registerRun(parent context.Context, runID string) context.Context {
+	ctx, cancel := context.WithCancel(parent)
+	a.runsMu.Lock()
+	a.runs[runID] = cancel
+	a.runsMu.Unlock()
+	return ctx
+}
+
+func (a *Agent) unregisterRun(runID string) {
+	a.runsMu.Lock()
+	delete(a.runs, runID)
+	a.runsMu.Unlock()
+}
 
 // Route returns the model routing decision without running the agent.
 func (a *Agent) Route(prompt string, tokenCount int) (string, router.Tier) {
@@ -143,7 +222,7 @@ func (a *Agent) GetProfile(id string) (config.AgentProfile, bool) {
 	}
 	for _, p := range a.cfg.Agents {
 		if p.ID == id {
-			return p, true
+			return a.normalizeProfile(p), true
 		}
 	}
 	if id == "default" {
@@ -219,6 +298,50 @@ func (a *Agent) CloneProfilePersistent(id, newID, newName string) (config.AgentP
 	return profile, config.SaveUser(a.cfg)
 }
 
+// SubagentProfiles returns configured subagent profiles.
+func (a *Agent) SubagentProfiles() []config.SubagentProfile {
+	out := make([]config.SubagentProfile, len(a.cfg.Agent.Subagent.Profiles))
+	copy(out, a.cfg.Agent.Subagent.Profiles)
+	return out
+}
+
+// UpsertSubagentProfile creates or updates a subagent profile and persists user config.
+func (a *Agent) UpsertSubagentProfile(profile config.SubagentProfile) (config.SubagentProfile, error) {
+	profile = normalizeSubagentProfile(profile)
+	for i := range a.cfg.Agent.Subagent.Profiles {
+		if a.cfg.Agent.Subagent.Profiles[i].ID == profile.ID {
+			a.cfg.Agent.Subagent.Profiles[i] = profile
+			return profile, config.SaveUser(a.cfg)
+		}
+	}
+	a.cfg.Agent.Subagent.Profiles = append(a.cfg.Agent.Subagent.Profiles, profile)
+	return profile, config.SaveUser(a.cfg)
+}
+
+// DeleteSubagentProfile removes a configured subagent profile and persists user config.
+func (a *Agent) DeleteSubagentProfile(id string) error {
+	for i := range a.cfg.Agent.Subagent.Profiles {
+		if a.cfg.Agent.Subagent.Profiles[i].ID == id {
+			a.cfg.Agent.Subagent.Profiles = append(a.cfg.Agent.Subagent.Profiles[:i], a.cfg.Agent.Subagent.Profiles[i+1:]...)
+			return config.SaveUser(a.cfg)
+		}
+	}
+	return fmt.Errorf("subagent profile not found")
+}
+
+func normalizeSubagentProfile(profile config.SubagentProfile) config.SubagentProfile {
+	if profile.ID == "" {
+		profile.ID = strings.ToLower(strings.ReplaceAll(profile.Name, " ", "-"))
+	}
+	if profile.ID == "" {
+		profile.ID = fmt.Sprintf("subagent-%d", time.Now().UnixNano())
+	}
+	if profile.Name == "" {
+		profile.Name = profile.ID
+	}
+	return profile
+}
+
 func (a *Agent) normalizeProfile(profile config.AgentProfile) config.AgentProfile {
 	if profile.ID == "" {
 		profile.ID = strings.ToLower(strings.ReplaceAll(profile.Name, " ", "-"))
@@ -245,32 +368,45 @@ func (a *Agent) Run(ctx context.Context, sessionID string, prompt string) (<-cha
 
 // RunWithAgent runs one turn with an optional configured AgentProfile.
 func (a *Agent) RunWithAgent(ctx context.Context, sessionID, agentID string, prompt string) (<-chan Event, error) {
-	return a.RunWithAgentParts(ctx, sessionID, agentID, []types.ContentPart{{Type: "text", Text: prompt}})
+	return a.RunWithAgentProjectParts(ctx, sessionID, agentID, "", []types.ContentPart{{Type: "text", Text: prompt}})
 }
 
 // RunWithAgentParts supports multimodal user content, including image_url data URLs.
 func (a *Agent) RunWithAgentParts(ctx context.Context, sessionID, agentID string, parts []types.ContentPart) (<-chan Event, error) {
+	return a.RunWithAgentProjectParts(ctx, sessionID, agentID, "", parts)
+}
+
+// RunWithAgentProjectParts runs one turn with project-scoped memory injection.
+func (a *Agent) RunWithAgentProjectParts(ctx context.Context, sessionID, agentID, projectID string, parts []types.ContentPart) (<-chan Event, error) {
+	profile, _ := a.GetProfile(agentID)
+	return a.runWithResolvedProfile(ctx, sessionID, projectID, profile, parts)
+}
+
+func (a *Agent) runWithResolvedProfile(ctx context.Context, sessionID, projectID string, profile config.AgentProfile, parts []types.ContentPart) (<-chan Event, error) {
 	prompt := ""
 	for _, p := range parts {
 		if p.Type == "text" {
 			prompt += p.Text
 		}
 	}
-	profile, _ := a.GetProfile(agentID)
 	model, tier := a.Route(prompt, 0)
 	if profile.Model != "" {
 		model = profile.Model
 	}
+	runID := fmt.Sprintf("run-%d", time.Now().UnixNano())
+	ctx = a.registerRun(ctx, runID)
 	events := make(chan Event, 64)
 
 	go func() {
 		defer close(events)
-		events <- Event{Type: "route", Model: model, Tier: string(tier)}
+		defer a.unregisterRun(runID)
+		events <- Event{Type: "run", RunID: runID}
+		events <- Event{Type: "route", RunID: runID, Model: model, Tier: string(tier)}
 
 		sess := a.session.GetOrCreate(sessionID)
 		if a.cfg.Agent.Context.AutoCompress {
 			if summary, ok := sess.MaybeCompress(a.cfg.Agent.Context.MaxTokens, a.cfg.Agent.Context.CompressThreshold, a.cfg.Agent.Context.KeepLastMessages); ok {
-				events <- Event{Type: "status", Text: fmt.Sprintf("context compressed: %d -> %d tokens", summary.TokenBefore, summary.TokenAfter)}
+				events <- Event{Type: "status", RunID: runID, Text: fmt.Sprintf("context compressed: %d -> %d tokens", summary.TokenBefore, summary.TokenAfter)}
 			}
 		}
 		if len(parts) == 1 && parts[0].Type == "text" {
@@ -279,9 +415,14 @@ func (a *Agent) RunWithAgentParts(ctx context.Context, sessionID, agentID string
 			sess.AppendMessage(Message{Role: "user", Content: parts})
 		}
 
-		events <- Event{Type: "status", Text: "thinking..."}
+		events <- Event{Type: "status", RunID: runID, Text: "thinking..."}
 		policy := runtimePolicyFromProfile(profile)
-		sess.AppendRun(session.RunInfo{AgentID: profile.ID, Model: model, Prompt: prompt, Tools: a.toolNamesForPolicy(policy), MCPServers: policy.mcpNames()})
+		sess.AppendRun(session.RunInfo{ID: runID, Status: "running", AgentID: profile.ID, Model: model, Prompt: prompt, Tools: a.toolNamesForPolicy(policy), MCPServers: policy.mcpNames()})
+		defer func() {
+			if ctx.Err() != nil {
+				sess.UpdateRunStatus(runID, "cancelled")
+			}
+		}()
 
 		maxTurns := profile.MaxTurns
 		if maxTurns <= 0 {
@@ -292,44 +433,85 @@ func (a *Agent) RunWithAgentParts(ctx context.Context, sessionID, agentID string
 		}
 
 		for turn := 0; turn < maxTurns; turn++ {
-			messages := a.withSystemPrompt(sess.Snapshot().Messages, profile)
+			if ctx.Err() != nil {
+				events <- Event{Type: "error", RunID: runID, Text: ctx.Err().Error()}
+				return
+			}
+			memorySnapshot := sess.EnsureMemorySnapshot(a.memory.BuildScopedSystemPrompt(projectID, profile.ID, sessionID))
+			messages := a.withSystemPrompt(sess.Snapshot().Messages, profile, memorySnapshot, prompt)
 			response, toolCalls, err := a.callLLMStream(ctx, model, messages, policy, func(delta string) {
 				if delta != "" {
-					events <- Event{Type: "content", Text: delta}
+					events <- Event{Type: "content", RunID: runID, Text: delta}
 				}
 			})
 			if err != nil {
-				events <- Event{Type: "error", Text: err.Error()}
+				events <- Event{Type: "error", RunID: runID, Text: err.Error()}
 				return
 			}
 
 			sess.AppendMessage(Message{Role: "assistant", Content: response, ToolCalls: toolCalls})
 			if len(toolCalls) == 0 {
-				events <- Event{Type: "done"}
+				a.queueAutoDraftMemory(prompt, response, projectID)
+				sess.UpdateRunStatus(runID, "done")
+				events <- Event{Type: "done", RunID: runID}
 				return
 			}
 
 			for _, tc := range toolCalls {
 				name := toolCallName(tc)
-				events <- Event{Type: "tool_start", ToolName: name, ToolID: tc.ID}
+				events <- Event{Type: "tool_start", RunID: runID, ToolName: name, ToolID: tc.ID}
 				result := a.executeTool(ctx, tc, policy)
-				events <- Event{Type: "tool_result", ToolID: tc.ID, Text: result}
+				events <- Event{Type: "tool_result", RunID: runID, ToolID: tc.ID, Text: result}
 				sess.AppendTool(tc.ID, name, result)
 			}
-			events <- Event{Type: "status", Text: "tools complete; continuing..."}
+			events <- Event{Type: "status", RunID: runID, Text: "tools complete; continuing..."}
 		}
-		events <- Event{Type: "error", Text: fmt.Sprintf("max agent turns reached (%d)", maxTurns)}
+		events <- Event{Type: "error", RunID: runID, Text: fmt.Sprintf("max agent turns reached (%d)", maxTurns)}
 	}()
 
 	return events, nil
 }
 
-func (a *Agent) withSystemPrompt(messages []Message, profile config.AgentProfile) []Message {
+func (a *Agent) queueAutoDraftMemory(userPrompt, assistantResponse, projectID string) {
+	if !a.cfg.Agent.Memory.AutoDraft {
+		return
+	}
+	content := extractMemoryDraft(userPrompt, assistantResponse)
+	if strings.TrimSpace(content) == "" {
+		return
+	}
+	go a.memory.Add(content, projectID, "project", "ai", memory.StatusDraft)
+}
+
+func extractMemoryDraft(userPrompt, assistantResponse string) string {
+	text := strings.TrimSpace(userPrompt)
+	lower := strings.ToLower(text)
+	markers := []string{"remember that ", "remember: ", "记住", "以后", "我的偏好是", "项目约定是"}
+	for _, marker := range markers {
+		idx := strings.Index(lower, strings.ToLower(marker))
+		if idx < 0 {
+			continue
+		}
+		content := strings.TrimSpace(text[idx+len(marker):])
+		content = strings.Trim(content, "。\t\r\n")
+		if content != "" {
+			return content
+		}
+	}
+	return ""
+}
+
+// RunWithProfileParts runs one turn with an explicit profile, used by delegated subagents.
+func (a *Agent) RunWithProfileParts(ctx context.Context, sessionID, projectID string, profile config.AgentProfile, parts []types.ContentPart) (<-chan Event, error) {
+	return a.runWithResolvedProfile(ctx, sessionID, projectID, profile, parts)
+}
+
+func (a *Agent) withSystemPrompt(messages []Message, profile config.AgentProfile, memorySnapshot, prompt string) []Message {
 	var parts []string
 	if sp := strings.TrimSpace(profile.SystemPrompt); sp != "" {
 		parts = append(parts, sp)
 	}
-	if mem := strings.TrimSpace(a.memory.BuildSystemPrompt("")); mem != "" {
+	if mem := strings.TrimSpace(memorySnapshot); mem != "" {
 		parts = append(parts, mem)
 	}
 	enabledSkills := profile.EnabledSkills
@@ -339,6 +521,7 @@ func (a *Agent) withSystemPrompt(messages []Message, profile config.AgentProfile
 	if prompt := strings.TrimSpace(a.skills.BuildPrompt(enabledSkills)); prompt != "" {
 		parts = append(parts, prompt)
 	}
+	parts = append(parts, a.skills.ExplicitContentsFromPrompt(prompt)...)
 	if len(parts) == 0 {
 		return messages
 	}
@@ -393,10 +576,11 @@ type chatCompletionChunk struct {
 type runtimePolicy struct {
 	AllowedTools      map[string]bool
 	AllowedMCPServers map[string]bool
+	PermissionMode    string
 }
 
 func runtimePolicyFromProfile(profile config.AgentProfile) runtimePolicy {
-	policy := runtimePolicy{AllowedTools: map[string]bool{}, AllowedMCPServers: map[string]bool{}}
+	policy := runtimePolicy{AllowedTools: map[string]bool{}, AllowedMCPServers: map[string]bool{}, PermissionMode: profile.PermissionMode}
 	for _, name := range profile.EnabledTools {
 		if strings.TrimSpace(name) != "" {
 			policy.AllowedTools[name] = true
@@ -446,7 +630,10 @@ func (a *Agent) callLLM(ctx context.Context, model string, messages []Message, p
 	}
 
 	toolDefs := a.tools.DefinitionsFor(policy.AllowedTools)
-	if len(policy.AllowedMCPServers) == 0 || policy.AllowedMCPServers["mock"] {
+	if len(policy.AllowedTools) == 0 || policy.AllowedTools["memory"] {
+		toolDefs = append(toolDefs, memoryToolDefinition())
+	}
+	if a.isMCPServerEnabled("mock") && (len(policy.AllowedMCPServers) == 0 || policy.AllowedMCPServers["mock"]) {
 		toolDefs = append(toolDefs, map[string]any{"type": "function", "function": map[string]any{"name": "mcp_echo", "description": "Echo arguments through the mock MCP client."}})
 	}
 	payload := chatCompletionRequest{Model: model, Messages: messages, Tools: toolDefs, Stream: stream}
@@ -595,13 +782,26 @@ func (a *Agent) executeTool(ctx context.Context, tc ToolCall, policy runtimePoli
 	if strings.HasPrefix(name, "mcp_") && len(policy.AllowedMCPServers) > 0 && !policy.AllowedMCPServers["mock"] {
 		return fmt.Sprintf("mcp tool %s is not enabled for this agent", name)
 	}
+	if strings.HasPrefix(name, "mcp_") && !a.isMCPServerEnabled("mock") {
+		return fmt.Sprintf("mcp tool %s is not enabled", name)
+	}
 	args := map[string]any{}
 	if strings.TrimSpace(argText) != "" {
 		if err := json.Unmarshal([]byte(argText), &args); err != nil {
 			return "invalid tool args: " + err.Error()
 		}
 	}
+	if name == "memory" {
+		return a.executeMemoryTool(args)
+	}
 	if tool, ok := a.tools.Get(name); ok {
+		if policy.PermissionMode != "" {
+			workspace := a.toolWorkspace()
+			toolRegistry := tools.NewRegistryWithOptions(workspace, tools.Options{PermissionMode: toolPermissionMode(policy.PermissionMode)})
+			if configuredTool, ok := toolRegistry.Get(name); ok {
+				tool = configuredTool
+			}
+		}
 		out, err := tool.Execute(ctx, args)
 		if err != nil {
 			return err.Error()
@@ -616,6 +816,93 @@ func (a *Agent) executeTool(ctx context.Context, tc ToolCall, policy runtimePoli
 		return out
 	}
 	return fmt.Sprintf("tool %s not found", name)
+}
+
+func memoryToolDefinition() map[string]any {
+	return map[string]any{
+		"type": "function",
+		"function": map[string]any{
+			"name":        "memory",
+			"description": "Read or update persistent memory. Writes are durable immediately but do not change the current session's frozen memory snapshot until refresh or a new session.",
+			"parameters": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"action":   map[string]any{"type": "string", "enum": []string{"add", "read", "replace", "remove"}},
+					"content":  map[string]any{"type": "string"},
+					"old_text": map[string]any{"type": "string"},
+					"project":  map[string]any{"type": "string"},
+					"scope":    map[string]any{"type": "string", "enum": []string{"global", "project", "agent", "session"}},
+					"status":   map[string]any{"type": "string", "enum": []string{"draft", "confirmed"}},
+				},
+				"required": []string{"action"},
+			},
+		},
+	}
+}
+
+func (a *Agent) executeMemoryTool(args map[string]any) string {
+	action, _ := args["action"].(string)
+	project, _ := args["project"].(string)
+	scope, _ := args["scope"].(string)
+	if scope == "" {
+		scope = "project"
+	}
+	status := memory.StatusConfirmed
+	if raw, _ := args["status"].(string); raw == string(memory.StatusDraft) {
+		status = memory.StatusDraft
+	}
+	respond := func(payload map[string]any) string {
+		data, _ := json.Marshal(payload)
+		return string(data)
+	}
+	switch action {
+	case "add":
+		content, _ := args["content"].(string)
+		if strings.TrimSpace(content) == "" {
+			return respond(map[string]any{"success": false, "error": "content is required"})
+		}
+		entry := a.memory.Add(content, project, scope, "ai", status)
+		return respond(map[string]any{"success": true, "entry": entry, "note": "memory saved; current session snapshot is unchanged until refresh"})
+	case "read":
+		entries := a.memory.ListFiltered("", project, scope)
+		return respond(map[string]any{"success": true, "entries": entries})
+	case "replace":
+		oldText, _ := args["old_text"].(string)
+		content, _ := args["content"].(string)
+		if oldText == "" || content == "" {
+			return respond(map[string]any{"success": false, "error": "old_text and content are required"})
+		}
+		entry, ok := a.memory.ReplaceByContent(oldText, content, project, scope)
+		return respond(map[string]any{"success": ok, "entry": entry})
+	case "remove":
+		oldText, _ := args["old_text"].(string)
+		if oldText == "" {
+			return respond(map[string]any{"success": false, "error": "old_text is required"})
+		}
+		ok := a.memory.DeleteByContent(oldText, project, scope)
+		return respond(map[string]any{"success": ok})
+	default:
+		return respond(map[string]any{"success": false, "error": "unknown action"})
+	}
+}
+
+func (a *Agent) toolWorkspace() string {
+	workspace, err := os.Getwd()
+	if err != nil || workspace == "" {
+		return "."
+	}
+	return workspace
+}
+
+func toolPermissionMode(mode string) tools.PermissionMode {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "ask", "approval", "approval-required":
+		return tools.PermissionAsk
+	case "allow", "unrestricted":
+		return tools.PermissionAllow
+	default:
+		return tools.PermissionDeny
+	}
 }
 
 func normalizeToolCall(tc ToolCall) ToolCall {

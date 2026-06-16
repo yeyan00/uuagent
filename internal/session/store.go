@@ -25,6 +25,7 @@ type Store struct {
 // RunInfo records per-turn runtime metadata, including exposed tools.
 type RunInfo struct {
 	ID         string   `json:"id"`
+	Status     string   `json:"status,omitempty"`
 	AgentID    string   `json:"agent_id,omitempty"`
 	Model      string   `json:"model"`
 	Prompt     string   `json:"prompt,omitempty"`
@@ -41,6 +42,7 @@ type Session struct {
 	Messages  []types.Message      `json:"messages"`
 	Runs      []RunInfo            `json:"runs,omitempty"`
 	Summaries []contextmgr.Summary `json:"summaries,omitempty"`
+	Memory    string               `json:"memory_snapshot,omitempty"`
 	CreatedAt int64                `json:"created_at"`
 	UpdatedAt int64                `json:"updated_at"`
 	path      string               `json:"-"`
@@ -154,11 +156,53 @@ func (s *Session) AppendRun(info RunInfo) {
 	_ = s.saveLocked()
 }
 
+// UpdateRunStatus updates one run status and persists it.
+func (s *Session) UpdateRunStatus(id, status string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.Runs {
+		if s.Runs[i].ID == id {
+			s.Runs[i].Status = status
+			s.UpdatedAt = time.Now().Unix()
+			_ = s.saveLocked()
+			return
+		}
+	}
+}
+
 // AppendMessage appends a full message, including multimodal content or tool calls.
 func (s *Session) AppendMessage(msg types.Message) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.Messages = append(s.Messages, msg)
+	s.UpdatedAt = time.Now().Unix()
+	_ = s.saveLocked()
+}
+
+// MemorySnapshot returns the frozen memory prompt snapshot for this session.
+func (s *Session) MemorySnapshot() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.Memory
+}
+
+// EnsureMemorySnapshot stores a memory snapshot once and returns the frozen value.
+func (s *Session) EnsureMemorySnapshot(snapshot string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Memory == "" {
+		s.Memory = snapshot
+		s.UpdatedAt = time.Now().Unix()
+		_ = s.saveLocked()
+	}
+	return s.Memory
+}
+
+// RefreshMemorySnapshot replaces the frozen memory prompt snapshot.
+func (s *Session) RefreshMemorySnapshot(snapshot string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Memory = snapshot
 	s.UpdatedAt = time.Now().Unix()
 	_ = s.saveLocked()
 }
@@ -216,7 +260,7 @@ func (s *Session) ListSummaries() []contextmgr.Summary {
 func (s *Session) Snapshot() Session {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	cp := Session{ID: s.ID, Title: s.Title, ParentID: s.ParentID, CreatedAt: s.CreatedAt, UpdatedAt: s.UpdatedAt}
+	cp := Session{ID: s.ID, Title: s.Title, ParentID: s.ParentID, Memory: s.Memory, CreatedAt: s.CreatedAt, UpdatedAt: s.UpdatedAt}
 	cp.Messages = append([]types.Message(nil), s.Messages...)
 	cp.Runs = append([]RunInfo(nil), s.Runs...)
 	cp.Summaries = append([]contextmgr.Summary(nil), s.Summaries...)

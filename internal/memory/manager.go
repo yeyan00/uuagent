@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -178,11 +179,64 @@ func (m *Manager) Delete(id string) bool {
 	return false
 }
 
+// ReplaceByContent replaces the first entry matching oldText and optional project/scope filters.
+func (m *Manager) ReplaceByContent(oldText, newContent, project, scope string) (Entry, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.entries {
+		if project != "" && m.entries[i].Project != project {
+			continue
+		}
+		if scope != "" && m.entries[i].Scope != scope {
+			continue
+		}
+		if m.entries[i].Status == StatusDeleted {
+			continue
+		}
+		if m.entries[i].Content == oldText || containsText(m.entries[i].Content, oldText) {
+			m.entries[i].Content = newContent
+			m.entries[i].UpdatedAt = nowUnix()
+			_ = m.saveLocked()
+			return m.entries[i], true
+		}
+	}
+	return Entry{}, false
+}
+
+// DeleteByContent soft-deletes the first entry matching oldText and optional project/scope filters.
+func (m *Manager) DeleteByContent(oldText, project, scope string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.entries {
+		if project != "" && m.entries[i].Project != project {
+			continue
+		}
+		if scope != "" && m.entries[i].Scope != scope {
+			continue
+		}
+		if m.entries[i].Status == StatusDeleted {
+			continue
+		}
+		if m.entries[i].Content == oldText || containsText(m.entries[i].Content, oldText) {
+			m.entries[i].Status = StatusDeleted
+			m.entries[i].UpdatedAt = nowUnix()
+			_ = m.saveLocked()
+			return true
+		}
+	}
+	return false
+}
+
 // List lists entries filtered by status/project. Empty filters match all.
 func (m *Manager) List(status Status, project string) []Entry {
+	return m.ListFiltered(status, project, "")
+}
+
+// ListFiltered lists entries filtered by status/project/scope. Empty filters match all.
+func (m *Manager) ListFiltered(status Status, project, scope string) []Entry {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.filterLocked(status, project)
+	return m.filterLocked(status, project, scope)
 }
 
 // ListDrafts returns draft memories awaiting review.
@@ -197,7 +251,35 @@ func (m *Manager) ListConfirmed(project string) []Entry {
 
 // BuildSystemPrompt builds the memory section injected into the system prompt.
 func (m *Manager) BuildSystemPrompt(project string) string {
-	confirmed := m.ListConfirmed(project)
+	return m.BuildScopedSystemPrompt(project, "", "")
+}
+
+// BuildScopedSystemPrompt injects global/project/agent/session confirmed memories without cross-scope leakage.
+func (m *Manager) BuildScopedSystemPrompt(project, agentID, sessionID string) string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var confirmed []Entry
+	for _, e := range m.entries {
+		if e.Status != StatusConfirmed {
+			continue
+		}
+		switch e.Scope {
+		case "global":
+			confirmed = append(confirmed, e)
+		case "project", "":
+			if project != "" && e.Project == project {
+				confirmed = append(confirmed, e)
+			}
+		case "agent":
+			if agentID != "" && e.Project == agentID {
+				confirmed = append(confirmed, e)
+			}
+		case "session":
+			if sessionID != "" && e.Project == sessionID {
+				confirmed = append(confirmed, e)
+			}
+		}
+	}
 	if len(confirmed) == 0 {
 		return ""
 	}
@@ -209,13 +291,16 @@ func (m *Manager) BuildSystemPrompt(project string) string {
 	return text
 }
 
-func (m *Manager) filterLocked(status Status, project string) []Entry {
+func (m *Manager) filterLocked(status Status, project, scope string) []Entry {
 	var result []Entry
 	for _, e := range m.entries {
 		if status != "" && e.Status != status {
 			continue
 		}
 		if project != "" && e.Project != project {
+			continue
+		}
+		if scope != "" && e.Scope != scope {
 			continue
 		}
 		result = append(result, e)
@@ -229,4 +314,8 @@ func generateID() string {
 
 func nowUnix() int64 {
 	return time.Now().Unix()
+}
+
+func containsText(content, needle string) bool {
+	return needle != "" && strings.Contains(content, needle)
 }
