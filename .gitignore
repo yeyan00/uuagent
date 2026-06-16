@@ -1,0 +1,40 @@
+# Binaries
+/uuagent
+/uuagent.exe
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test
+*.test
+*.out
+
+# Go
+vendor/
+
+# Node (前端构建)
+web/node_modules/
+web/dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Config (不要提交含 API Key 的配置)
+config.yaml
+
+# Data
+data/
+*.db
+*.sqlite
+
+# Logs
+*.log
+logs/
