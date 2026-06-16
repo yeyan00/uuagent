@@ -310,10 +310,11 @@ func (a *Agent) RunWithAgentParts(ctx context.Context, sessionID, agentID string
 			}
 
 			for _, tc := range toolCalls {
-				events <- Event{Type: "tool_start", ToolName: tc.Name, ToolID: tc.ID}
+				name := toolCallName(tc)
+				events <- Event{Type: "tool_start", ToolName: name, ToolID: tc.ID}
 				result := a.executeTool(ctx, tc, policy)
 				events <- Event{Type: "tool_result", ToolID: tc.ID, Text: result}
-				sess.AppendTool(tc.ID, tc.Name, result)
+				sess.AppendTool(tc.ID, name, result)
 			}
 			events <- Event{Type: "status", Text: "tools complete; continuing..."}
 		}
@@ -497,7 +498,7 @@ func parseChatJSON(data []byte, onDelta func(string)) (string, []ToolCall, error
 	}
 	calls := make([]ToolCall, 0, len(msg.ToolCalls))
 	for _, tc := range msg.ToolCalls {
-		calls = append(calls, ToolCall{ID: tc.ID, Name: tc.Function.Name, Args: tc.Function.Arguments})
+		calls = append(calls, normalizeToolCall(ToolCall{ID: tc.ID, Type: tc.Type, Function: types.ToolFunction{Name: tc.Function.Name, Arguments: tc.Function.Arguments}}))
 	}
 	return msg.Content, calls, nil
 }
@@ -576,43 +577,78 @@ func streamResult(content string, toolsByIndex map[int]*streamToolCall) (string,
 	calls := make([]ToolCall, 0, len(toolsByIndex))
 	for _, tc := range toolsByIndex {
 		if tc.name != "" {
-			calls = append(calls, ToolCall{ID: tc.id, Name: tc.name, Args: tc.args})
+			calls = append(calls, normalizeToolCall(ToolCall{ID: tc.id, Type: "function", Function: types.ToolFunction{Name: tc.name, Arguments: tc.args}}))
 		}
 	}
 	return content, calls
 }
 
 func (a *Agent) executeTool(ctx context.Context, tc ToolCall, policy runtimePolicy) string {
-	if a.blockedTools != nil && a.blockedTools[tc.Name] {
-		return fmt.Sprintf("tool %s is blocked", tc.Name)
+	name := toolCallName(tc)
+	argText := toolCallArgs(tc)
+	if a.blockedTools != nil && a.blockedTools[name] {
+		return fmt.Sprintf("tool %s is blocked", name)
 	}
-	if len(policy.AllowedTools) > 0 && !strings.HasPrefix(tc.Name, "mcp_") && !policy.AllowedTools[tc.Name] {
-		return fmt.Sprintf("tool %s is not enabled for this agent", tc.Name)
+	if len(policy.AllowedTools) > 0 && !strings.HasPrefix(name, "mcp_") && !policy.AllowedTools[name] {
+		return fmt.Sprintf("tool %s is not enabled for this agent", name)
 	}
-	if strings.HasPrefix(tc.Name, "mcp_") && len(policy.AllowedMCPServers) > 0 && !policy.AllowedMCPServers["mock"] {
-		return fmt.Sprintf("mcp tool %s is not enabled for this agent", tc.Name)
+	if strings.HasPrefix(name, "mcp_") && len(policy.AllowedMCPServers) > 0 && !policy.AllowedMCPServers["mock"] {
+		return fmt.Sprintf("mcp tool %s is not enabled for this agent", name)
 	}
 	args := map[string]any{}
-	if strings.TrimSpace(tc.Args) != "" {
-		if err := json.Unmarshal([]byte(tc.Args), &args); err != nil {
+	if strings.TrimSpace(argText) != "" {
+		if err := json.Unmarshal([]byte(argText), &args); err != nil {
 			return "invalid tool args: " + err.Error()
 		}
 	}
-	if tool, ok := a.tools.Get(tc.Name); ok {
+	if tool, ok := a.tools.Get(name); ok {
 		out, err := tool.Execute(ctx, args)
 		if err != nil {
 			return err.Error()
 		}
 		return out
 	}
-	if strings.HasPrefix(tc.Name, "mcp_") && a.mcp != nil {
-		out, err := a.mcp.CallTool(ctx, tc.Name, args)
+	if strings.HasPrefix(name, "mcp_") && a.mcp != nil {
+		out, err := a.mcp.CallTool(ctx, name, args)
 		if err != nil {
 			return err.Error()
 		}
 		return out
 	}
-	return fmt.Sprintf("tool %s not found", tc.Name)
+	return fmt.Sprintf("tool %s not found", name)
+}
+
+func normalizeToolCall(tc ToolCall) ToolCall {
+	if tc.Type == "" {
+		tc.Type = "function"
+	}
+	if tc.Function.Name == "" {
+		tc.Function.Name = tc.Name
+	}
+	if tc.Function.Arguments == "" {
+		tc.Function.Arguments = tc.Args
+	}
+	if tc.Name == "" {
+		tc.Name = tc.Function.Name
+	}
+	if tc.Args == "" {
+		tc.Args = tc.Function.Arguments
+	}
+	return tc
+}
+
+func toolCallName(tc ToolCall) string {
+	if tc.Function.Name != "" {
+		return tc.Function.Name
+	}
+	return tc.Name
+}
+
+func toolCallArgs(tc ToolCall) string {
+	if tc.Function.Arguments != "" {
+		return tc.Function.Arguments
+	}
+	return tc.Args
 }
 
 // ConfigFromModelFile parses tests/models.txt-like JSON fragments without

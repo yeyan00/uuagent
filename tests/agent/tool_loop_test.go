@@ -47,12 +47,26 @@ func TestAgentToolLoopSendsToolResultBackToModel(t *testing.T) {
 		t.Fatalf("expected 2 model calls, got %d", calls)
 	}
 	foundTool := false
+	foundOpenAIToolCall := false
 	for _, msg := range secondMessages {
 		if msg["role"] == "tool" && msg["tool_call_id"] == "tc-list" {
 			foundTool = true
 		}
+		if msg["role"] == "assistant" {
+			if calls, ok := msg["tool_calls"].([]any); ok && len(calls) == 1 {
+				if call, ok := calls[0].(map[string]any); ok {
+					fn, hasFunction := call["function"].(map[string]any)
+					_, hasLegacyArgs := call["args"]
+					_, hasLegacyName := call["name"]
+					foundOpenAIToolCall = hasFunction && fn["name"] == "list_dir" && fn["arguments"] != "" && !hasLegacyArgs && !hasLegacyName
+				}
+			}
+		}
 	}
 	if !foundTool {
 		t.Fatalf("second model call did not include tool result: %#v", secondMessages)
+	}
+	if !foundOpenAIToolCall {
+		t.Fatalf("second model call did not include OpenAI-compatible assistant tool call: %#v", secondMessages)
 	}
 }
