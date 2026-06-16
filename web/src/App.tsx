@@ -10,7 +10,7 @@ interface MemoryEntry { id: string; content: string; status: string; source: str
 interface Summary { id: string; summary: string; token_before: number; token_after: number; created_at: number }
 
 type MainPage = 'projects' | 'extensions' | 'schedules' | 'settings'
-type ProjectTab = 'sessions' | 'agents' | 'subagents' | 'models' | 'skills' | 'mcp' | 'memory' | 'context'
+type ProjectTab = 'sessions' | 'memory' | 'context'
 
 const navItems: Array<{ id: MainPage; label: string; icon: string }> = [
   { id: 'projects', label: 'Projects', icon: 'P' },
@@ -21,14 +21,11 @@ const navItems: Array<{ id: MainPage; label: string; icon: string }> = [
 
 const projectTabs: Array<{ id: ProjectTab; label: string }> = [
   { id: 'sessions', label: 'Sessions' },
-  { id: 'agents', label: 'Agents' },
-  { id: 'subagents', label: 'Subagents' },
-  { id: 'models', label: 'Models' },
-  { id: 'skills', label: 'Skills' },
-  { id: 'mcp', label: 'MCP' },
   { id: 'memory', label: 'Memory' },
   { id: 'context', label: 'Context' },
 ]
+
+const settingsTabs = ['Agents', 'Subagents', 'Models', 'Skills', 'MCP', 'Permissions', 'Storage']
 
 const api = async <T,>(url: string, init?: RequestInit): Promise<T> => {
   const res = await fetch(url, init)
@@ -199,11 +196,14 @@ function App() {
 
   const renderSidebarBody = () => {
     if (mainPage !== 'projects') {
+      if (mainPage === 'settings') return <>
+        <div className="itemList">
+          {settingsTabs.map(tab => <button key={tab} className={tab === 'Agents' ? 'listItem active' : 'listItem'} onClick={() => tab === 'Agents' ? setAgentSettingsOpen(true) : setStatus(`${tab} settings are planned`)}><span>{tab}</span><small>{tab === 'Agents' ? 'Prompts, models, tools and MCP access' : 'Coming soon'}</small></button>)}
+        </div>
+      </>
       const text = mainPage === 'extensions'
-        ? 'Manage tools, skills, MCP integrations and future extension packs.'
-        : mainPage === 'schedules'
-          ? 'Create recurring project scans, tests, reports and knowledge refresh jobs.'
-          : 'Configure global preferences, storage, permissions and appearance.'
+        ? 'Manage marketplace extensions and installable capability packs.'
+        : 'Create recurring project scans, tests, reports and knowledge refresh jobs.'
       return <div className="sidePlaceholder"><h3>{navItems.find(n => n.id === mainPage)?.label}</h3><p>{text}</p><button className="softButton">Coming soon</button></div>
     }
 
@@ -236,14 +236,6 @@ function App() {
       {summaries.map(s => <details key={s.id} className="summaryCard"><summary>{s.token_before} → {s.token_after}</summary><pre>{s.summary}</pre></details>)}
     </>
 
-    const map: Record<ProjectTab, string> = {
-      sessions: '', agents: '', memory: '', context: '',
-      subagents: 'Subagent profiles will share the AgentProfile schema with narrower tools and isolated sessions.',
-      models: 'Model routing and provider management will appear here. Current composer supports Auto and agent model values.',
-      skills: 'Enable built-in and user skills from ~/.uuagent/skills or project .uuagent/skills.',
-      mcp: 'Configure MCP servers and inspect their connection state here.',
-    }
-    return <div className="sidePlaceholder"><h3>{projectTabs.find(t => t.id === projectTab)?.label}</h3><p>{map[projectTab]}</p><button className="softButton">Planned</button></div>
   }
 
   return <div className="appDesktop">
@@ -288,8 +280,8 @@ function App() {
         <footer className="composerShell">
           {attachmentNotice && <div className="attachmentNotice">{attachmentNotice}</div>}
           <div className="composerBox">
-            <button className="attachButton" onClick={onAttachClick} title="Attach image or file">+</button>
             <textarea value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter' && (e.ctrlKey || e.metaKey)){ e.preventDefault(); sendMessage() } }} placeholder="Ask UUAgent to inspect, edit or explain code... Ctrl+Enter to send" />
+            <button className="attachButton" onClick={onAttachClick} title="Attach image or file">＋</button>
             <button className="sendButton" onClick={sendMessage} disabled={isStreaming || !input.trim()}>{isStreaming?'Working':'Send'}</button>
             <input ref={fileInputRef} type="file" multiple accept="image/*,.txt,.md,.json,.yaml,.yml,.go,.ts,.tsx" hidden onChange={e=>onFilesSelected(e.target.files)} />
           </div>
@@ -297,7 +289,6 @@ function App() {
             <label>Project<select value={projectId} onChange={e=>openProject(e.target.value)}><option value="">None</option>{projects.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
             <label>Agent<select value={agentId} onChange={e=>selectAgent(e.target.value)}>{agents.map(a=><option key={a.id} value={a.id}>{a.name || a.id}</option>)}</select></label>
             <label>Model<select value={modelOverride} onChange={e=>setModelOverride(e.target.value)}>{availableModels.map(m=><option key={m} value={m}>{m === 'auto' ? 'Auto' : m}</option>)}</select></label>
-            <button className="softButton" onClick={()=>setAgentSettingsOpen(true)}>Agent Settings</button>
           </div>
         </footer>
       </main>
