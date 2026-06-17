@@ -124,6 +124,67 @@ describe('App', () => {
     expect(screen.queryByText('Done')).toBeNull()
   })
 
+  it('parses SSE events split across network chunks', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const encoder = new TextEncoder()
+    globalThis.fetch = vi.fn(async (url: string) => {
+      if (url === '/api/projects') return Response.json({ projects: [] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/sessions') return Response.json({ sessions: [] })
+      if (url === '/api/memory') return Response.json({ memories: [] })
+      if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
+      if (url.startsWith('/api/chat')) {
+        const event = `data: ${JSON.stringify({ type: 'content', text: 'split streamed answer' })}\n\n`
+        const stream = new ReadableStream<Uint8Array>({
+          start(c) {
+            c.enqueue(encoder.encode(event.slice(0, 12)))
+            c.enqueue(encoder.encode(event.slice(12)))
+            c.close()
+          },
+        })
+        return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } })
+      }
+      return Response.json({})
+    }) as any
+
+    render(<App />)
+    const input = await screen.findByPlaceholderText('Ask UUAgent to inspect, edit or explain code... Ctrl+Enter to send')
+    fireEvent.change(input, { target: { value: 'stream split test' } })
+    fireEvent.click(screen.getByText('Send'))
+    expect(await screen.findByText('split streamed answer')).toBeTruthy()
+  })
+
+  it('groups loaded session tool history inside the user turn', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    globalThis.fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/api/projects') return Response.json({ projects: [{ id: 'proj-1', name: 'Repo', workspace_path: 'C:/repo', temporary: false }] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/memory') return Response.json({ memories: [] })
+      if (url === '/api/memory?project=proj-1') return Response.json({ memories: [] })
+      if (url === '/api/projects/proj-1/sessions') return Response.json({ sessions: [{ id: 's1', title: 'Analyze repo', messages: [{ role: 'user', content: 'Analyze repo' }] }] })
+      if (url === '/api/projects/proj-1/open') return Response.json({ config_sources: [] })
+      if (url === '/api/projects/proj-1/sessions/s1') return Response.json({ id: 's1', title: 'Analyze repo', messages: [
+        { role: 'user', content: 'Analyze repo' },
+        { role: 'tool', tool_name: 'list_dir', content: 'README.md\ninternal' },
+        { role: 'tool', tool_name: 'read', content: 'module example' },
+        { role: 'assistant', content: 'Final repo summary' },
+      ] })
+      if (url.startsWith('/api/projects/proj-1/sessions/s1/context')) return Response.json({ summaries: [] })
+      if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
+      return Response.json({})
+    }) as any
+
+    render(<App />)
+    await waitFor(() => expect(screen.getAllByText('Repo').length).toBeGreaterThan(0))
+    fireEvent.click((await screen.findAllByText('Analyze repo'))[0])
+    await waitFor(() => expect(screen.getAllByText('Analyze repo').length).toBeGreaterThanOrEqual(2))
+    expect(await screen.findByText('Tool activity · 2')).toBeTruthy()
+    expect(await screen.findByText('list_dir result')).toBeTruthy()
+    expect(await screen.findByText('read result')).toBeTruthy()
+    expect(await screen.findByText('Final repo summary')).toBeTruthy()
+    expect(screen.queryByText('Tool')).toBeNull()
+  })
+
   it('loads and creates memory for the selected project', async () => {
     Element.prototype.scrollIntoView = vi.fn()
     const calls: Array<{ url: string; init?: RequestInit }> = []

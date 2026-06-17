@@ -38,6 +38,7 @@ const (
 // Options configures built-in tool behavior.
 type Options struct {
 	PermissionMode PermissionMode
+	ApprovedPaths  []string
 }
 
 // NewRegistry creates a tool registry.
@@ -405,7 +406,7 @@ func resolveToolPath(ws, rel string, options Options, isApproved bool, tool stri
 	if pathInside(root, candidate) {
 		return candidate, nil
 	}
-	if options.PermissionMode == PermissionAllow || isApproved {
+	if options.PermissionMode == PermissionAllow || isApproved || pathInsideAny(options.ApprovedPaths, candidate) {
 		return candidate, nil
 	}
 	if options.PermissionMode == PermissionAsk {
@@ -420,6 +421,19 @@ func pathInside(root, candidate string) bool {
 		return false
 	}
 	return relToRoot != ".." && !strings.HasPrefix(relToRoot, ".."+string(os.PathSeparator)) && !filepath.IsAbs(relToRoot)
+}
+
+func pathInsideAny(roots []string, candidate string) bool {
+	for _, root := range roots {
+		approvedRoot, err := filepath.Abs(filepath.Clean(root))
+		if err != nil {
+			continue
+		}
+		if pathInside(approvedRoot, candidate) {
+			return true
+		}
+	}
+	return false
 }
 
 func approved(args map[string]any) bool {

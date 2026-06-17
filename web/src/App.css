@@ -122,6 +122,8 @@ button:hover:not(:disabled) { filter: brightness(.985); transform: translateY(-1
 .emptyState div { font-size: 44px; margin-bottom: 8px; }
 .emptyState h2 { margin: 0 0 8px; color: #25324b; }
 .emptyState p { max-width: 440px; line-height: 1.6; margin: 0; }
+.sessionTurn { display: grid; gap: 10px; margin-bottom: 18px; }
+.sessionTurn .messageBubble { margin-bottom: 0; }
 .messageBubble { max-width: min(780px, 88%); margin-bottom: 14px; padding: 14px 16px; border-radius: 18px; border: 1px solid #e2e8f3; background: white; box-shadow: 0 10px 24px rgba(26,42,74,.06); }
 .messageBubble.user { margin-left: auto; color: white; background: linear-gradient(135deg, #4c78ff, #5ac8d8); border: 0; }
 .messageBubble.system { background: #fff3f0; border-color: #ffd6cc; }
@@ -148,6 +150,13 @@ button:hover:not(:disabled) { filter: brightness(.985); transform: translateY(-1
 .approvalPath { border: 1px solid #ffd6cc; border-radius: 12px; padding: 9px 10px; background: #fffaf8; color: #25324b; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; word-break: break-all; }
 .approvalActions { display: flex; gap: 8px; }
 .approvalActions button { border: 0; border-radius: 11px; padding: 8px 12px; background: #edf2fb; color: #22314d; }
+.toolActivityGroup { max-width: min(780px, 88%); border: 1px solid #cfe2ff; border-radius: 16px; background: #f7fbff; box-shadow: 0 8px 18px rgba(26,42,74,.045); overflow: hidden; }
+.toolActivityGroup summary { cursor: pointer; list-style: none; padding: 11px 14px; color: #315dbe; font-size: 13px; font-weight: 850; }
+.toolActivityGroup summary::-webkit-details-marker { display: none; }
+.toolActivityGroup summary::after { content: '▾'; float: right; color: #7b8ca8; }
+.toolActivityGroup:not([open]) summary::after { content: '▸'; }
+.toolActivityList { display: grid; gap: 8px; padding: 0 12px 12px; }
+.toolActivityItem { border-top: 1px solid #dbe8ff; padding-top: 8px; }
 .toolEventCard { display: grid; gap: 8px; }
 .toolEventCard h3 { margin: 0; font-size: 15px; color: #25324b; }
 .toolEventBadge { width: fit-content; border-radius: 999px; padding: 4px 8px; background: #e8f0ff; color: #315dbe; font-size: 12px; font-weight: 850; }

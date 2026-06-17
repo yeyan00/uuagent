@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import './App.css'
 
 interface ChatEvent { type: string; run_id?: string; model?: string; tier?: string; text?: string; tool_name?: string; tool_id?: string }
-interface Message { role: 'user' | 'assistant' | 'system' | 'tool'; content: string; model?: string; tier?: string }
+interface Message { role: 'user' | 'assistant' | 'system' | 'tool'; content: string; model?: string; tier?: string; tool_name?: string; tool_call_id?: string }
 interface Project { id: string; name: string; workspace_path: string; temporary: boolean }
 interface AgentProfile { id: string; name: string; description?: string; system_prompt?: string; model?: string; enabled_tools?: string[]; enabled_skills?: string[]; enabled_mcp_servers?: string[]; permission_mode?: string; max_turns?: number }
 interface Session { id: string; title?: string; project_id?: string; project_path?: string; parent_id?: string; messages: Message[] }
@@ -118,6 +118,33 @@ const renderToolEventCard = (event: ToolEventPayload) => <div className="toolEve
   <h3>{event.kind === 'tool_start' ? `Running ${event.tool || 'tool'}` : `${event.tool || 'Tool'} result`}</h3>
   {event.text && <pre>{toolPreview(event.text)}</pre>}
 </div>
+
+type TurnPart = { kind: 'assistant' | 'system' | 'tool'; message: Message }
+type ChatTurn = { user?: Message; parts: TurnPart[] }
+
+const groupMessagesIntoTurns = (items: Message[]): ChatTurn[] => {
+  const turns: ChatTurn[] = []
+  let current: ChatTurn | null = null
+  for (const message of items) {
+    if (message.role === 'user') {
+      current = { user: message, parts: [] }
+      turns.push(current)
+      continue
+    }
+    if (!current) {
+      current = { parts: [] }
+      turns.push(current)
+    }
+    current.parts.push({ kind: message.role === 'tool' ? 'tool' : message.role === 'assistant' ? 'assistant' : 'system', message })
+  }
+  return turns
+}
+
+const toolEventFromMessage = (message: Message): ToolEventPayload => {
+  const parsed = parseToolEventPayload(String(message.content || ''))
+  if (parsed) return parsed
+  return { kind: 'tool_result', tool: message.tool_name || message.tool_call_id || 'tool', tool_id: message.tool_call_id, text: String(message.content || '') }
+}
 
 function App() {
   const [mainPage, setMainPage] = useState<MainPage>('projects')
@@ -301,12 +328,16 @@ function App() {
     let streamRunId = options.streamRunId || ''
     let approvalPending = false
     if (!reader) return { approvalPending }
+    let buffer = ''
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
-      const lines = decoder.decode(value).split('\n')
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue
+      buffer += decoder.decode(value, { stream: true })
+      const chunks = buffer.split('\n\n')
+      buffer = chunks.pop() || ''
+      for (const chunk of chunks) {
+        const line = chunk.split('\n').find(line => line.startsWith('data: '))
+        if (!line) continue
         try {
           const evt: ChatEvent = JSON.parse(line.slice(6))
           if (evt.type === 'run') { streamRunId = evt.run_id || ''; setCurrentRunId(streamRunId) }
@@ -386,6 +417,39 @@ function App() {
     setStatus('Stopping...')
   }
 
+  const renderPart = (part: TurnPart, key: string) => {
+    const msg = part.message
+    if (part.kind === 'assistant') return <div key={key} className="messageBubble assistant"><div className="messageMeta">{msg.model || 'Assistant'}</div>{renderMarkdown(msg.content)}</div>
+    const approval = parseApprovalPayload(String(msg.content || ''))
+    return <div key={key} className="messageBubble system"><div className="messageMeta">System</div>{approval ? renderApprovalCard(approval, approveRun, denyRun) : renderMarkdown(msg.content)}</div>
+  }
+
+  const renderToolGroup = (tools: Message[], key: string) => <details key={key} className="toolActivityGroup" open>
+    <summary><span>Tool activity · {tools.length}</span></summary>
+    <div className="toolActivityList">{tools.map((tool, i) => <div key={i} className="toolActivityItem">{renderToolEventCard(toolEventFromMessage(tool))}</div>)}</div>
+  </details>
+
+  const renderTurn = (turn: ChatTurn, index: number) => {
+    const nodes: ReactNode[] = []
+    if (turn.user) nodes.push(<div key="user" className="messageBubble user"><div className="messageMeta">You</div>{renderMarkdown(turn.user.content)}</div>)
+    let pendingTools: Message[] = []
+    const flushTools = (key: string) => {
+      if (pendingTools.length === 0) return
+      nodes.push(renderToolGroup(pendingTools, key))
+      pendingTools = []
+    }
+    turn.parts.forEach((part, i) => {
+      if (part.kind === 'tool') {
+        pendingTools.push(part.message)
+        return
+      }
+      flushTools(`tools-${i}`)
+      nodes.push(renderPart(part, `part-${i}`))
+    })
+    flushTools('tools-end')
+    return <div key={index} className="sessionTurn">{nodes}</div>
+  }
+
   const renderSidebarBody = () => {
     if (mainPage !== 'projects') {
       if (mainPage === 'settings') return <>
@@ -458,11 +522,7 @@ function App() {
 
         <section className="messagesPane">
           {messages.length === 0 && <div className="emptyState"><div>✨</div><h2>Start a coding session</h2><p>Open a project, choose an agent and ask UUAgent to inspect, explain or modify your code.</p></div>}
-          {messages.map((msg,i)=>{
-            const approval = msg.role === 'system' ? parseApprovalPayload(String(msg.content || '')) : null
-            const toolEvent = msg.role === 'tool' ? parseToolEventPayload(String(msg.content || '')) : null
-            return <div key={i} className={`messageBubble ${msg.role}`}><div className="messageMeta">{msg.role==='user'?'You':msg.role==='system'?'System':msg.role==='tool'?'Tool':msg.model || 'Assistant'}</div>{approval ? renderApprovalCard(approval, approveRun, denyRun) : toolEvent ? renderToolEventCard(toolEvent) : renderMarkdown(msg.content)}</div>
-          })}
+          {groupMessagesIntoTurns(messages).map((turn, i) => renderTurn(turn, i))}
           <div ref={messagesEndRef}/>
         </section>
 

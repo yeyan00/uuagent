@@ -61,9 +61,11 @@ type pendingApproval struct {
 	Prompt        string
 	Profile       config.AgentProfile
 	Policy        runtimePolicy
-	ToolCall      ToolCall
-	ToolName      string
-	ToolWorkspace string
+	ToolCall           ToolCall
+	ToolName           string
+	RemainingToolCalls []ToolCall
+	ToolWorkspace      string
+	ApprovedPaths      []string
 }
 
 // New creates an Agent.
@@ -549,18 +551,18 @@ func (a *Agent) runWithResolvedProfile(ctx context.Context, sessionID, projectID
 				return
 			}
 
-			for _, tc := range toolCalls {
+			for i, tc := range toolCalls {
 				name := toolCallName(tc)
 				events <- Event{Type: "tool_start", RunID: runID, ToolName: name, ToolID: tc.ID}
-				result := a.executeTool(ctx, tc, policy, toolWorkspace)
-				events <- Event{Type: "tool_result", RunID: runID, ToolID: tc.ID, Text: result}
-				sess.AppendTool(tc.ID, name, result)
+				result := a.executeTool(ctx, tc, policy, toolWorkspace, nil)
+				events <- Event{Type: "tool_result", RunID: runID, ToolName: name, ToolID: tc.ID, Text: result}
 				if isApprovalRequiredResult(result) {
-					a.storePendingApproval(pendingApproval{Session: sess, RunID: runID, Model: model, Prompt: prompt, Profile: profile, Policy: policy, ToolCall: tc, ToolName: name, ToolWorkspace: toolWorkspace})
+					a.storePendingApproval(pendingApproval{Session: sess, RunID: runID, Model: model, Prompt: prompt, Profile: profile, Policy: policy, ToolCall: tc, ToolName: name, RemainingToolCalls: append([]ToolCall(nil), toolCalls[i+1:]...), ToolWorkspace: toolWorkspace})
 					sess.UpdateRunStatus(runID, "waiting_approval")
 					events <- Event{Type: "status", RunID: runID, Text: "approval required"}
 					return
 				}
+				sess.AppendTool(tc.ID, name, result)
 			}
 			events <- Event{Type: "status", RunID: runID, Text: "tools complete; continuing..."}
 		}
@@ -615,12 +617,29 @@ func (a *Agent) ApproveRunEvents(ctx context.Context, runID string) (<-chan Even
 		if argText := strings.TrimSpace(toolCallArgs(p.ToolCall)); argText != "" {
 			_ = json.Unmarshal([]byte(argText), &args)
 		}
+		approvedPath := approvalPathFromArgs(p.ToolWorkspace, args)
 		args["approved"] = true
 		p.ToolCall.Function.Arguments = mustJSON(args)
 		events <- Event{Type: "tool_start", RunID: runID, ToolName: p.ToolName, ToolID: p.ToolCall.ID}
-		result := a.executeTool(ctx, p.ToolCall, p.Policy, p.ToolWorkspace)
+		result := a.executeTool(ctx, p.ToolCall, p.Policy, p.ToolWorkspace, p.ApprovedPaths)
 		events <- Event{Type: "tool_result", RunID: runID, ToolName: p.ToolName, ToolID: p.ToolCall.ID, Text: result}
 		p.Session.AppendTool(p.ToolCall.ID, p.ToolName, result)
+		if approvedPath != "" && !isApprovalRequiredResult(result) {
+			p.ApprovedPaths = append(p.ApprovedPaths, approvedPath)
+		}
+		for i, tc := range p.RemainingToolCalls {
+			name := toolCallName(tc)
+			events <- Event{Type: "tool_start", RunID: runID, ToolName: name, ToolID: tc.ID}
+			result := a.executeTool(ctx, tc, p.Policy, p.ToolWorkspace, p.ApprovedPaths)
+			events <- Event{Type: "tool_result", RunID: runID, ToolName: name, ToolID: tc.ID, Text: result}
+			if isApprovalRequiredResult(result) {
+				a.storePendingApproval(pendingApproval{Session: p.Session, RunID: runID, Model: p.Model, Prompt: p.Prompt, Profile: p.Profile, Policy: p.Policy, ToolCall: tc, ToolName: name, RemainingToolCalls: append([]ToolCall(nil), p.RemainingToolCalls[i+1:]...), ToolWorkspace: p.ToolWorkspace, ApprovedPaths: p.ApprovedPaths})
+				p.Session.UpdateRunStatus(runID, "waiting_approval")
+				events <- Event{Type: "status", RunID: runID, Text: "approval required"}
+				return
+			}
+			p.Session.AppendTool(tc.ID, name, result)
+		}
 
 		maxTurns := p.Profile.MaxTurns
 		if maxTurns <= 0 {
@@ -649,18 +668,18 @@ func (a *Agent) ApproveRunEvents(ctx context.Context, runID string) (<-chan Even
 				events <- Event{Type: "done", RunID: runID}
 				return
 			}
-			for _, tc := range toolCalls {
+			for i, tc := range toolCalls {
 				name := toolCallName(tc)
 				events <- Event{Type: "tool_start", RunID: runID, ToolName: name, ToolID: tc.ID}
-				result := a.executeTool(ctx, tc, p.Policy, p.ToolWorkspace)
+				result := a.executeTool(ctx, tc, p.Policy, p.ToolWorkspace, p.ApprovedPaths)
 				events <- Event{Type: "tool_result", RunID: runID, ToolName: name, ToolID: tc.ID, Text: result}
-				p.Session.AppendTool(tc.ID, name, result)
 				if isApprovalRequiredResult(result) {
-					a.storePendingApproval(pendingApproval{Session: p.Session, RunID: runID, Model: p.Model, Prompt: p.Prompt, Profile: p.Profile, Policy: p.Policy, ToolCall: tc, ToolName: name, ToolWorkspace: p.ToolWorkspace})
+					a.storePendingApproval(pendingApproval{Session: p.Session, RunID: runID, Model: p.Model, Prompt: p.Prompt, Profile: p.Profile, Policy: p.Policy, ToolCall: tc, ToolName: name, RemainingToolCalls: append([]ToolCall(nil), toolCalls[i+1:]...), ToolWorkspace: p.ToolWorkspace, ApprovedPaths: p.ApprovedPaths})
 					p.Session.UpdateRunStatus(runID, "waiting_approval")
 					events <- Event{Type: "status", RunID: runID, Text: "approval required"}
 					return
 				}
+				p.Session.AppendTool(tc.ID, name, result)
 			}
 		}
 		p.Session.UpdateRunStatus(runID, "failed")
@@ -681,6 +700,28 @@ func (a *Agent) DenyRun(runID string) error {
 func mustJSON(v any) string {
 	data, _ := json.Marshal(v)
 	return string(data)
+}
+
+func approvalPathFromArgs(workspace string, args map[string]any) string {
+	pathValue, ok := args["path"].(string)
+	if !ok || strings.TrimSpace(pathValue) == "" {
+		pathValue, _ = args["cwd"].(string)
+	}
+	if strings.TrimSpace(pathValue) == "" {
+		return ""
+	}
+	if filepath.IsAbs(pathValue) {
+		abs, err := filepath.Abs(filepath.Clean(pathValue))
+		if err == nil {
+			return abs
+		}
+		return filepath.Clean(pathValue)
+	}
+	abs, err := filepath.Abs(filepath.Join(workspace, filepath.Clean(pathValue)))
+	if err != nil {
+		return ""
+	}
+	return abs
 }
 
 func isApprovalRequiredResult(result string) bool {
@@ -1012,7 +1053,7 @@ func streamResult(content string, toolsByIndex map[int]*streamToolCall) (string,
 	return content, calls
 }
 
-func (a *Agent) executeTool(ctx context.Context, tc ToolCall, policy runtimePolicy, workspace string) string {
+func (a *Agent) executeTool(ctx context.Context, tc ToolCall, policy runtimePolicy, workspace string, approvedPaths []string) string {
 	name := toolCallName(tc)
 	argText := toolCallArgs(tc)
 	if a.blockedTools != nil && a.blockedTools[name] {
@@ -1038,7 +1079,7 @@ func (a *Agent) executeTool(ctx context.Context, tc ToolCall, policy runtimePoli
 	}
 	if tool, ok := a.tools.Get(name); ok {
 		if policy.PermissionMode != "" {
-			toolRegistry := tools.NewRegistryWithOptions(workspace, tools.Options{PermissionMode: toolPermissionMode(policy.PermissionMode)})
+			toolRegistry := tools.NewRegistryWithOptions(workspace, tools.Options{PermissionMode: toolPermissionMode(policy.PermissionMode), ApprovedPaths: approvedPaths})
 			if configuredTool, ok := toolRegistry.Get(name); ok {
 				tool = configuredTool
 			}

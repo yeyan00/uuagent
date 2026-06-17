@@ -256,6 +256,25 @@ func lastToolContent(t *testing.T, r *http.Request) string {
 	return ""
 }
 
+func toolContentsByID(t *testing.T, r *http.Request) map[string]string {
+	t.Helper()
+	var req struct {
+		Messages []struct {
+			Role       string `json:"role"`
+			Content    string `json:"content"`
+			ToolCallID string `json:"tool_call_id"`
+		} `json:"messages"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	contents := map[string]string{}
+	for _, msg := range req.Messages {
+		if msg.Role == "tool" {
+			contents[msg.ToolCallID] = msg.Content
+		}
+	}
+	return contents
+}
+
 func TestApproveRunEventsEmitsContinuationToolAndContentEvents(t *testing.T) {
 	t.Setenv("UUAGENT_HOME", t.TempDir())
 	outside := filepath.Join(t.TempDir(), "outside.txt")
@@ -318,6 +337,187 @@ func TestApproveRunEventsEmitsContinuationToolAndContentEvents(t *testing.T) {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("expected event %q in\n%s", want, joined)
 		}
+	}
+}
+
+func TestApproveRunExecutesRemainingToolCallsFromSameAssistantTurn(t *testing.T) {
+	t.Setenv("UUAGENT_HOME", t.TempDir())
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	inside := "same-turn-inside.txt"
+	if err := os.WriteFile(outside, []byte("outside-approved"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(inside, []byte("inside-same-turn"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(inside) })
+	calls := 0
+	var continuationTools map[string]string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		if calls == 1 {
+			outsideArgs, _ := json.Marshal(map[string]string{"path": outside})
+			insideArgs, _ := json.Marshal(map[string]string{"path": inside})
+			_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"tool_calls": []any{
+				map[string]any{"id": "tc-outside", "type": "function", "function": map[string]any{"name": "read", "arguments": string(outsideArgs)}},
+				map[string]any{"id": "tc-inside", "type": "function", "function": map[string]any{"name": "read", "arguments": string(insideArgs)}},
+			}}}}})
+			return
+		}
+		continuationTools = toolContentsByID(t, r)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"done with both tools"}}]}`))
+	}))
+	defer ts.Close()
+
+	cfg := config.Default()
+	cfg.Agent.ProxyURL = ts.URL + "/v1"
+	cfg.Agents = []config.AgentProfile{{ID: "asker", Name: "Asker", PermissionMode: "ask"}}
+	a := agent.New(cfg)
+	events, err := a.RunWithAgent(context.Background(), "approval-same-turn-remaining", "asker", "read both")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runID string
+	for evt := range events {
+		if evt.Type == "run" {
+			runID = evt.RunID
+		}
+		if evt.Type == "error" {
+			t.Fatal(evt.Text)
+		}
+	}
+	if _, err := a.ApproveRun(context.Background(), runID); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("expected one continuation model call, got %d", calls)
+	}
+	if continuationTools["tc-outside"] != "outside-approved" || !strings.Contains(continuationTools["tc-inside"], "inside-same-turn") {
+		t.Fatalf("continuation should include all same-turn tool results, got %#v", continuationTools)
+	}
+}
+
+func TestApproveRunDoesNotSendApprovalPayloadAsToolHistory(t *testing.T) {
+	t.Setenv("UUAGENT_HOME", t.TempDir())
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(outside, []byte("approved-content"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	var continuationToolMessages []string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		if calls == 1 {
+			args, _ := json.Marshal(map[string]string{"path": outside})
+			_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"tool_calls": []any{map[string]any{"id": "tc-read-outside", "type": "function", "function": map[string]any{"name": "read", "arguments": string(args)}}}}}}})
+			return
+		}
+		var req struct {
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		for _, msg := range req.Messages {
+			if msg.Role == "tool" {
+				continuationToolMessages = append(continuationToolMessages, msg.Content)
+			}
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"done"}}]}`))
+	}))
+	defer ts.Close()
+
+	cfg := config.Default()
+	cfg.Agent.ProxyURL = ts.URL + "/v1"
+	cfg.Agents = []config.AgentProfile{{ID: "asker", Name: "Asker", PermissionMode: "ask"}}
+	a := agent.New(cfg)
+	events, err := a.RunWithAgent(context.Background(), "approval-history", "asker", "read outside")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runID string
+	for evt := range events {
+		if evt.Type == "run" {
+			runID = evt.RunID
+		}
+		if evt.Type == "error" {
+			t.Fatal(evt.Text)
+		}
+	}
+	if _, err := a.ApproveRun(context.Background(), runID); err != nil {
+		t.Fatal(err)
+	}
+	if len(continuationToolMessages) != 1 {
+		t.Fatalf("expected one real tool result in continuation history, got %#v", continuationToolMessages)
+	}
+	if strings.Contains(continuationToolMessages[0], `"approval_required":true`) || continuationToolMessages[0] != "approved-content" {
+		t.Fatalf("approval payload should not be sent as tool history, got %#v", continuationToolMessages)
+	}
+}
+
+func TestApprovedOutsideDirectoryAllowsChildFileDuringSameRun(t *testing.T) {
+	t.Setenv("UUAGENT_HOME", t.TempDir())
+	outsideDir := filepath.Join(t.TempDir(), "outside")
+	if err := os.MkdirAll(outsideDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	child := filepath.Join(outsideDir, "go.mod")
+	if err := os.WriteFile(child, []byte("module outside-child"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		switch calls {
+		case 1:
+			args, _ := json.Marshal(map[string]string{"path": outsideDir})
+			_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"tool_calls": []any{map[string]any{"id": "tc-list-outside", "type": "function", "function": map[string]any{"name": "list_dir", "arguments": string(args)}}}}}}})
+		case 2:
+			args, _ := json.Marshal(map[string]string{"path": child})
+			_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"tool_calls": []any{map[string]any{"id": "tc-read-child", "type": "function", "function": map[string]any{"name": "read", "arguments": string(args)}}}}}}})
+		default:
+			last := lastToolContent(t, r)
+			if strings.Contains(last, `"approval_required":true`) {
+				t.Fatalf("child file under approved directory should not require another approval: %s", last)
+			}
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"done after child read"}}]}`))
+		}
+	}))
+	defer ts.Close()
+
+	cfg := config.Default()
+	cfg.Agent.ProxyURL = ts.URL + "/v1"
+	cfg.Agents = []config.AgentProfile{{ID: "asker", Name: "Asker", PermissionMode: "ask"}}
+	a := agent.New(cfg)
+	events, err := a.RunWithAgent(context.Background(), "approval-dir-child", "asker", "analyze outside dir")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runID string
+	for evt := range events {
+		if evt.Type == "run" {
+			runID = evt.RunID
+		}
+		if evt.Type == "error" {
+			t.Fatal(evt.Text)
+		}
+	}
+	if runID == "" {
+		t.Fatal("missing run id")
+	}
+	content, err := a.ApproveRun(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if content != "done after child read" {
+		t.Fatalf("unexpected final content %q", content)
+	}
+	if calls != 3 {
+		t.Fatalf("expected one approval then automatic child read continuation, got %d calls", calls)
 	}
 }
 
