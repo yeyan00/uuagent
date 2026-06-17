@@ -1,10 +1,14 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import './App.css'
 
-interface ChatEvent { type: string; run_id?: string; model?: string; tier?: string; text?: string; tool_name?: string; tool_id?: string }
-interface Message { role: 'user' | 'assistant' | 'system' | 'tool'; content: string; model?: string; tier?: string; tool_name?: string; tool_call_id?: string }
+interface ToolCallRecord { id?: string; function?: { name?: string; arguments?: string }; name?: string; args?: string }
+interface ChatEvent { type: string; run_id?: string; model?: string; tier?: string; text?: string; tool_name?: string; tool_id?: string; args?: string }
+interface Message { role: 'user' | 'assistant' | 'system' | 'tool' | 'reasoning'; content: string; model?: string; tier?: string; tool_name?: string; tool_call_id?: string; tool_calls?: ToolCallRecord[] }
 interface Project { id: string; name: string; workspace_path: string; temporary: boolean }
 interface AgentProfile { id: string; name: string; description?: string; system_prompt?: string; model?: string; enabled_tools?: string[]; enabled_skills?: string[]; enabled_mcp_servers?: string[]; permission_mode?: string; max_turns?: number }
+interface SubagentProfile { id: string; name: string; description?: string; system_prompt?: string; model?: string; enabled_tools?: string[]; enabled_skills?: string[]; enabled_mcp_servers?: string[]; blocked_tools?: string[]; permission_mode?: string; max_turns?: number; workspace_path?: string }
+interface SkillInfo { name: string; description?: string; path?: string; prompt?: string; enabled?: boolean; scope?: string; disable_model_invocation?: boolean }
+interface SkillDiagnostic { path: string; name?: string; message: string }
 interface Session { id: string; title?: string; project_id?: string; project_path?: string; parent_id?: string; messages: Message[] }
 interface MemoryEntry { id: string; content: string; status: string; source: string; project: string; scope: string }
 interface Summary { id: string; summary: string; token_before: number; token_after: number; created_at: number }
@@ -12,7 +16,7 @@ interface ContextStats { estimated_tokens: number; max_tokens: number; percent: 
 interface TokenUsage { input_tokens?: number; output_tokens?: number; total_tokens?: number; estimated_input_tokens?: number; estimated_output_tokens?: number; estimated?: boolean }
 interface SessionContext { context?: ContextStats; usage?: TokenUsage; summaries?: Summary[] }
 interface ApprovalPayload { approval_required?: boolean; tool?: string; path?: string; reason?: string; run_id?: string; status?: string }
-interface ToolEventPayload { kind?: 'tool_start' | 'tool_result'; tool?: string; tool_id?: string; text?: string }
+interface ToolEventPayload { kind?: 'tool_start' | 'tool_result'; tool?: string; tool_id?: string; args?: string; text?: string }
 
 type MainPage = 'projects' | 'extensions' | 'schedules' | 'settings'
 type ProjectSettingsTab = 'memory' | 'context' | 'config'
@@ -34,6 +38,12 @@ const api = async <T,>(url: string, init?: RequestInit): Promise<T> => {
 
 const joinList = (value?: string[]) => (value || []).join(', ')
 const parseList = (value: string) => value.split(',').map(x => x.trim()).filter(Boolean)
+const toggleListValue = (items: string[] | undefined, value: string) => {
+  const set = new Set(items || [])
+  if (set.has(value)) set.delete(value)
+  else set.add(value)
+  return Array.from(set)
+}
 const parseApprovalPayload = (text?: string): ApprovalPayload | null => {
   if (!text) return null
   try {
@@ -86,8 +96,19 @@ const renderMarkdown = (content: unknown) => {
       return <pre key={i} className="codeBlock"><code>{code}</code></pre>
     }
     const lines = trimmed.split('\n')
+    if (/^-{3,}$/.test(trimmed)) return <hr key={i} />
+    if (lines.every(line => /^\s*>\s?/.test(line))) {
+      return <blockquote key={i}>{lines.map((line, j) => <span key={j}>{j > 0 && <br />}{renderInlineMarkdown(line.replace(/^\s*>\s?/, ''))}</span>)}</blockquote>
+    }
     if (lines.every(line => /^\s*[-*]\s+/.test(line))) {
       return <ul key={i}>{lines.map((line, j) => <li key={j}>{renderInlineMarkdown(line.replace(/^\s*[-*]\s+/, ''))}</li>)}</ul>
+    }
+    if (lines.every(line => /^\s*\d+\.\s+/.test(line))) {
+      return <ol key={i}>{lines.map((line, j) => <li key={j}>{renderInlineMarkdown(line.replace(/^\s*\d+\.\s+/, ''))}</li>)}</ol>
+    }
+    if (lines.length >= 2 && lines.every(line => /^\s*\|.*\|\s*$/.test(line)) && /^\s*\|?\s*:?-{3,}:?/.test(lines[1])) {
+      const rows = lines.filter((_, j) => j !== 1).map(line => line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(cell => cell.trim()))
+      return <table key={i}><thead><tr>{(rows[0] || []).map((cell, j) => <th key={j}>{renderInlineMarkdown(cell)}</th>)}</tr></thead><tbody>{rows.slice(1).map((row, j) => <tr key={j}>{row.map((cell, k) => <td key={k}>{renderInlineMarkdown(cell)}</td>)}</tr>)}</tbody></table>
     }
     if (/^#{1,3}\s+/.test(trimmed)) {
       const level = Math.min(3, trimmed.match(/^#+/)?.[0].length || 2)
@@ -113,37 +134,65 @@ const renderApprovalCard = (approval: ApprovalPayload, onApprove: (runID: string
   </div>
 }
 
-const renderToolEventCard = (event: ToolEventPayload) => <div className="toolEventCard">
-  <div className="toolEventBadge">{event.kind === 'tool_start' ? 'Tool running' : 'Tool result'}</div>
-  <h3>{event.kind === 'tool_start' ? `Running ${event.tool || 'tool'}` : `${event.tool || 'Tool'} result`}</h3>
-  {event.text && <pre>{toolPreview(event.text)}</pre>}
-</div>
+const formatToolArgs = (args?: string) => {
+  const value = (args || '').trim()
+  if (!value) return ''
+  try {
+    const parsed = JSON.parse(value)
+    if (parsed && typeof parsed === 'object') {
+      const entries = Object.entries(parsed as Record<string, unknown>)
+      return entries.map(([key, val]) => `${key}: ${typeof val === 'string' ? val : JSON.stringify(val)}`).join('\n')
+    }
+  } catch {
+    return value
+  }
+  return value
+}
 
-type TurnPart = { kind: 'assistant' | 'system' | 'tool'; message: Message }
-type ChatTurn = { user?: Message; parts: TurnPart[] }
+const renderToolEventCard = (event: ToolEventPayload) => {
+  const args = formatToolArgs(event.args)
+  return <div className="toolEventCard">
+    <div className="toolEventBadge">{event.kind === 'tool_start' ? 'Tool running' : 'Tool result'}</div>
+    <h3>{event.kind === 'tool_start' ? `Running ${event.tool || 'tool'}` : `${event.tool || 'Tool'} result`}</h3>
+    {args && <pre className="toolArgs">{args}</pre>}
+    {event.text && <pre>{toolPreview(event.text)}</pre>}
+  </div>
+}
+
+type TurnPart = { kind: 'assistant' | 'system' | 'tool' | 'reasoning'; message: Message }
+type ChatTurn = { user?: Message; parts: TurnPart[]; toolArgs: Record<string, string> }
+
+const toolCallName = (call: ToolCallRecord) => call.function?.name || call.name || 'tool'
+const toolCallArgs = (call: ToolCallRecord) => call.function?.arguments || call.args || ''
 
 const groupMessagesIntoTurns = (items: Message[]): ChatTurn[] => {
   const turns: ChatTurn[] = []
   let current: ChatTurn | null = null
   for (const message of items) {
     if (message.role === 'user') {
-      current = { user: message, parts: [] }
+      current = { user: message, parts: [], toolArgs: {} }
       turns.push(current)
       continue
     }
     if (!current) {
-      current = { parts: [] }
+      current = { parts: [], toolArgs: {} }
       turns.push(current)
     }
-    current.parts.push({ kind: message.role === 'tool' ? 'tool' : message.role === 'assistant' ? 'assistant' : 'system', message })
+    if (message.role === 'assistant') {
+      for (const call of message.tool_calls || []) {
+        if (call.id) current.toolArgs[call.id] = toolCallArgs(call)
+      }
+      if (!String(message.content || '').trim()) continue
+    }
+    current.parts.push({ kind: message.role === 'tool' ? 'tool' : message.role === 'assistant' ? 'assistant' : message.role === 'reasoning' ? 'reasoning' : 'system', message })
   }
   return turns
 }
 
-const toolEventFromMessage = (message: Message): ToolEventPayload => {
+const toolEventFromMessage = (message: Message, toolArgs: Record<string, string> = {}): ToolEventPayload => {
   const parsed = parseToolEventPayload(String(message.content || ''))
   if (parsed) return parsed
-  return { kind: 'tool_result', tool: message.tool_name || message.tool_call_id || 'tool', tool_id: message.tool_call_id, text: String(message.content || '') }
+  return { kind: 'tool_result', tool: message.tool_name || message.tool_call_id || 'tool', tool_id: message.tool_call_id, args: message.tool_call_id ? toolArgs[message.tool_call_id] : undefined, text: String(message.content || '') }
 }
 
 function App() {
@@ -154,6 +203,10 @@ function App() {
   const [routeInfo, setRouteInfo] = useState<{ model: string; tier: string } | null>(null)
   const [projects, setProjects] = useState<Project[]>([])
   const [agents, setAgents] = useState<AgentProfile[]>([])
+  const [subagents, setSubagents] = useState<SubagentProfile[]>([])
+  const [skills, setSkills] = useState<SkillInfo[]>([])
+  const [skillDiagnostics, setSkillDiagnostics] = useState<SkillDiagnostic[]>([])
+  const [settingsTab, setSettingsTab] = useState('Agents')
   const [projectSessions, setProjectSessions] = useState<Record<string, Session[]>>({})
   const [memories, setMemories] = useState<MemoryEntry[]>([])
   const [summaries, setSummaries] = useState<Summary[]>([])
@@ -168,6 +221,8 @@ function App() {
   const [status, setStatus] = useState('Ready')
   const [currentRunId, setCurrentRunId] = useState('')
   const [agentDraft, setAgentDraft] = useState<AgentProfile | null>(null)
+  const [subagentDraft, setSubagentDraft] = useState<SubagentProfile | null>(null)
+  const [forcedSkill, setForcedSkill] = useState('')
   const [isAgentSettingsOpen, setAgentSettingsOpen] = useState(false)
   const [settingsProjectId, setSettingsProjectId] = useState('')
   const [projectSettingsTab, setProjectSettingsTab] = useState<ProjectSettingsTab>('memory')
@@ -178,6 +233,7 @@ function App() {
 
   const activeProject = projects.find(p => p.id === projectId)
   const activeAgent = agents.find(a => a.id === agentId)
+  const skillNames = skills.map(s => s.name)
   const activeProjectSessions = projectId ? (projectSessions[projectId] || []) : []
   const activeSession = activeProjectSessions.find(s => s.id === sessionId)
   const activeSessionLocked = !!activeSession && ((activeSession.messages?.length || 0) > 0 || !!activeSession.project_id)
@@ -190,14 +246,19 @@ function App() {
   }
 
   const refresh = async () => {
-    const [p, a, m] = await Promise.all([
+    const [p, a, m, sa, sk] = await Promise.all([
       api<{projects: Project[]}>('/api/projects'),
       api<{agents: AgentProfile[]}>('/api/agents'),
       api<{memories: MemoryEntry[]}>(memoryURL),
+      api<{subagents: SubagentProfile[]}>('/api/subagents').catch(() => ({ subagents: [] })),
+      api<{skills: SkillInfo[]; diagnostics?: SkillDiagnostic[]}>('/api/skills').catch(() => ({ skills: [], diagnostics: [] })),
     ])
     const projectList = p.projects || []
     setProjects(projectList)
     setAgents(a.agents || [])
+    setSubagents(sa.subagents || [])
+    setSkills(sk.skills || [])
+    setSkillDiagnostics(sk.diagnostics || [])
     setMemories(m.memories || [])
     const pairs = await Promise.all(projectList.map(async p => {
       const r = await api<{sessions: Session[]}>(`/api/projects/${encodeURIComponent(p.id)}/sessions`).catch(() => ({ sessions: [] }))
@@ -274,7 +335,7 @@ function App() {
   }
 
   const updateAgentDraft = (patch: Partial<AgentProfile>) => setAgentDraft(prev => ({ ...(prev || { id: `agent-${Date.now()}`, name: 'New Agent' }), ...patch }))
-  const newAgent = () => { setAgentDraft({ id:`agent-${Date.now()}`, name:'New Agent', enabled_tools:['read','list_dir'], enabled_mcp_servers:['mock'], permission_mode:'workspace-write', max_turns:20 }); setAgentSettingsOpen(true) }
+  const newAgent = () => { setAgentDraft({ id:`agent-${Date.now()}`, name:'New Agent', enabled_tools:['read','ls'], enabled_mcp_servers:['mock'], permission_mode:'workspace-write', max_turns:20 }); setAgentSettingsOpen(true) }
   const saveAgent = async () => {
     if (!agentDraft) return
     const saved = await api<AgentProfile>('/api/agents', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(agentDraft) })
@@ -293,6 +354,13 @@ function App() {
     setAgentId('default'); setAgentSettingsOpen(false); setStatus(`Deleted agent ${agentId}`); await refresh()
   }
 
+  const updateSubagentDraft = (patch: Partial<SubagentProfile>) => setSubagentDraft(prev => prev ? { ...prev, ...patch } : prev)
+  const saveSubagent = async () => {
+    if (!subagentDraft) return
+    const saved = await api<SubagentProfile>('/api/subagents', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(subagentDraft) })
+    setSubagentDraft(saved); setStatus(`Saved subagent ${saved.name || saved.id}`); await refresh()
+  }
+
   const addMemory = async () => {
     if (!memoryText.trim()) return
     await api('/api/memory', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ content: memoryText, project: projectId, status: 'confirmed', source: 'user', scope: 'project' }) })
@@ -308,7 +376,7 @@ function App() {
   }
 
   const appendToolEvent = (kind: 'tool_start' | 'tool_result', evt: ChatEvent) => {
-    const payload: ToolEventPayload = { kind, tool: evt.tool_name || evt.tool_id || 'tool', tool_id: evt.tool_id, text: evt.text }
+    const payload: ToolEventPayload = { kind, tool: evt.tool_name || evt.tool_id || 'tool', tool_id: evt.tool_id, args: evt.args, text: evt.text }
     setMessages(prev => [...prev, { role: 'tool', content: JSON.stringify(payload) }])
   }
 
@@ -318,6 +386,16 @@ function App() {
       const last = updated[updated.length - 1]
       if (last?.role === 'assistant') updated[updated.length - 1] = { ...last, content: `${last.content}${text}` }
       else updated.push({ role: 'assistant', content: text, model })
+      return updated
+    })
+  }
+
+  const appendReasoningContent = (text: string) => {
+    setMessages(prev => {
+      const updated = [...prev]
+      const last = updated[updated.length - 1]
+      if (last?.role === 'reasoning') updated[updated.length - 1] = { ...last, content: `${last.content}${text}` }
+      else updated.push({ role: 'reasoning', content: text })
       return updated
     })
   }
@@ -343,6 +421,7 @@ function App() {
           if (evt.type === 'run') { streamRunId = evt.run_id || ''; setCurrentRunId(streamRunId) }
           else if (evt.type === 'route') { setRouteInfo({ model: evt.model || '', tier: evt.tier || '' }) }
           else if (evt.type === 'content') appendAssistantContent(evt.text || '', evt.model || options.model || routeInfo?.model || '')
+          else if (evt.type === 'reasoning') appendReasoningContent(evt.text || '')
           else if (evt.type === 'tool_start') { appendToolEvent('tool_start', evt); setStatus(`Running ${evt.tool_name || evt.tool_id || 'tool'}`) }
           else if (evt.type === 'tool_result') {
             const approval = parseApprovalPayload(evt.text)
@@ -391,7 +470,8 @@ function App() {
 
   const sendMessage = async () => {
     if (!input.trim() || isStreaming) return
-    const prompt = input
+    const rawPrompt = input.trim()
+    const prompt = forcedSkill ? `/skill:${forcedSkill} ${rawPrompt}` : rawPrompt
     const controller = new AbortController()
     abortRef.current = controller
     setMessages(prev => [...prev, { role: 'user', content: prompt }])
@@ -420,13 +500,14 @@ function App() {
   const renderPart = (part: TurnPart, key: string) => {
     const msg = part.message
     if (part.kind === 'assistant') return <div key={key} className="messageBubble assistant"><div className="messageMeta">{msg.model || 'Assistant'}</div>{renderMarkdown(msg.content)}</div>
+    if (part.kind === 'reasoning') return <details key={key} className="reasoningBlock" open><summary>Thinking</summary>{renderMarkdown(msg.content)}</details>
     const approval = parseApprovalPayload(String(msg.content || ''))
     return <div key={key} className="messageBubble system"><div className="messageMeta">System</div>{approval ? renderApprovalCard(approval, approveRun, denyRun) : renderMarkdown(msg.content)}</div>
   }
 
-  const renderToolGroup = (tools: Message[], key: string) => <details key={key} className="toolActivityGroup" open>
+  const renderToolGroup = (tools: Message[], toolArgs: Record<string, string>, key: string) => <details key={key} className="toolActivityGroup">
     <summary><span>Tool activity · {tools.length}</span></summary>
-    <div className="toolActivityList">{tools.map((tool, i) => <div key={i} className="toolActivityItem">{renderToolEventCard(toolEventFromMessage(tool))}</div>)}</div>
+    <div className="toolActivityList">{tools.map((tool, i) => <div key={i} className="toolActivityItem">{renderToolEventCard(toolEventFromMessage(tool, toolArgs))}</div>)}</div>
   </details>
 
   const renderTurn = (turn: ChatTurn, index: number) => {
@@ -435,7 +516,7 @@ function App() {
     let pendingTools: Message[] = []
     const flushTools = (key: string) => {
       if (pendingTools.length === 0) return
-      nodes.push(renderToolGroup(pendingTools, key))
+      nodes.push(renderToolGroup(pendingTools, turn.toolArgs, key))
       pendingTools = []
     }
     turn.parts.forEach((part, i) => {
@@ -450,13 +531,53 @@ function App() {
     return <div key={index} className="sessionTurn">{nodes}</div>
   }
 
+  const renderSkillPicker = (value: string[] | undefined, onChange: (skills: string[]) => void) => {
+    const selected = value || []
+    const all = selected.length === 0
+    return <div className="wide skillPicker">
+      <label><input type="checkbox" checked={all} onChange={e => onChange(e.target.checked ? [] : skillNames.slice(0, 1))} />All skills</label>
+      <div className="skillCheckboxGrid">
+        {skills.map(skill => <label key={skill.name}><input type="checkbox" checked={!all && selected.includes(skill.name)} onChange={() => onChange(toggleListValue(selected, skill.name))} />{skill.name}</label>)}
+      </div>
+      {skills.length === 0 && <small>No skills available.</small>}
+    </div>
+  }
+
+  const renderSkillsSettings = () => <div className="settingsPanel">
+    <div className="emptyPanel"><strong>Skills</strong><br />Available skills are discovered from user config, user skill folders, and project skill folders. Empty agent selection means all skills.</div>
+    <div className="itemList">
+      {skills.map(skill => <div key={skill.name} className="listItem static"><span>{skill.name}</span><small>{skill.scope || 'global'} · {skill.description || 'No description'}</small></div>)}
+      {skills.length === 0 && <div className="emptyPanel">No skills discovered.</div>}
+    </div>
+    {skillDiagnostics.length > 0 && <div className="settingsPanel"><h3>Diagnostics</h3>{skillDiagnostics.map((d, i) => <div key={i} className="listItem static"><span>{d.path}</span><small>{d.message}</small></div>)}</div>}
+  </div>
+
+  const renderSubagentSettings = () => <div className="settingsPanel">
+    <div className="itemList">{subagents.map(sa => <button key={sa.id} className="listItem" onClick={() => setSubagentDraft({ ...sa })}><span>{sa.name || sa.id}</span><small>{joinList(sa.enabled_skills) || 'All skills'}</small></button>)}</div>
+    {subagents.length === 0 && <div className="emptyPanel">No subagents configured.</div>}
+    {subagentDraft && <div className="settingsGrid">
+      <label>ID<input value={subagentDraft.id || ''} onChange={e=>updateSubagentDraft({ id:e.target.value })} /></label>
+      <label>Name<input value={subagentDraft.name || ''} onChange={e=>updateSubagentDraft({ name:e.target.value })} /></label>
+      <label className="wide">System Prompt<textarea value={subagentDraft.system_prompt || ''} onChange={e=>updateSubagentDraft({ system_prompt:e.target.value })} /></label>
+      {renderSkillPicker(subagentDraft.enabled_skills, enabled_skills => updateSubagentDraft({ enabled_skills }))}
+      <button className="primaryButton" onClick={saveSubagent}>Save Subagent</button>
+    </div>}
+  </div>
+
+  const renderSettingsBody = () => {
+    if (settingsTab === 'Skills') return renderSkillsSettings()
+    if (settingsTab === 'Subagents') return renderSubagentSettings()
+    return <div className="itemList">
+      {settingsTabs.map(tab => <button key={tab} className={tab === settingsTab ? 'listItem active' : 'listItem'} onClick={() => {
+        setSettingsTab(tab)
+        if (tab === 'Agents') setAgentSettingsOpen(true)
+      }}><span>{tab}</span><small>{tab === 'Agents' ? 'Prompts, models, tools and MCP access' : tab === 'Subagents' ? 'Delegated agents and skills' : tab === 'Skills' ? 'Available skill registry' : 'Coming soon'}</small></button>)}
+    </div>
+  }
+
   const renderSidebarBody = () => {
     if (mainPage !== 'projects') {
-      if (mainPage === 'settings') return <>
-        <div className="itemList">
-          {settingsTabs.map(tab => <button key={tab} className={tab === 'Agents' ? 'listItem active' : 'listItem'} onClick={() => tab === 'Agents' ? setAgentSettingsOpen(true) : setStatus(`${tab} settings are planned`)}><span>{tab}</span><small>{tab === 'Agents' ? 'Prompts, models, tools and MCP access' : 'Coming soon'}</small></button>)}
-        </div>
-      </>
+      if (mainPage === 'settings') return renderSettingsBody()
       const text = mainPage === 'extensions'
         ? 'Manage marketplace extensions and installable capability packs.'
         : 'Create recurring project scans, tests, reports and knowledge refresh jobs.'
@@ -537,6 +658,7 @@ function App() {
           <div className="composerMeta">
             <label>Project<select value={projectId} onChange={e=>openProject(e.target.value)} disabled={activeSessionLocked}><option value="">None</option>{projects.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select>{activeSessionLocked && <span>locked</span>}</label>
             <label>Agent<select value={agentId} onChange={e=>selectAgent(e.target.value)}>{agents.map(a=><option key={a.id} value={a.id}>{a.name || a.id}</option>)}</select></label>
+            <label>Skill<select aria-label="Skill" value={forcedSkill} onChange={e=>setForcedSkill(e.target.value)}><option value="">Auto</option>{skills.map(skill => <option key={skill.name} value={skill.name}>{skill.name}</option>)}</select></label>
             <label>Model<select value={modelOverride} onChange={e=>setModelOverride(e.target.value)}>{availableModels.map(m=><option key={m} value={m}>{m === 'auto' ? 'Auto' : m}</option>)}</select></label>
           </div>
         </footer>
@@ -554,8 +676,8 @@ function App() {
           <label>Model<input value={agentDraft.model || ''} onChange={e=>updateAgentDraft({ model:e.target.value })} placeholder="empty = route automatically" /></label>
           <label>Permission<input value={agentDraft.permission_mode || ''} onChange={e=>updateAgentDraft({ permission_mode:e.target.value })} /></label>
           <label>Max Turns<input type="number" value={agentDraft.max_turns || 0} onChange={e=>updateAgentDraft({ max_turns:Number(e.target.value) })} /></label>
-          <label className="wide">Tools<input value={joinList(agentDraft.enabled_tools)} onChange={e=>updateAgentDraft({ enabled_tools:parseList(e.target.value) })} placeholder="read, write, grep, list_dir" /></label>
-          <label className="wide">Skills<input value={joinList(agentDraft.enabled_skills)} onChange={e=>updateAgentDraft({ enabled_skills:parseList(e.target.value) })} placeholder="mock-planner" /></label>
+          <label className="wide">Tools<input value={joinList(agentDraft.enabled_tools)} onChange={e=>updateAgentDraft({ enabled_tools:parseList(e.target.value) })} placeholder="read, write, grep, ls" /></label>
+          {renderSkillPicker(agentDraft.enabled_skills, enabled_skills => updateAgentDraft({ enabled_skills }))}
           <label className="wide">MCP Servers<input value={joinList(agentDraft.enabled_mcp_servers)} onChange={e=>updateAgentDraft({ enabled_mcp_servers:parseList(e.target.value) })} placeholder="mock" /></label>
         </div>}
         <div className="modalActions"><button onClick={newAgent}>New</button><button onClick={cloneAgent}>Clone</button><button onClick={deleteAgent} disabled={agentDraft?.id === 'default'}>Delete</button><button className="primaryButton" onClick={saveAgent}>Save Agent</button></div>

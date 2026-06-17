@@ -13,6 +13,16 @@ import (
 	"github.com/yeyan00/uuagent/internal/tools"
 )
 
+func TestRegistryExposesLsNotListDir(t *testing.T) {
+	registry := tools.NewRegistry(t.TempDir())
+	if _, ok := registry.Get("ls"); !ok {
+		t.Fatal("ls tool missing")
+	}
+	if _, ok := registry.Get("list_dir"); ok {
+		t.Fatal("list_dir should not be exposed")
+	}
+}
+
 func TestToolsRejectPathsOutsideWorkspace(t *testing.T) {
 	workspace := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "secret.txt")
@@ -52,6 +62,12 @@ func TestShellToolRunsOnCurrentPlatform(t *testing.T) {
 	shell, ok := registry.Get("shell")
 	if !ok {
 		t.Fatal("shell tool missing")
+	}
+	if runtime.GOOS == "windows" && !strings.Contains(shell.Description, "PowerShell") {
+		t.Fatalf("expected Windows shell description to mention PowerShell, got %q", shell.Description)
+	}
+	if runtime.GOOS != "windows" && !strings.Contains(shell.Description, "sh -c") {
+		t.Fatalf("expected POSIX shell description to mention sh -c, got %q", shell.Description)
 	}
 
 	out, err := shell.Execute(context.Background(), map[string]any{"command": "echo uuagent-shell-ok"})

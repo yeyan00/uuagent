@@ -76,7 +76,7 @@ describe('App', () => {
       if (url === '/api/runs/run-approval/approve/stream') {
         const stream = new ReadableStream<Uint8Array>({
           start(c) {
-            c.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'tool_start', run_id: 'run-approval', tool_name: 'read', tool_id: 'call-1' })}\n\n`))
+            c.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'tool_start', run_id: 'run-approval', tool_name: 'read', tool_id: 'call-1', args: '{"path":"C:/outside/file.txt"}' })}\n\n`))
             c.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'tool_result', run_id: 'run-approval', tool_name: 'read', tool_id: 'call-1', text: 'approved file contents' })}\n\n`))
             c.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'tool_start', run_id: 'run-approval', tool_name: 'grep', tool_id: 'call-2' })}\n\n`))
             c.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'tool_result', run_id: 'run-approval', tool_name: 'grep', tool_id: 'call-2', text: 'matched important code' })}\n\n`))
@@ -115,6 +115,7 @@ describe('App', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Approve' }))
     await waitFor(() => expect(calls.some(c => c.url === '/api/runs/run-approval/approve/stream' && c.init?.method === 'POST')).toBe(true))
     expect(await screen.findByText('Running read')).toBeTruthy()
+    expect(await screen.findByText('path: C:/outside/file.txt')).toBeTruthy()
     expect(await screen.findByText('approved file contents')).toBeTruthy()
     expect(await screen.findByText('Running grep')).toBeTruthy()
     expect(await screen.findByText('matched important code')).toBeTruthy()
@@ -122,6 +123,41 @@ describe('App', () => {
     await waitFor(() => expect(screen.getAllByText('Approved').length).toBeGreaterThanOrEqual(1))
     expect(await screen.findByRole('button', { name: 'Deny' })).toBeTruthy()
     expect(screen.queryByText('Done')).toBeNull()
+  })
+
+  it('renders reasoning and richer markdown in assistant messages', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const encoder = new TextEncoder()
+    globalThis.fetch = vi.fn(async (url: string) => {
+      if (url === '/api/projects') return Response.json({ projects: [] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/sessions') return Response.json({ sessions: [] })
+      if (url === '/api/memory') return Response.json({ memories: [] })
+      if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
+      if (url.startsWith('/api/chat')) {
+        const md = ['> important note', '', '1. first item', '2. second item', '', '| Name | Value |', '| --- | --- |', '| Go | backend |'].join('\n')
+        const stream = new ReadableStream<Uint8Array>({
+          start(c) {
+            c.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'reasoning', text: 'checking files' })}\n\n`))
+            c.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'content', text: md })}\n\n`))
+            c.close()
+          },
+        })
+        return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } })
+      }
+      return Response.json({})
+    }) as any
+
+    render(<App />)
+    const input = await screen.findByPlaceholderText('Ask UUAgent to inspect, edit or explain code... Ctrl+Enter to send')
+    fireEvent.change(input, { target: { value: 'show markdown' } })
+    fireEvent.click(screen.getByText('Send'))
+    expect(await screen.findByText('Thinking')).toBeTruthy()
+    expect(await screen.findByText('checking files')).toBeTruthy()
+    expect(await screen.findByText('important note')).toBeTruthy()
+    expect(await screen.findByText('first item')).toBeTruthy()
+    expect(await screen.findByText('Name')).toBeTruthy()
+    expect(await screen.findByText('backend')).toBeTruthy()
   })
 
   it('parses SSE events split across network chunks', async () => {
@@ -165,8 +201,12 @@ describe('App', () => {
       if (url === '/api/projects/proj-1/open') return Response.json({ config_sources: [] })
       if (url === '/api/projects/proj-1/sessions/s1') return Response.json({ id: 's1', title: 'Analyze repo', messages: [
         { role: 'user', content: 'Analyze repo' },
-        { role: 'tool', tool_name: 'list_dir', content: 'README.md\ninternal' },
-        { role: 'tool', tool_name: 'read', content: 'module example' },
+        { role: 'assistant', content: '', tool_calls: [
+          { id: 'tc-list', function: { name: 'ls', arguments: '{"path":"C:/repo"}' } },
+          { id: 'tc-read', function: { name: 'read', arguments: '{"path":"C:/repo/go.mod"}' } },
+        ] },
+        { role: 'tool', tool_call_id: 'tc-list', tool_name: 'ls', content: 'README.md\ninternal' },
+        { role: 'tool', tool_call_id: 'tc-read', tool_name: 'read', content: 'module example' },
         { role: 'assistant', content: 'Final repo summary' },
       ] })
       if (url.startsWith('/api/projects/proj-1/sessions/s1/context')) return Response.json({ summaries: [] })
@@ -179,8 +219,11 @@ describe('App', () => {
     fireEvent.click((await screen.findAllByText('Analyze repo'))[0])
     await waitFor(() => expect(screen.getAllByText('Analyze repo').length).toBeGreaterThanOrEqual(2))
     expect(await screen.findByText('Tool activity · 2')).toBeTruthy()
-    expect(await screen.findByText('list_dir result')).toBeTruthy()
+    await waitFor(() => expect(document.querySelector('details.toolActivityGroup')?.hasAttribute('open')).toBe(false))
+    expect(await screen.findByText('ls result')).toBeTruthy()
+    expect(await screen.findByText('path: C:/repo')).toBeTruthy()
     expect(await screen.findByText('read result')).toBeTruthy()
+    expect(await screen.findByText('path: C:/repo/go.mod')).toBeTruthy()
     expect(await screen.findByText('Final repo summary')).toBeTruthy()
     expect(screen.queryByText('Tool')).toBeNull()
   })
@@ -240,6 +283,117 @@ describe('App', () => {
     fireEvent.click(await screen.findByText('当前目录是什么'))
     await waitFor(() => expect(calls).toContain('GET /api/projects/proj-1/sessions/s1'))
     expect(calls).toContain('GET /api/projects/proj-1/sessions')
+  })
+
+  it('shows discovered skills and diagnostics in Settings Skills', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    globalThis.fetch = vi.fn(async (url: string) => {
+      if (url === '/api/projects') return Response.json({ projects: [] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/subagents') return Response.json({ subagents: [] })
+      if (url === '/api/skills') return Response.json({ skills: [
+        { name: 'review', description: 'Review code', scope: 'global', enabled: true },
+        { name: 'docx', description: 'Work with Word documents', scope: 'global', enabled: true },
+      ], diagnostics: [{ path: 'bad/SKILL.md', message: 'missing description' }] })
+      if (url === '/api/memory') return Response.json({ memories: [] })
+      if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
+      return Response.json({})
+    }) as any
+
+    render(<App />)
+    fireEvent.click(await screen.findByText('Settings'))
+    fireEvent.click(await screen.findByText('Skills'))
+    expect((await screen.findAllByText('review')).length).toBeGreaterThan(0)
+    expect(await screen.findByText(/Review code/)).toBeTruthy()
+    expect((await screen.findAllByText('docx')).length).toBeGreaterThan(0)
+    expect(await screen.findByText(/Work with Word documents/)).toBeTruthy()
+    expect(await screen.findByText('missing description')).toBeTruthy()
+  })
+
+  it('saves agent skill checkbox selection and treats empty as all skills', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    globalThis.fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push({ url, init })
+      if (url === '/api/projects') return Response.json({ projects: [] })
+      if (url === '/api/agents' && init?.method === 'POST') return Response.json(JSON.parse(String(init.body)))
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent', enabled_skills: [] }] })
+      if (url === '/api/subagents') return Response.json({ subagents: [] })
+      if (url === '/api/skills') return Response.json({ skills: [
+        { name: 'review', description: 'Review code', enabled: true, scope: 'global' },
+        { name: 'docx', description: 'Work with docs', enabled: true, scope: 'global' },
+      ], diagnostics: [] })
+      if (url === '/api/memory') return Response.json({ memories: [] })
+      if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
+      return Response.json({})
+    }) as any
+
+    render(<App />)
+    fireEvent.click(await screen.findByText('Settings'))
+    fireEvent.click(await screen.findByText('Agents'))
+    expect(await screen.findByText('All skills')).toBeTruthy()
+    fireEvent.click(await screen.findByLabelText('review'))
+    fireEvent.click(await screen.findByText('Save Agent'))
+    await waitFor(() => {
+      const post = calls.find(c => c.url === '/api/agents' && c.init?.method === 'POST')
+      expect(post).toBeTruthy()
+      expect(JSON.parse(String(post?.init?.body))).toMatchObject({ enabled_skills: ['review'] })
+    })
+  })
+
+  it('manages subagent skill selection from Settings Subagents', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    globalThis.fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push({ url, init })
+      if (url === '/api/projects') return Response.json({ projects: [] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/subagents' && init?.method === 'POST') return Response.json(JSON.parse(String(init.body)))
+      if (url === '/api/subagents') return Response.json({ subagents: [{ id: 'reviewer', name: 'Reviewer', enabled_skills: [] }] })
+      if (url === '/api/skills') return Response.json({ skills: [{ name: 'review', description: 'Review code', enabled: true, scope: 'global' }], diagnostics: [] })
+      if (url === '/api/memory') return Response.json({ memories: [] })
+      if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
+      return Response.json({})
+    }) as any
+
+    render(<App />)
+    fireEvent.click(await screen.findByText('Settings'))
+    fireEvent.click(await screen.findByText('Subagents'))
+    fireEvent.click(await screen.findByText('Reviewer'))
+    fireEvent.click(await screen.findByLabelText('review'))
+    fireEvent.click(await screen.findByText('Save Subagent'))
+    await waitFor(() => {
+      const post = calls.find(c => c.url === '/api/subagents' && c.init?.method === 'POST')
+      expect(post).toBeTruthy()
+      expect(JSON.parse(String(post?.init?.body))).toMatchObject({ id: 'reviewer', enabled_skills: ['review'] })
+    })
+  })
+
+  it('forces a single selected skill when sending from composer', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const calls: string[] = []
+    const encoder = new TextEncoder()
+    globalThis.fetch = vi.fn(async (url: string) => {
+      calls.push(url)
+      if (url === '/api/projects') return Response.json({ projects: [] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/subagents') return Response.json({ subagents: [] })
+      if (url === '/api/skills') return Response.json({ skills: [{ name: 'review', description: 'Review code', enabled: true, scope: 'global' }], diagnostics: [] })
+      if (url === '/api/memory') return Response.json({ memories: [] })
+      if (url.startsWith('/api/chat')) {
+        const stream = new ReadableStream<Uint8Array>({ start(c) { c.enqueue(encoder.encode('data: {"type":"content","text":"ok"}\n\n')); c.close() } })
+        return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } })
+      }
+      if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
+      return Response.json({})
+    }) as any
+
+    render(<App />)
+    fireEvent.change(await screen.findByLabelText('Skill'), { target: { value: 'review' } })
+    const input = await screen.findByPlaceholderText('Ask UUAgent to inspect, edit or explain code... Ctrl+Enter to send')
+    fireEvent.change(input, { target: { value: 'inspect code' } })
+    fireEvent.click(screen.getByText('Send'))
+    await waitFor(() => expect(calls.some(url => url.startsWith('/api/chat') && decodeURIComponent(url).includes('/skill:review inspect code'))).toBe(true))
   })
 
   it('shows current context and session token usage in project settings', async () => {

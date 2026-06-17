@@ -17,7 +17,7 @@ func TestToolCallsPersistInSession(t *testing.T) {
 		calls++
 		w.Header().Set("Content-Type", "application/json")
 		if calls == 1 {
-			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"I will inspect files.","tool_calls":[{"id":"tc-read","type":"function","function":{"name":"list_dir","arguments":"{\"path\":\".\"}"}}]}}]}`))
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"I will inspect files.","tool_calls":[{"id":"tc-read","type":"function","function":{"name":"ls","arguments":"{\"path\":\".\"}"}}]}}]}`))
 			return
 		}
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"Final summary after tool."}}]}`))
@@ -44,11 +44,11 @@ func TestToolCallsPersistInSession(t *testing.T) {
 		t.Fatalf("expected user/assistant/tool messages, got %d", len(snap.Messages))
 	}
 	assistant := snap.Messages[1]
-	if assistant.Role != "assistant" || len(assistant.ToolCalls) != 1 || assistant.ToolCalls[0].Name != "list_dir" {
+	if assistant.Role != "assistant" || len(assistant.ToolCalls) != 1 || assistant.ToolCalls[0].Name != "ls" {
 		t.Fatalf("assistant tool call not persisted: %+v", assistant)
 	}
 	tool := snap.Messages[2]
-	if tool.Role != "tool" || tool.ToolName != "list_dir" || tool.ToolCallID != "tc-read" {
+	if tool.Role != "tool" || tool.ToolName != "ls" || tool.ToolCallID != "tc-read" {
 		t.Fatalf("tool result not persisted: %+v", tool)
 	}
 	final := snap.Messages[len(snap.Messages)-1]

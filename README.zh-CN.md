@@ -88,8 +88,8 @@ agents:
     name: Default Agent
     description: General-purpose coding assistant
     system_prompt: ""
-    enabled_tools: ["read", "write", "grep", "list_dir"]
-    enabled_skills: ["mock-planner"]
+    enabled_tools: ["read", "write", "grep", "ls"]
+    enabled_skills: [] # 留空表示所有可用 skills；设置 ["mock-planner"] 表示只启用指定 skill。
     enabled_mcp_servers: ["mock"]
     permission_mode: "workspace-write"
     max_turns: 50

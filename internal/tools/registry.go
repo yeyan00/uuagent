@@ -58,7 +58,7 @@ func NewRegistryWithOptions(workspace string, options Options) *Registry {
 	r.register(writeFile(workspace, options))
 	r.register(shell(workspace, options))
 	r.register(grep(workspace))
-	r.register(listDir(workspace, options))
+	r.register(ls(workspace, options))
 
 	return r
 }
@@ -168,7 +168,7 @@ func writeFile(ws string, options Options) *Tool {
 func shell(ws string, options Options) *Tool {
 	return &Tool{
 		Name:        "shell",
-		Description: "Execute a shell command in the workspace directory.",
+		Description: shellDescription(options),
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			command, _ := args["command"].(string)
 			if command == "" {
@@ -284,13 +284,13 @@ func grep(ws string) *Tool {
 	}
 }
 
-func listDir(ws string, options Options) *Tool {
+func ls(ws string, options Options) *Tool {
 	return &Tool{
-		Name:        "list_dir",
+		Name:        "ls",
 		Description: pathToolDescription("List files in a directory.", options),
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			path, _ := args["path"].(string)
-			fullPath, err := resolveToolPath(ws, path, options, approved(args), "list_dir")
+			fullPath, err := resolveToolPath(ws, path, options, approved(args), "ls")
 			if approval, ok := approvalPayloadFor(err); ok {
 				return approval, nil
 			}
@@ -321,6 +321,14 @@ func pathToolDescription(base string, options Options) string {
 		return base
 	}
 	return base + " Absolute paths and paths outside the workspace are allowed to be requested; the tool will return an approval_required JSON payload instead of reading or writing until the user approves."
+}
+
+func shellDescription(options Options) string {
+	shell := "POSIX sh -c"
+	if runtime.GOOS == "windows" {
+		shell = "Windows PowerShell (-NoProfile -NonInteractive -Command)"
+	}
+	return pathToolDescription("Execute a shell command in the workspace directory using "+shell+". Commands are platform-specific; use PowerShell syntax on Windows and sh syntax on POSIX systems. The optional cwd defaults to the workspace root.", options)
 }
 
 func shellCommand(ctx context.Context, command string) *exec.Cmd {

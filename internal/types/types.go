@@ -11,6 +11,7 @@ type Event struct {
 	Text     string `json:"text,omitempty"`
 	ToolName string `json:"tool_name,omitempty"`
 	ToolID   string `json:"tool_id,omitempty"`
+	Args     string `json:"args,omitempty"`
 }
 
 // Message OpenAI-compatible chat message. Content may be a plain string or a

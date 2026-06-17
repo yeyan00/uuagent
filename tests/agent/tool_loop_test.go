@@ -23,7 +23,7 @@ func TestAgentToolLoopSendsToolResultBackToModel(t *testing.T) {
 		calls++
 		w.Header().Set("Content-Type", "application/json")
 		if calls == 1 {
-			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"Need listing.","tool_calls":[{"id":"tc-list","type":"function","function":{"name":"list_dir","arguments":"{\"path\":\"internal\"}"}}]}}]}`))
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"Need listing.","tool_calls":[{"id":"tc-list","type":"function","function":{"name":"ls","arguments":"{\"path\":\"internal\"}"}}]}}]}`))
 			return
 		}
 		var req struct {
@@ -62,7 +62,7 @@ func TestAgentToolLoopSendsToolResultBackToModel(t *testing.T) {
 					fn, hasFunction := call["function"].(map[string]any)
 					_, hasLegacyArgs := call["args"]
 					_, hasLegacyName := call["name"]
-					foundOpenAIToolCall = hasFunction && fn["name"] == "list_dir" && fn["arguments"] != "" && !hasLegacyArgs && !hasLegacyName
+					foundOpenAIToolCall = hasFunction && fn["name"] == "ls" && fn["arguments"] != "" && !hasLegacyArgs && !hasLegacyName
 				}
 			}
 		}
@@ -91,7 +91,7 @@ func TestProjectRunExecutesToolsInProjectWorkspace(t *testing.T) {
 		calls++
 		w.Header().Set("Content-Type", "application/json")
 		if calls == 1 {
-			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"Need listing.","tool_calls":[{"id":"tc-list","type":"function","function":{"name":"list_dir","arguments":"{}"}}]}}]}`))
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"Need listing.","tool_calls":[{"id":"tc-list","type":"function","function":{"name":"ls","arguments":"{}"}}]}}]}`))
 			return
 		}
 		var req struct {
@@ -475,7 +475,7 @@ func TestApprovedOutsideDirectoryAllowsChildFileDuringSameRun(t *testing.T) {
 		switch calls {
 		case 1:
 			args, _ := json.Marshal(map[string]string{"path": outsideDir})
-			_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"tool_calls": []any{map[string]any{"id": "tc-list-outside", "type": "function", "function": map[string]any{"name": "list_dir", "arguments": string(args)}}}}}}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"tool_calls": []any{map[string]any{"id": "tc-list-outside", "type": "function", "function": map[string]any{"name": "ls", "arguments": string(args)}}}}}}})
 		case 2:
 			args, _ := json.Marshal(map[string]string{"path": child})
 			_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"tool_calls": []any{map[string]any{"id": "tc-read-child", "type": "function", "function": map[string]any{"name": "read", "arguments": string(args)}}}}}}})
@@ -535,7 +535,7 @@ func TestAskPermissionToolDescriptionsTellModelToRequestApproval(t *testing.T) {
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		for _, tool := range req.Tools {
-			if tool.Function.Name == "read" || tool.Function.Name == "list_dir" {
+			if tool.Function.Name == "read" || tool.Function.Name == "ls" {
 				descriptions = append(descriptions, tool.Function.Description)
 			}
 		}
@@ -546,7 +546,7 @@ func TestAskPermissionToolDescriptionsTellModelToRequestApproval(t *testing.T) {
 
 	cfg := config.Default()
 	cfg.Agent.ProxyURL = ts.URL + "/v1"
-	cfg.Agents = []config.AgentProfile{{ID: "default", Name: "Default", EnabledTools: []string{"read", "list_dir"}, PermissionMode: "ask"}}
+	cfg.Agents = []config.AgentProfile{{ID: "default", Name: "Default", EnabledTools: []string{"read", "ls"}, PermissionMode: "ask"}}
 	a := agent.New(cfg)
 	events, err := a.RunWithAgent(context.Background(), "approval-tool-descriptions", "default", "analyze C:\\outside")
 	if err != nil {

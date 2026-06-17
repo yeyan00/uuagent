@@ -29,6 +29,8 @@ type AgentConfig struct {
 	Context           ContextConfig  `yaml:"context" json:"context"`
 	Subagent          SubagentConfig `yaml:"subagent" json:"subagent"`
 	MaxTurns          int            `yaml:"max_turns" json:"max_turns"`
+	ReasoningEnabled  bool           `yaml:"reasoning_enabled" json:"reasoning_enabled"`
+	ReasoningEffort   string         `yaml:"reasoning_effort" json:"reasoning_effort"`
 	DefaultPermission string         `yaml:"default_permission" json:"default_permission"`
 	UI                UIConfig       `yaml:"ui" json:"ui"`
 }
@@ -160,6 +162,7 @@ func Default() *Config {
 				BlockedTools:  []string{"delegate", "memory"},
 			},
 			MaxTurns:          50,
+			ReasoningEffort:   "medium",
 			DefaultPermission: "workspace-write",
 			UI:                UIConfig{Theme: "dark"},
 		},

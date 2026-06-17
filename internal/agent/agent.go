@@ -34,20 +34,20 @@ type ToolCall = types.ToolCall
 
 // Agent is the core runtime object.
 type Agent struct {
-	cfg           *config.Config
-	router        *router.Router
-	session       *session.Store
-	sessionStores map[string]*session.Store
-	sessionsMu    sync.Mutex
-	tools         *tools.Registry
-	skills        *skills.Registry
-	mcp           mcp.Client
-	memory        *memory.Manager
-	projects      *project.Store
-	fixedModel    string
-	blockedTools  map[string]bool
-	enabledSkills []string
-	httpClient    *http.Client
+	cfg              *config.Config
+	router           *router.Router
+	session          *session.Store
+	sessionStores    map[string]*session.Store
+	sessionsMu       sync.Mutex
+	tools            *tools.Registry
+	skills           *skills.Registry
+	mcp              mcp.Client
+	memory           *memory.Manager
+	projects         *project.Store
+	fixedModel       string
+	blockedTools     map[string]bool
+	enabledSkills    []string
+	httpClient       *http.Client
 	runs             map[string]context.CancelFunc
 	runsMu           sync.Mutex
 	pendingApprovals map[string]pendingApproval
@@ -55,12 +55,12 @@ type Agent struct {
 }
 
 type pendingApproval struct {
-	Session       *session.Session
-	RunID         string
-	Model         string
-	Prompt        string
-	Profile       config.AgentProfile
-	Policy        runtimePolicy
+	Session            *session.Session
+	RunID              string
+	Model              string
+	Prompt             string
+	Profile            config.AgentProfile
+	Policy             runtimePolicy
 	ToolCall           ToolCall
 	ToolName           string
 	RemainingToolCalls []ToolCall
@@ -72,15 +72,15 @@ type pendingApproval struct {
 func New(cfg *config.Config) *Agent {
 	workspace, _ := os.Getwd()
 	return &Agent{
-		cfg:           cfg,
-		router:        router.New(cfg.Agent.Routing),
-		session:       session.NewStore(),
-		sessionStores: map[string]*session.Store{},
-		tools:         tools.NewRegistry(workspace),
-		skills:        skills.NewRegistryFromConfig(cfg),
-		mcp:           mcp.NewMockClient(),
-		memory:        memory.NewManager(),
-		projects:      project.NewStore(""),
+		cfg:              cfg,
+		router:           router.New(cfg.Agent.Routing),
+		session:          session.NewStore(),
+		sessionStores:    map[string]*session.Store{},
+		tools:            tools.NewRegistry(workspace),
+		skills:           skills.NewRegistryFromConfig(cfg),
+		mcp:              mcp.NewMockClient(),
+		memory:           memory.NewManager(),
+		projects:         project.NewStore(""),
 		httpClient:       &http.Client{Timeout: 120 * time.Second},
 		runs:             map[string]context.CancelFunc{},
 		pendingApprovals: map[string]pendingApproval{},
@@ -532,10 +532,17 @@ func (a *Agent) runWithResolvedProfile(ctx context.Context, sessionID, projectID
 			}
 			memorySnapshot := sess.EnsureMemorySnapshot(a.memory.BuildScopedSystemPrompt(memoryProject, profile.ID, sessionID))
 			messages := a.withSystemPrompt(sess.Snapshot().Messages, profile, memorySnapshot, prompt)
-			response, toolCalls, usage, err := a.callLLMStream(ctx, model, messages, policy, func(delta string) {
-				if delta != "" {
-					events <- Event{Type: "content", RunID: runID, Text: delta}
-				}
+			response, toolCalls, usage, err := a.callLLMStream(ctx, model, messages, policy, streamCallbacks{
+				Content: func(delta string) {
+					if delta != "" {
+						events <- Event{Type: "content", RunID: runID, Text: delta}
+					}
+				},
+				Reasoning: func(delta string) {
+					if delta != "" {
+						events <- Event{Type: "reasoning", RunID: runID, Text: delta}
+					}
+				},
 			})
 			if err != nil {
 				events <- Event{Type: "error", RunID: runID, Text: err.Error()}
@@ -553,7 +560,7 @@ func (a *Agent) runWithResolvedProfile(ctx context.Context, sessionID, projectID
 
 			for i, tc := range toolCalls {
 				name := toolCallName(tc)
-				events <- Event{Type: "tool_start", RunID: runID, ToolName: name, ToolID: tc.ID}
+				events <- Event{Type: "tool_start", RunID: runID, ToolName: name, ToolID: tc.ID, Args: toolCallArgs(tc)}
 				result := a.executeTool(ctx, tc, policy, toolWorkspace, nil)
 				events <- Event{Type: "tool_result", RunID: runID, ToolName: name, ToolID: tc.ID, Text: result}
 				if isApprovalRequiredResult(result) {
@@ -620,7 +627,7 @@ func (a *Agent) ApproveRunEvents(ctx context.Context, runID string) (<-chan Even
 		approvedPath := approvalPathFromArgs(p.ToolWorkspace, args)
 		args["approved"] = true
 		p.ToolCall.Function.Arguments = mustJSON(args)
-		events <- Event{Type: "tool_start", RunID: runID, ToolName: p.ToolName, ToolID: p.ToolCall.ID}
+		events <- Event{Type: "tool_start", RunID: runID, ToolName: p.ToolName, ToolID: p.ToolCall.ID, Args: toolCallArgs(p.ToolCall)}
 		result := a.executeTool(ctx, p.ToolCall, p.Policy, p.ToolWorkspace, p.ApprovedPaths)
 		events <- Event{Type: "tool_result", RunID: runID, ToolName: p.ToolName, ToolID: p.ToolCall.ID, Text: result}
 		p.Session.AppendTool(p.ToolCall.ID, p.ToolName, result)
@@ -629,7 +636,7 @@ func (a *Agent) ApproveRunEvents(ctx context.Context, runID string) (<-chan Even
 		}
 		for i, tc := range p.RemainingToolCalls {
 			name := toolCallName(tc)
-			events <- Event{Type: "tool_start", RunID: runID, ToolName: name, ToolID: tc.ID}
+			events <- Event{Type: "tool_start", RunID: runID, ToolName: name, ToolID: tc.ID, Args: toolCallArgs(tc)}
 			result := a.executeTool(ctx, tc, p.Policy, p.ToolWorkspace, p.ApprovedPaths)
 			events <- Event{Type: "tool_result", RunID: runID, ToolName: name, ToolID: tc.ID, Text: result}
 			if isApprovalRequiredResult(result) {
@@ -651,10 +658,17 @@ func (a *Agent) ApproveRunEvents(ctx context.Context, runID string) (<-chan Even
 		for turn := 0; turn < maxTurns; turn++ {
 			memorySnapshot := p.Session.EnsureMemorySnapshot(a.memory.BuildScopedSystemPrompt(p.Session.Snapshot().ProjectPath, p.Profile.ID, p.Session.Snapshot().ID))
 			messages := a.withSystemPrompt(p.Session.Snapshot().Messages, p.Profile, memorySnapshot, p.Prompt)
-			response, toolCalls, usage, err := a.callLLM(ctx, p.Model, messages, p.Policy, false, func(delta string) {
-				if delta != "" {
-					events <- Event{Type: "content", RunID: runID, Text: delta}
-				}
+			response, toolCalls, usage, err := a.callLLM(ctx, p.Model, messages, p.Policy, false, streamCallbacks{
+				Content: func(delta string) {
+					if delta != "" {
+						events <- Event{Type: "content", RunID: runID, Text: delta}
+					}
+				},
+				Reasoning: func(delta string) {
+					if delta != "" {
+						events <- Event{Type: "reasoning", RunID: runID, Text: delta}
+					}
+				},
 			})
 			if err != nil {
 				p.Session.UpdateRunStatus(runID, "failed")
@@ -670,7 +684,7 @@ func (a *Agent) ApproveRunEvents(ctx context.Context, runID string) (<-chan Even
 			}
 			for i, tc := range toolCalls {
 				name := toolCallName(tc)
-				events <- Event{Type: "tool_start", RunID: runID, ToolName: name, ToolID: tc.ID}
+				events <- Event{Type: "tool_start", RunID: runID, ToolName: name, ToolID: tc.ID, Args: toolCallArgs(tc)}
 				result := a.executeTool(ctx, tc, p.Policy, p.ToolWorkspace, p.ApprovedPaths)
 				events <- Event{Type: "tool_result", RunID: runID, ToolName: name, ToolID: tc.ID, Text: result}
 				if isApprovalRequiredResult(result) {
@@ -794,18 +808,22 @@ func (a *Agent) withSystemPrompt(messages []Message, profile config.AgentProfile
 }
 
 type chatCompletionRequest struct {
-	Model    string                 `json:"model"`
-	Messages []Message              `json:"messages"`
-	Tools    []map[string]any       `json:"tools,omitempty"`
-	Stream   bool                   `json:"stream,omitempty"`
-	Extra    map[string]interface{} `json:"-"`
+	Model            string           `json:"model"`
+	Messages         []Message        `json:"messages"`
+	Tools            []map[string]any `json:"tools,omitempty"`
+	Stream           bool             `json:"stream,omitempty"`
+	ReasoningEffort  string           `json:"reasoning_effort,omitempty"`
+	IncludeReasoning bool             `json:"include_reasoning,omitempty"`
 }
 
 type chatCompletionResponse struct {
 	Choices []struct {
 		Message struct {
-			Content   string `json:"content"`
-			ToolCalls []struct {
+			Content          string `json:"content"`
+			ReasoningContent string `json:"reasoning_content"`
+			ReasoningText    string `json:"reasoning_text"`
+			Reasoning        string `json:"reasoning"`
+			ToolCalls        []struct {
 				ID       string `json:"id"`
 				Type     string `json:"type"`
 				Function struct {
@@ -841,8 +859,11 @@ func (u tokenUsage) withFallback(messages []Message, response string) session.To
 type chatCompletionChunk struct {
 	Choices []struct {
 		Delta struct {
-			Content   string `json:"content"`
-			ToolCalls []struct {
+			Content          string `json:"content"`
+			ReasoningContent string `json:"reasoning_content"`
+			ReasoningText    string `json:"reasoning_text"`
+			Reasoning        string `json:"reasoning"`
+			ToolCalls        []struct {
 				Index    int    `json:"index"`
 				ID       string `json:"id"`
 				Type     string `json:"type"`
@@ -897,11 +918,16 @@ func (a *Agent) toolNamesForPolicy(policy runtimePolicy) []string {
 
 // callLLMStream calls OpenAI-compatible Chat Completions. It requests stream=true
 // and falls back to non-stream parsing if the provider returns JSON.
-func (a *Agent) callLLMStream(ctx context.Context, model string, messages []Message, policy runtimePolicy, onDelta func(string)) (string, []ToolCall, tokenUsage, error) {
-	return a.callLLM(ctx, model, messages, policy, true, onDelta)
+type streamCallbacks struct {
+	Content   func(string)
+	Reasoning func(string)
 }
 
-func (a *Agent) callLLM(ctx context.Context, model string, messages []Message, policy runtimePolicy, stream bool, onDelta func(string)) (string, []ToolCall, tokenUsage, error) {
+func (a *Agent) callLLMStream(ctx context.Context, model string, messages []Message, policy runtimePolicy, callbacks streamCallbacks) (string, []ToolCall, tokenUsage, error) {
+	return a.callLLM(ctx, model, messages, policy, true, callbacks)
+}
+
+func (a *Agent) callLLM(ctx context.Context, model string, messages []Message, policy runtimePolicy, stream bool, callbacks streamCallbacks) (string, []ToolCall, tokenUsage, error) {
 	baseURL := strings.TrimRight(a.cfg.Agent.ProxyURL, "/")
 	if baseURL == "" {
 		return "", nil, tokenUsage{}, fmt.Errorf("agent proxy-url is empty")
@@ -919,6 +945,12 @@ func (a *Agent) callLLM(ctx context.Context, model string, messages []Message, p
 		toolDefs = append(toolDefs, map[string]any{"type": "function", "function": map[string]any{"name": "mcp_echo", "description": "Echo arguments through the mock MCP client."}})
 	}
 	payload := chatCompletionRequest{Model: model, Messages: messages, Tools: toolDefs, Stream: stream}
+	if a.cfg.Agent.ReasoningEnabled {
+		payload.IncludeReasoning = true
+		if effort := strings.TrimSpace(a.cfg.Agent.ReasoningEffort); effort != "" {
+			payload.ReasoningEffort = effort
+		}
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return "", nil, tokenUsage{}, err
@@ -947,14 +979,14 @@ func (a *Agent) callLLM(ctx context.Context, model string, messages []Message, p
 	}
 	ct := resp.Header.Get("Content-Type")
 	if stream && strings.Contains(ct, "text/event-stream") {
-		text, calls, err := parseChatStream(resp.Body, onDelta)
+		text, calls, err := parseChatStream(resp.Body, callbacks)
 		return text, calls, tokenUsage{}, err
 	}
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024*1024))
-	return parseChatJSON(data, onDelta)
+	return parseChatJSON(data, callbacks)
 }
 
-func parseChatJSON(data []byte, onDelta func(string)) (string, []ToolCall, tokenUsage, error) {
+func parseChatJSON(data []byte, callbacks streamCallbacks) (string, []ToolCall, tokenUsage, error) {
 	var parsed chatCompletionResponse
 	if err := json.Unmarshal(data, &parsed); err != nil {
 		return "", nil, tokenUsage{}, err
@@ -963,8 +995,17 @@ func parseChatJSON(data []byte, onDelta func(string)) (string, []ToolCall, token
 		return "", nil, tokenUsage{}, fmt.Errorf("llm response has no choices")
 	}
 	msg := parsed.Choices[0].Message
-	if msg.Content != "" && onDelta != nil {
-		onDelta(msg.Content)
+	if msg.ReasoningContent != "" && callbacks.Reasoning != nil {
+		callbacks.Reasoning(msg.ReasoningContent)
+	}
+	if msg.ReasoningText != "" && callbacks.Reasoning != nil {
+		callbacks.Reasoning(msg.ReasoningText)
+	}
+	if msg.Reasoning != "" && callbacks.Reasoning != nil {
+		callbacks.Reasoning(msg.Reasoning)
+	}
+	if msg.Content != "" && callbacks.Content != nil {
+		callbacks.Content(msg.Content)
 	}
 	calls := make([]ToolCall, 0, len(msg.ToolCalls))
 	for _, tc := range msg.ToolCalls {
@@ -975,7 +1016,7 @@ func parseChatJSON(data []byte, onDelta func(string)) (string, []ToolCall, token
 
 type streamToolCall struct{ id, name, args string }
 
-func parseChatStream(r io.Reader, onDelta func(string)) (string, []ToolCall, error) {
+func parseChatStream(r io.Reader, callbacks streamCallbacks) (string, []ToolCall, error) {
 	var content strings.Builder
 	toolsByIndex := map[int]*streamToolCall{}
 	buf := make([]byte, 0, 4096)
@@ -1007,10 +1048,21 @@ func parseChatStream(r io.Reader, onDelta func(string)) (string, []ToolCall, err
 					continue
 				}
 				for _, choice := range chunk.Choices {
+					if callbacks.Reasoning != nil {
+						if choice.Delta.ReasoningContent != "" {
+							callbacks.Reasoning(choice.Delta.ReasoningContent)
+						}
+						if choice.Delta.ReasoningText != "" {
+							callbacks.Reasoning(choice.Delta.ReasoningText)
+						}
+						if choice.Delta.Reasoning != "" {
+							callbacks.Reasoning(choice.Delta.Reasoning)
+						}
+					}
 					if choice.Delta.Content != "" {
 						content.WriteString(choice.Delta.Content)
-						if onDelta != nil {
-							onDelta(choice.Delta.Content)
+						if callbacks.Content != nil {
+							callbacks.Content(choice.Delta.Content)
 						}
 					}
 					for _, tc := range choice.Delta.ToolCalls {
