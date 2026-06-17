@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/yeyan00/uuagent/internal/paths"
 )
 
 // Project describes a local UUAgent workspace.
@@ -32,8 +34,7 @@ type Store struct {
 // NewStore creates a project store. Empty root defaults to ~/.uuagent/projects.
 func NewStore(root string) *Store {
 	if root == "" {
-		home, _ := os.UserHomeDir()
-		root = filepath.Join(home, ".uuagent", "projects")
+		root = paths.ProjectsDir()
 	}
 	s := &Store{root: root, path: filepath.Join(filepath.Dir(root), "projects.json"), projects: map[string]Project{}}
 	_ = s.Load()
@@ -134,6 +135,11 @@ func (s *Store) List() []Project {
 	defer s.mu.RUnlock()
 	out := make([]Project, 0, len(s.projects))
 	for _, p := range s.projects {
+		if p.WorkspacePath != "" {
+			if info, err := os.Stat(p.WorkspacePath); err != nil || !info.IsDir() {
+				continue
+			}
+		}
 		out = append(out, p)
 	}
 	return out

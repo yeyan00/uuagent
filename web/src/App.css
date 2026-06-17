@@ -77,6 +77,24 @@ button { cursor: pointer; }
 button:disabled { opacity: .55; cursor: not-allowed; }
 button:hover:not(:disabled) { filter: brightness(.985); transform: translateY(-1px); }
 .itemList { display: grid; gap: 8px; }
+.projectDrawerList { display: grid; gap: 10px; }
+.projectDrawer { border: 1px solid rgba(132,146,170,.18); border-radius: 16px; background: rgba(255,255,255,.62); overflow: hidden; }
+.projectDrawerHead { display: grid; grid-template-columns: 1fr 32px 32px; gap: 6px; align-items: center; padding: 8px; }
+.projectDrawerHead.active { background: #eef4ff; }
+.projectToggle { border: 0; background: transparent; text-align: left; display: grid; grid-template-columns: 18px 1fr; gap: 4px 6px; align-items: center; color: #25324b; padding: 4px; }
+.projectToggle strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.projectToggle small { grid-column: 2; color: #62738f; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sessionList { display: grid; gap: 6px; padding: 0 8px 8px 28px; }
+.sessionRow { display: grid; grid-template-columns: 1fr 28px 28px 28px; gap: 5px; align-items: center; }
+.sessionRow.active .sessionTitle { border-color: #90a9ff; background: #eef4ff; }
+.sessionTitle { border: 1px solid rgba(132,146,170,.16); border-radius: 12px; background: rgba(255,255,255,.78); text-align: left; display: grid; gap: 2px; padding: 8px 9px; color: #25324b; min-width: 0; }
+.sessionTitle span { font-weight: 760; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sessionTitle small, .emptyMini { color: #62738f; font-size: 11px; }
+.miniButton { width: 28px; height: 28px; border: 0; border-radius: 9px; padding: 0; display: grid; place-items: center; background: #edf2fb; color: #31415d; }
+.settingsPanel { display: grid; gap: 10px; padding-top: 12px; }
+.contextStats { border: 1px solid #e2eaf6; border-radius: 16px; padding: 12px; background: #f8fbff; display: grid; gap: 5px; color: #344054; }
+.contextStats h3 { margin: 0; font-size: 13px; color: #62738f; }
+.contextStats strong { font-size: 22px; color: #25324b; letter-spacing: -.03em; }
 .listItem {
   width: 100%; border: 1px solid rgba(132,146,170,.18); border-radius: 14px; padding: 11px;
   background: rgba(255,255,255,.72); text-align: left; display: grid; gap: 4px; color: #25324b;
@@ -123,6 +141,17 @@ button:hover:not(:disabled) { filter: brightness(.985); transform: translateY(-1
 .codeBlock { margin: 10px 0; padding: 12px; overflow: auto; border-radius: 12px; background: #101828; color: #e5edf8; white-space: pre; }
 .messageBubble.user .markdownBody code { background: rgba(255,255,255,.22); color: white; }
 .messageBubble.user .codeBlock { background: rgba(15,23,42,.82); }
+.approvalCard { display: grid; gap: 10px; }
+.approvalCard h3 { margin: 0; font-size: 17px; color: #25324b; }
+.approvalCard p { margin: 0; color: #6b4b3f; line-height: 1.55; }
+.approvalBadge { width: fit-content; border-radius: 999px; padding: 5px 9px; background: #ffe0d6; color: #a23b1f; font-size: 12px; font-weight: 850; }
+.approvalPath { border: 1px solid #ffd6cc; border-radius: 12px; padding: 9px 10px; background: #fffaf8; color: #25324b; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; word-break: break-all; }
+.approvalActions { display: flex; gap: 8px; }
+.approvalActions button { border: 0; border-radius: 11px; padding: 8px 12px; background: #edf2fb; color: #22314d; }
+.toolEventCard { display: grid; gap: 8px; }
+.toolEventCard h3 { margin: 0; font-size: 15px; color: #25324b; }
+.toolEventBadge { width: fit-content; border-radius: 999px; padding: 4px 8px; background: #e8f0ff; color: #315dbe; font-size: 12px; font-weight: 850; }
+.toolEventCard pre { margin: 0; max-height: 180px; overflow: auto; white-space: pre-wrap; word-break: break-word; border: 1px solid #dbe6ff; border-radius: 12px; padding: 9px 10px; background: #f8fbff; color: #25324b; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 
 .composerShell { flex: 0 0 auto; border-top: 1px solid rgba(132,146,170,.16); padding: 14px 16px; background: rgba(255,255,255,.82); }
 .attachmentNotice { margin-bottom: 8px; color: #4c5f7c; font-size: 12px; background: #eef4ff; border-radius: 10px; padding: 8px 10px; }

@@ -30,6 +30,7 @@ func TestConfigFromModelFileDoesNotExposeAPIKey(t *testing.T) {
 }
 
 func TestRunOpenAICompatible(t *testing.T) {
+	t.Setenv("UUAGENT_HOME", t.TempDir())
 	var auth string
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/chat/completions" {
@@ -68,6 +69,7 @@ func TestRunOpenAICompatible(t *testing.T) {
 }
 
 func TestRunMockMCPToolCall(t *testing.T) {
+	t.Setenv("UUAGENT_HOME", t.TempDir())
 	calls := 0
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
@@ -99,6 +101,7 @@ func TestRunMockMCPToolCall(t *testing.T) {
 }
 
 func TestBlockedToolViaRun(t *testing.T) {
+	t.Setenv("UUAGENT_HOME", t.TempDir())
 	calls := 0
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++

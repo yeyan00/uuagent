@@ -5,24 +5,23 @@ interface ChatEvent { type: string; run_id?: string; model?: string; tier?: stri
 interface Message { role: 'user' | 'assistant' | 'system' | 'tool'; content: string; model?: string; tier?: string }
 interface Project { id: string; name: string; workspace_path: string; temporary: boolean }
 interface AgentProfile { id: string; name: string; description?: string; system_prompt?: string; model?: string; enabled_tools?: string[]; enabled_skills?: string[]; enabled_mcp_servers?: string[]; permission_mode?: string; max_turns?: number }
-interface Session { id: string; title?: string; parent_id?: string; messages: Message[] }
+interface Session { id: string; title?: string; project_id?: string; project_path?: string; parent_id?: string; messages: Message[] }
 interface MemoryEntry { id: string; content: string; status: string; source: string; project: string; scope: string }
 interface Summary { id: string; summary: string; token_before: number; token_after: number; created_at: number }
+interface ContextStats { estimated_tokens: number; max_tokens: number; percent: number }
+interface TokenUsage { input_tokens?: number; output_tokens?: number; total_tokens?: number; estimated_input_tokens?: number; estimated_output_tokens?: number; estimated?: boolean }
+interface SessionContext { context?: ContextStats; usage?: TokenUsage; summaries?: Summary[] }
+interface ApprovalPayload { approval_required?: boolean; tool?: string; path?: string; reason?: string; run_id?: string; status?: string }
+interface ToolEventPayload { kind?: 'tool_start' | 'tool_result'; tool?: string; tool_id?: string; text?: string }
 
 type MainPage = 'projects' | 'extensions' | 'schedules' | 'settings'
-type ProjectTab = 'sessions' | 'memory' | 'context'
+type ProjectSettingsTab = 'memory' | 'context' | 'config'
 
 const navItems: Array<{ id: MainPage; label: string; icon: string }> = [
   { id: 'projects', label: 'Projects', icon: 'P' },
   { id: 'extensions', label: 'Extensions', icon: 'X' },
   { id: 'schedules', label: 'Schedules', icon: 'Q' },
   { id: 'settings', label: 'Settings', icon: 'S' },
-]
-
-const projectTabs: Array<{ id: ProjectTab; label: string }> = [
-  { id: 'sessions', label: 'Sessions' },
-  { id: 'memory', label: 'Memory' },
-  { id: 'context', label: 'Context' },
 ]
 
 const settingsTabs = ['Agents', 'Subagents', 'Models', 'Skills', 'MCP', 'Permissions', 'Storage']
@@ -35,6 +34,30 @@ const api = async <T,>(url: string, init?: RequestInit): Promise<T> => {
 
 const joinList = (value?: string[]) => (value || []).join(', ')
 const parseList = (value: string) => value.split(',').map(x => x.trim()).filter(Boolean)
+const parseApprovalPayload = (text?: string): ApprovalPayload | null => {
+  if (!text) return null
+  try {
+    const payload = JSON.parse(text) as ApprovalPayload
+    return payload?.approval_required ? payload : null
+  } catch {
+    return null
+  }
+}
+
+const parseToolEventPayload = (text?: string): ToolEventPayload | null => {
+  if (!text) return null
+  try {
+    const payload = JSON.parse(text) as ToolEventPayload
+    return payload?.kind === 'tool_start' || payload?.kind === 'tool_result' ? payload : null
+  } catch {
+    return null
+  }
+}
+
+const toolPreview = (text?: string) => {
+  const value = (text || '').trim()
+  return value.length > 800 ? `${value.slice(0, 800)}...` : value
+}
 
 const renderInlineMarkdown = (text: string): ReactNode[] => {
   const nodes: ReactNode[] = []
@@ -75,18 +98,39 @@ const renderMarkdown = (content: unknown) => {
   })}</div>
 }
 
+const renderApprovalCard = (approval: ApprovalPayload, onApprove: (runID: string) => void, onDeny: (runID: string) => void) => {
+  const tool = approval.tool || 'Tool'
+  const acted = approval.status === 'approved' || approval.status === 'denied'
+  return <div className="approvalCard">
+    <div className="approvalBadge">{approval.status === 'approved' ? 'Approved' : approval.status === 'denied' ? 'Denied' : 'Approval required'}</div>
+    <h3>{tool} wants access</h3>
+    <div className="approvalPath">{approval.path || 'Protected path'}</div>
+    <p>{approval.reason || 'This action requires approval.'}</p>
+    <div className="approvalActions">
+      <button className="primaryButton" disabled={acted || !approval.run_id} onClick={() => approval.run_id && onApprove(approval.run_id)}>Approve</button>
+      <button disabled={acted || !approval.run_id} onClick={() => approval.run_id && onDeny(approval.run_id)}>Deny</button>
+    </div>
+  </div>
+}
+
+const renderToolEventCard = (event: ToolEventPayload) => <div className="toolEventCard">
+  <div className="toolEventBadge">{event.kind === 'tool_start' ? 'Tool running' : 'Tool result'}</div>
+  <h3>{event.kind === 'tool_start' ? `Running ${event.tool || 'tool'}` : `${event.tool || 'Tool'} result`}</h3>
+  {event.text && <pre>{toolPreview(event.text)}</pre>}
+</div>
+
 function App() {
   const [mainPage, setMainPage] = useState<MainPage>('projects')
-  const [projectTab, setProjectTab] = useState<ProjectTab>('sessions')
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [isStreaming, setIsStreaming] = useState(false)
   const [routeInfo, setRouteInfo] = useState<{ model: string; tier: string } | null>(null)
   const [projects, setProjects] = useState<Project[]>([])
   const [agents, setAgents] = useState<AgentProfile[]>([])
-  const [sessions, setSessions] = useState<Session[]>([])
+  const [projectSessions, setProjectSessions] = useState<Record<string, Session[]>>({})
   const [memories, setMemories] = useState<MemoryEntry[]>([])
   const [summaries, setSummaries] = useState<Summary[]>([])
+  const [sessionContext, setSessionContext] = useState<SessionContext>({})
   const [projectId, setProjectId] = useState('')
   const [agentId, setAgentId] = useState('default')
   const [sessionId, setSessionId] = useState('default')
@@ -98,6 +142,8 @@ function App() {
   const [currentRunId, setCurrentRunId] = useState('')
   const [agentDraft, setAgentDraft] = useState<AgentProfile | null>(null)
   const [isAgentSettingsOpen, setAgentSettingsOpen] = useState(false)
+  const [settingsProjectId, setSettingsProjectId] = useState('')
+  const [projectSettingsTab, setProjectSettingsTab] = useState<ProjectSettingsTab>('memory')
   const [attachmentNotice, setAttachmentNotice] = useState('')
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -105,30 +151,42 @@ function App() {
 
   const activeProject = projects.find(p => p.id === projectId)
   const activeAgent = agents.find(a => a.id === agentId)
-  const activeSession = sessions.find(s => s.id === sessionId)
+  const activeProjectSessions = projectId ? (projectSessions[projectId] || []) : []
+  const activeSession = activeProjectSessions.find(s => s.id === sessionId)
+  const activeSessionLocked = !!activeSession && ((activeSession.messages?.length || 0) > 0 || !!activeSession.project_id)
   const availableModels = useMemo(() => ['auto', ...Array.from(new Set(agents.map(a => a.model).filter(Boolean) as string[]))], [agents])
   const memoryURL = projectId ? `/api/memory?project=${encodeURIComponent(projectId)}` : '/api/memory'
+  const formatTokens = (n?: number) => {
+    const value = n || 0
+    if (value >= 1000) return `${Number((value / 1000).toFixed(1))}k`
+    return `${value}`
+  }
 
   const refresh = async () => {
-    const [p, a, s, m] = await Promise.all([
+    const [p, a, m] = await Promise.all([
       api<{projects: Project[]}>('/api/projects'),
       api<{agents: AgentProfile[]}>('/api/agents'),
-      api<{sessions: Session[]}>('/api/sessions'),
       api<{memories: MemoryEntry[]}>(memoryURL),
     ])
-    setProjects(p.projects || [])
+    const projectList = p.projects || []
+    setProjects(projectList)
     setAgents(a.agents || [])
-    setSessions(s.sessions || [])
     setMemories(m.memories || [])
+    const pairs = await Promise.all(projectList.map(async p => {
+      const r = await api<{sessions: Session[]}>(`/api/projects/${encodeURIComponent(p.id)}/sessions`).catch(() => ({ sessions: [] }))
+      return [p.id, r.sessions || []] as const
+    }))
+    setProjectSessions(Object.fromEntries(pairs))
   }
 
   useEffect(() => { refresh().catch(err => setStatus(String(err))) }, [])
   useEffect(() => { api<{memories: MemoryEntry[]}>(memoryURL).then(m => setMemories(m.memories || [])).catch(err => setStatus(String(err))) }, [memoryURL])
   useEffect(() => { messagesEndRef.current?.scrollIntoView?.({ behavior: 'smooth' }) }, [messages])
   useEffect(() => {
-    api<{summaries: Summary[]}>(`/api/sessions/${encodeURIComponent(sessionId)}/summaries`)
-      .then(r => setSummaries(r.summaries || [])).catch(() => setSummaries([]))
-  }, [sessionId, isStreaming])
+    if (!projectId || !sessionId) return
+    api<SessionContext>(`/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/context`)
+      .then(r => { setSessionContext(r || {}); setSummaries(r.summaries || []) }).catch(() => { setSessionContext({}); setSummaries([]) })
+  }, [projectId, sessionId, isStreaming])
   useEffect(() => {
     const profile = agents.find(a => a.id === agentId)
     setAgentDraft(profile ? { ...profile } : null)
@@ -145,24 +203,40 @@ function App() {
     setProjectId(id); setStatus(`Opened project. Config: ${(r.config_sources || []).join(', ') || 'default'}`); await refresh()
   }
 
-  const createSession = () => { const id = `s-${Date.now()}`; setSessionId(id); setMessages([]); setSummaries([]); setStatus(`New session ${id}`) }
-  const loadSession = async (id: string) => {
+  const createSession = async (pid = projectId) => {
+    if (!pid) { setStatus('Select a project first'); return }
+    const id = `s-${Date.now()}`
+    const s = await api<Session>(`/api/projects/${encodeURIComponent(pid)}/sessions`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ id }) })
+    setProjectId(pid); setSessionId(s.id); setMessages([]); setSummaries([]); setStatus(`New session ${s.id}`); await refresh()
+  }
+  const loadSession = async (id: string, pid = projectId) => {
+    if (!pid) return
+    setProjectId(pid)
     setSessionId(id)
-    const s = await api<Session>(`/api/sessions/${encodeURIComponent(id)}`)
+    const s = await api<Session>(`/api/projects/${encodeURIComponent(pid)}/sessions/${encodeURIComponent(id)}`)
     setMessages(s.messages || [])
+    const ctx = await api<SessionContext>(`/api/projects/${encodeURIComponent(pid)}/sessions/${encodeURIComponent(id)}/context`).catch((): SessionContext => ({}))
+    setSessionContext(ctx); setSummaries(ctx.summaries || [])
     setStatus(`Loaded ${s.title || s.id}`)
   }
-  const forkSession = async () => { const child = await api<Session>(`/api/sessions/${encodeURIComponent(sessionId)}/fork`, { method: 'POST' }); setSessionId(child.id); setMessages(child.messages || []); setStatus(`Forked ${child.id}`); await refresh() }
-  const renameSession = async () => {
-    const title = prompt('Session title?', activeSession?.title || sessionId)
+  const forkSession = async (id = sessionId, pid = projectId) => {
+    if (!pid || !id) return
+    const child = await api<Session>(`/api/projects/${encodeURIComponent(pid)}/sessions/${encodeURIComponent(id)}/fork`, { method: 'POST' })
+    setProjectId(pid); setSessionId(child.id); setMessages(child.messages || []); setStatus(`Forked ${child.id}`); await refresh()
+  }
+  const renameSession = async (id = sessionId, pid = projectId) => {
+    if (!pid || !id) return
+    const current = (projectSessions[pid] || []).find(s => s.id === id)
+    const title = prompt('Session title?', current?.title || id)
     if (title == null) return
-    const s = await api<Session>(`/api/sessions/${encodeURIComponent(sessionId)}`, { method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ title }) })
+    const s = await api<Session>(`/api/projects/${encodeURIComponent(pid)}/sessions/${encodeURIComponent(id)}`, { method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ title }) })
     setStatus(`Renamed session ${s.title || s.id}`); await refresh()
   }
-  const deleteSession = async () => {
-    if (!confirm(`Delete session ${sessionId}?`)) return
-    await api(`/api/sessions/${encodeURIComponent(sessionId)}`, { method:'DELETE' })
-    setSessionId('default'); setMessages([]); setStatus(`Deleted session ${sessionId}`); await refresh()
+  const deleteSession = async (id = sessionId, pid = projectId) => {
+    if (!pid || !id || !confirm(`Delete session ${id}?`)) return
+    await api(`/api/projects/${encodeURIComponent(pid)}/sessions/${encodeURIComponent(id)}`, { method:'DELETE' })
+    if (id === sessionId) { setSessionId(''); setMessages([]) }
+    setStatus(`Deleted session ${id}`); await refresh()
   }
 
   const selectAgent = (id: string) => {
@@ -198,6 +272,85 @@ function App() {
     setMemoryText(''); const m = await api<{memories: MemoryEntry[]}>(memoryURL); setMemories(m.memories || []); setStatus('Memory saved')
   }
 
+  const updateApprovalStatus = (runID: string, approvalStatus: 'approved' | 'denied') => {
+    setMessages(prev => prev.map(msg => {
+      const approval = msg.role === 'system' ? parseApprovalPayload(String(msg.content || '')) : null
+      if (!approval || approval.run_id !== runID) return msg
+      return { ...msg, content: JSON.stringify({ ...approval, status: approvalStatus }) }
+    }))
+  }
+
+  const appendToolEvent = (kind: 'tool_start' | 'tool_result', evt: ChatEvent) => {
+    const payload: ToolEventPayload = { kind, tool: evt.tool_name || evt.tool_id || 'tool', tool_id: evt.tool_id, text: evt.text }
+    setMessages(prev => [...prev, { role: 'tool', content: JSON.stringify(payload) }])
+  }
+
+  const appendAssistantContent = (text: string, model = routeInfo?.model || '') => {
+    setMessages(prev => {
+      const updated = [...prev]
+      const last = updated[updated.length - 1]
+      if (last?.role === 'assistant') updated[updated.length - 1] = { ...last, content: `${last.content}${text}` }
+      else updated.push({ role: 'assistant', content: text, model })
+      return updated
+    })
+  }
+
+  const consumeEventStream = async (response: Response, options: { streamRunId?: string; model?: string; approvalFinalStatus?: string } = {}) => {
+    const reader = response.body?.getReader()
+    const decoder = new TextDecoder()
+    let streamRunId = options.streamRunId || ''
+    let approvalPending = false
+    if (!reader) return { approvalPending }
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      const lines = decoder.decode(value).split('\n')
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        try {
+          const evt: ChatEvent = JSON.parse(line.slice(6))
+          if (evt.type === 'run') { streamRunId = evt.run_id || ''; setCurrentRunId(streamRunId) }
+          else if (evt.type === 'route') { setRouteInfo({ model: evt.model || '', tier: evt.tier || '' }) }
+          else if (evt.type === 'content') appendAssistantContent(evt.text || '', evt.model || options.model || routeInfo?.model || '')
+          else if (evt.type === 'tool_start') { appendToolEvent('tool_start', evt); setStatus(`Running ${evt.tool_name || evt.tool_id || 'tool'}`) }
+          else if (evt.type === 'tool_result') {
+            const approval = parseApprovalPayload(evt.text)
+            if (approval) {
+              approvalPending = true
+              const payload = { ...approval, tool: approval.tool || evt.tool_name || evt.tool_id || 'Tool', run_id: evt.run_id || streamRunId }
+              setMessages(prev => [...prev, { role: 'system', content: JSON.stringify(payload) }])
+              setStatus('Approval required')
+            } else {
+              appendToolEvent('tool_result', evt)
+              setStatus(`Tool result: ${evt.tool_name || evt.tool_id || ''}`)
+            }
+          }
+          else if (evt.type === 'status') setStatus(evt.text || evt.type)
+          else if (evt.type === 'error') setMessages(prev => [...prev, { role: 'system', content: `Error: ${evt.text}` }])
+          else if (evt.type === 'done') setStatus(options.approvalFinalStatus || 'Done')
+        } catch { /* skip malformed stream line */ }
+      }
+    }
+    return { approvalPending }
+  }
+
+  const approveRun = async (runID: string) => {
+    setStatus('Approving...')
+    updateApprovalStatus(runID, 'approved')
+    const response = await fetch(`/api/runs/${encodeURIComponent(runID)}/approve/stream`, { method: 'POST' })
+    if (!response.ok) throw new Error(await response.text())
+    await consumeEventStream(response, { streamRunId: runID, model: routeInfo?.model, approvalFinalStatus: 'Approved' })
+    await refresh()
+  }
+
+  const denyRun = async (runID: string) => {
+    setStatus('Denying...')
+    await api(`/api/runs/${encodeURIComponent(runID)}/deny`, { method: 'POST' })
+    updateApprovalStatus(runID, 'denied')
+    setStatus('Denied')
+    await refresh()
+  }
+
   const onAttachClick = () => fileInputRef.current?.click()
   const onFilesSelected = (files: FileList | null) => {
     if (!files || files.length === 0) return
@@ -213,29 +366,12 @@ function App() {
     setMessages(prev => [...prev, { role: 'user', content: prompt }])
     setInput(''); setIsStreaming(true); setCurrentRunId(''); setRouteInfo(null); setStatus('Thinking...')
     try {
-      const url = `/api/chat?prompt=${encodeURIComponent(prompt)}&session_id=${encodeURIComponent(sessionId)}&agent_id=${encodeURIComponent(agentId)}${projectId ? `&project_id=${encodeURIComponent(projectId)}` : ''}`
+      const sid = sessionId || `s-${Date.now()}`
+      if (!sessionId) setSessionId(sid)
+      const url = `/api/chat?prompt=${encodeURIComponent(prompt)}&session_id=${encodeURIComponent(sid)}&agent_id=${encodeURIComponent(agentId)}${projectId ? `&project_id=${encodeURIComponent(projectId)}` : ''}`
       const response = await fetch(url, { signal: controller.signal })
-      const reader = response.body?.getReader(); const decoder = new TextDecoder(); if (!reader) return
-      let assistantContent = ''; let currentModel = ''
-      while (true) {
-        const { done, value } = await reader.read(); if (done) break
-        const lines = decoder.decode(value).split('\n')
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue
-          try {
-            const evt: ChatEvent = JSON.parse(line.slice(6))
-            if (evt.type === 'run') setCurrentRunId(evt.run_id || '')
-            else if (evt.type === 'route') { currentModel = evt.model || ''; setRouteInfo({ model: evt.model || '', tier: evt.tier || '' }) }
-            else if (evt.type === 'content') {
-              assistantContent += evt.text || ''
-              setMessages(prev => { const updated = [...prev]; const last = updated[updated.length - 1]; if (last?.role === 'assistant') updated[updated.length - 1] = { ...last, content: assistantContent }; else updated.push({ role: 'assistant', content: assistantContent, model: currentModel }); return updated })
-            } else if (evt.type === 'tool_result') setStatus(`Tool result: ${evt.tool_name || evt.tool_id || ''}`)
-            else if (evt.type === 'status') setStatus(evt.text || evt.type)
-            else if (evt.type === 'error') setMessages(prev => [...prev, { role: 'system', content: `Error: ${evt.text}` }])
-          } catch { /* skip malformed stream line */ }
-        }
-      }
-      await refresh(); setStatus('Done')
+      const { approvalPending } = await consumeEventStream(response)
+      await refresh(); setStatus(approvalPending ? 'Approval required' : 'Done')
     } catch (err) {
       if ((err as Error)?.name === 'AbortError') setStatus('Stopped')
       else { setMessages(prev => [...prev, { role: 'system', content: `Error: ${err}` }]); setStatus(String(err)) }
@@ -263,28 +399,29 @@ function App() {
       return <div className="sidePlaceholder"><h3>{navItems.find(n => n.id === mainPage)?.label}</h3><p>{text}</p><button className="softButton">Coming soon</button></div>
     }
 
-    if (projectTab === 'sessions') return <>
-      <div className="sideActions"><button onClick={createSession}>New</button><button onClick={forkSession}>Fork</button></div>
-      <div className="sideActions"><button onClick={renameSession}>Rename</button><button onClick={deleteSession}>Delete</button></div>
-      <div className="itemList">
-        {[sessionId, ...sessions.map(s=>s.id)].filter((v,i,a)=>v&&a.indexOf(v)===i).map(id => {
-          const s = sessions.find(x => x.id === id)
-          return <button key={id} className={id === sessionId ? 'listItem active' : 'listItem'} onClick={() => loadSession(id).catch(err=>setStatus(String(err)))}><span>{s?.title || id}</span><small>{s?.messages?.length || 0} messages</small></button>
-        })}
-      </div>
-    </>
-
-
-    if (projectTab === 'memory') return <>
-      <textarea className="sideTextarea" value={memoryText} onChange={e=>setMemoryText(e.target.value)} placeholder="Add confirmed memory..." />
-      <button className="primaryButton" onClick={addMemory}>Add Memory</button>
-      <div className="itemList memoryItems">{memories.map(m => <div key={m.id} className="listItem static"><span>{m.content}</span><small>{m.status} · {m.scope}</small></div>)}</div>
-    </>
-
-    if (projectTab === 'context') return <>
-      {summaries.length === 0 && <div className="emptyPanel">No compression summaries yet.</div>}
-      {summaries.map(s => <details key={s.id} className="summaryCard"><summary>{s.token_before} → {s.token_after}</summary><pre>{s.summary}</pre></details>)}
-    </>
+    return <div className="projectDrawerList">
+      {projects.length === 0 && <div className="emptyPanel">No projects yet.</div>}
+      {projects.map(p => {
+        const list = projectSessions[p.id] || []
+        const expanded = p.id === projectId || list.length > 0
+        return <section key={p.id} className="projectDrawer">
+          <div className={p.id === projectId ? 'projectDrawerHead active' : 'projectDrawerHead'}>
+            <button className="projectToggle" onClick={() => openProject(p.id).catch(err=>setStatus(String(err)))}><span>{expanded ? '▾' : '▸'}</span><strong>{p.name}</strong><small>{p.workspace_path}</small></button>
+            <button className="miniButton" title="New session" onClick={() => createSession(p.id).catch(err=>setStatus(String(err)))}>＋</button>
+            <button className="miniButton" title="Project settings" onClick={() => { setProjectId(p.id); setSettingsProjectId(p.id); setProjectSettingsTab('memory') }}>⚙</button>
+          </div>
+          {expanded && <div className="sessionList">
+            {list.length === 0 && <div className="emptyMini">No sessions</div>}
+            {list.map(s => <div key={s.id} className={s.id === sessionId ? 'sessionRow active' : 'sessionRow'}>
+              <button className="sessionTitle" onClick={() => loadSession(s.id, p.id).catch(err=>setStatus(String(err)))}><span>{s.title || s.id}</span><small>{s.messages?.length || 0} messages</small></button>
+              <button className="miniButton" title="Fork" onClick={() => forkSession(s.id, p.id).catch(err=>setStatus(String(err)))}>⎇</button>
+              <button className="miniButton" title="Rename" onClick={() => renameSession(s.id, p.id).catch(err=>setStatus(String(err)))}>✎</button>
+              <button className="miniButton" title="Delete" onClick={() => deleteSession(s.id, p.id).catch(err=>setStatus(String(err)))}>×</button>
+            </div>)}
+          </div>}
+        </section>
+      })}
+    </div>
 
   }
 
@@ -304,12 +441,10 @@ function App() {
         </div>
         {mainPage === 'projects' && <>
           <div className="projectPicker">
-            <select value={projectId} onChange={e => openProject(e.target.value)}><option value="">Select project</option>{projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select>
             <input value={newProjectName} onChange={e=>setNewProjectName(e.target.value)} placeholder="Project name" />
             <input value={newProjectPath} onChange={e=>setNewProjectPath(e.target.value)} placeholder="Workspace path optional" />
             <button onClick={createProject}>Create</button>
           </div>
-          <div className="tabGrid">{projectTabs.map(tab => <button key={tab.id} className={projectTab === tab.id ? 'tab active' : 'tab'} onClick={() => setProjectTab(tab.id)}>{tab.label}</button>)}</div>
         </>}
         <div className="sidebarBody">{renderSidebarBody()}</div>
         <div className="statusStrip"><span className="pulse" />{status}</div>
@@ -323,7 +458,11 @@ function App() {
 
         <section className="messagesPane">
           {messages.length === 0 && <div className="emptyState"><div>✨</div><h2>Start a coding session</h2><p>Open a project, choose an agent and ask UUAgent to inspect, explain or modify your code.</p></div>}
-          {messages.map((msg,i)=><div key={i} className={`messageBubble ${msg.role}`}><div className="messageMeta">{msg.role==='user'?'You':msg.role==='system'?'System':msg.role==='tool'?'Tool':msg.model || 'Assistant'}</div>{renderMarkdown(msg.content)}</div>)}
+          {messages.map((msg,i)=>{
+            const approval = msg.role === 'system' ? parseApprovalPayload(String(msg.content || '')) : null
+            const toolEvent = msg.role === 'tool' ? parseToolEventPayload(String(msg.content || '')) : null
+            return <div key={i} className={`messageBubble ${msg.role}`}><div className="messageMeta">{msg.role==='user'?'You':msg.role==='system'?'System':msg.role==='tool'?'Tool':msg.model || 'Assistant'}</div>{approval ? renderApprovalCard(approval, approveRun, denyRun) : toolEvent ? renderToolEventCard(toolEvent) : renderMarkdown(msg.content)}</div>
+          })}
           <div ref={messagesEndRef}/>
         </section>
 
@@ -336,7 +475,7 @@ function App() {
             <input ref={fileInputRef} type="file" multiple accept="image/*,.txt,.md,.json,.yaml,.yml,.go,.ts,.tsx" hidden onChange={e=>onFilesSelected(e.target.files)} />
           </div>
           <div className="composerMeta">
-            <label>Project<select value={projectId} onChange={e=>openProject(e.target.value)}><option value="">None</option>{projects.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
+            <label>Project<select value={projectId} onChange={e=>openProject(e.target.value)} disabled={activeSessionLocked}><option value="">None</option>{projects.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select>{activeSessionLocked && <span>locked</span>}</label>
             <label>Agent<select value={agentId} onChange={e=>selectAgent(e.target.value)}>{agents.map(a=><option key={a.id} value={a.id}>{a.name || a.id}</option>)}</select></label>
             <label>Model<select value={modelOverride} onChange={e=>setModelOverride(e.target.value)}>{availableModels.map(m=><option key={m} value={m}>{m === 'auto' ? 'Auto' : m}</option>)}</select></label>
           </div>
@@ -360,6 +499,20 @@ function App() {
           <label className="wide">MCP Servers<input value={joinList(agentDraft.enabled_mcp_servers)} onChange={e=>updateAgentDraft({ enabled_mcp_servers:parseList(e.target.value) })} placeholder="mock" /></label>
         </div>}
         <div className="modalActions"><button onClick={newAgent}>New</button><button onClick={cloneAgent}>Clone</button><button onClick={deleteAgent} disabled={agentDraft?.id === 'default'}>Delete</button><button className="primaryButton" onClick={saveAgent}>Save Agent</button></div>
+      </div>
+    </div>}
+    {settingsProjectId && <div className="modalBackdrop" onMouseDown={()=>setSettingsProjectId('')}>
+      <div className="modal" onMouseDown={e=>e.stopPropagation()}>
+        <div className="modalHeader"><div><h2>Project Settings</h2><p>{projects.find(p=>p.id===settingsProjectId)?.name || settingsProjectId}</p></div><button className="iconButton" onClick={()=>setSettingsProjectId('')}>×</button></div>
+        <div className="tabGrid">{(['memory','context','config'] as ProjectSettingsTab[]).map(tab => <button key={tab} className={projectSettingsTab === tab ? 'tab active' : 'tab'} onClick={()=>setProjectSettingsTab(tab)}>{tab}</button>)}</div>
+        {projectSettingsTab === 'memory' && <div className="settingsPanel"><textarea className="sideTextarea" value={memoryText} onChange={e=>setMemoryText(e.target.value)} placeholder="Add confirmed memory..." /><button className="primaryButton" onClick={addMemory}>Add Memory</button><div className="itemList memoryItems">{memories.map(m => <div key={m.id} className="listItem static"><span>{m.content}</span><small>{m.status} · {m.scope}</small></div>)}</div></div>}
+        {projectSettingsTab === 'context' && <div className="settingsPanel">
+          <div className="contextStats"><h3>Current Context</h3><strong>{formatTokens(sessionContext.context?.estimated_tokens)} / {formatTokens(sessionContext.context?.max_tokens)} tokens</strong><span>{Math.round((sessionContext.context?.percent || 0) * 100)}%</span></div>
+          <div className="contextStats"><h3>Session Token Usage</h3><span>Input: {formatTokens(sessionContext.usage?.input_tokens || sessionContext.usage?.estimated_input_tokens)}</span><span>Output: {formatTokens(sessionContext.usage?.output_tokens || sessionContext.usage?.estimated_output_tokens)}</span><span>Total: {formatTokens(sessionContext.usage?.total_tokens)}</span></div>
+          {summaries.length === 0 && <div className="emptyPanel">No compression summaries yet.</div>}
+          {summaries.map(s => <details key={s.id} className="summaryCard"><summary>{formatTokens(s.token_before)} → {formatTokens(s.token_after)}</summary><pre>{s.summary}</pre></details>)}
+        </div>}
+        {projectSettingsTab === 'config' && <div className="settingsPanel"><div className="emptyPanel"><strong>Workspace</strong><br />{projects.find(p=>p.id===settingsProjectId)?.workspace_path || ''}</div></div>}
       </div>
     </div>}
   </div>

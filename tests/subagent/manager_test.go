@@ -18,6 +18,7 @@ import (
 )
 
 func TestDelegateRunsSubagentsWithMockLLM(t *testing.T) {
+	t.Setenv("UUAGENT_HOME", filepath.Join(t.TempDir(), "home"))
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"subagent-ok"}}]}`))
@@ -137,6 +138,7 @@ func TestDelegateProfilePersistsTaskTreeAndUsesIndependentSessions(t *testing.T)
 }
 
 func TestDelegateDefaultsInvalidConcurrency(t *testing.T) {
+	t.Setenv("UUAGENT_HOME", filepath.Join(t.TempDir(), "home"))
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"subagent-ok"}}]}`))
@@ -170,6 +172,7 @@ func TestDelegateDefaultsInvalidConcurrency(t *testing.T) {
 }
 
 func TestDelegateContextCancelsChildAgents(t *testing.T) {
+	t.Setenv("UUAGENT_HOME", filepath.Join(t.TempDir(), "home"))
 	llmStarted := make(chan struct{})
 	llmClosed := make(chan struct{})
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

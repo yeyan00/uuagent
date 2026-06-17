@@ -20,14 +20,28 @@ func TestRealUserDocxSkillCanGenerateDocxThroughUUAgentTools(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(skillRoot, "SKILL.md")); err != nil {
 		t.Skipf("real user docx skill not installed at %s: %v", skillRoot, err)
 	}
-	t.Setenv("UUAGENT_HOME", filepath.Join(os.Getenv("USERPROFILE"), ".uuagent"))
+	testHome := filepath.Join(t.TempDir(), "home")
+	testSkillRoot := filepath.Join(testHome, "skills", "docx")
+	if err := os.MkdirAll(testSkillRoot, 0755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"SKILL.md", "docx-js.md"} {
+		data, err := os.ReadFile(filepath.Join(skillRoot, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(testSkillRoot, name), data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("UUAGENT_HOME", testHome)
 	t.Setenv("UUAGENT_PROXY_URL", "")
 	t.Setenv("UUAGENT_MODEL", "")
 
 	calls := 0
 	var firstSystemPrompt string
 	var shellResult string
-	resourcePath := strings.ReplaceAll(filepath.Join(skillRoot, "docx-js.md"), `\`, `\\`)
+	resourcePath := strings.ReplaceAll(filepath.Join(testSkillRoot, "docx-js.md"), `\`, `\\`)
 	createScript := strings.Join([]string{
 		"$ErrorActionPreference = 'Stop'",
 		"$resource = Get-Content -LiteralPath '" + resourcePath + "' -Raw",

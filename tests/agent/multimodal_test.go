@@ -13,6 +13,7 @@ import (
 )
 
 func TestRunWithAgentPartsSendsImageURL(t *testing.T) {
+	t.Setenv("UUAGENT_HOME", t.TempDir())
 	var gotContent any
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {

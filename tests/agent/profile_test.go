@@ -13,6 +13,7 @@ import (
 )
 
 func TestRunWithAgentProfileAppliesSystemPromptAndModel(t *testing.T) {
+	t.Setenv("UUAGENT_HOME", t.TempDir())
 	var model string
 	var system string
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

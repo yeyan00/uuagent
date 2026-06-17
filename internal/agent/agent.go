@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,8 +15,10 @@ import (
 	"time"
 
 	"github.com/yeyan00/uuagent/internal/config"
+	"github.com/yeyan00/uuagent/internal/contextmgr"
 	"github.com/yeyan00/uuagent/internal/mcp"
 	"github.com/yeyan00/uuagent/internal/memory"
+	"github.com/yeyan00/uuagent/internal/paths"
 	"github.com/yeyan00/uuagent/internal/project"
 	"github.com/yeyan00/uuagent/internal/router"
 	"github.com/yeyan00/uuagent/internal/session"
@@ -34,6 +37,8 @@ type Agent struct {
 	cfg           *config.Config
 	router        *router.Router
 	session       *session.Store
+	sessionStores map[string]*session.Store
+	sessionsMu    sync.Mutex
 	tools         *tools.Registry
 	skills        *skills.Registry
 	mcp           mcp.Client
@@ -43,26 +48,44 @@ type Agent struct {
 	blockedTools  map[string]bool
 	enabledSkills []string
 	httpClient    *http.Client
-	runs          map[string]context.CancelFunc
-	runsMu        sync.Mutex
+	runs             map[string]context.CancelFunc
+	runsMu           sync.Mutex
+	pendingApprovals map[string]pendingApproval
+	approvalsMu      sync.Mutex
+}
+
+type pendingApproval struct {
+	Session       *session.Session
+	RunID         string
+	Model         string
+	Prompt        string
+	Profile       config.AgentProfile
+	Policy        runtimePolicy
+	ToolCall      ToolCall
+	ToolName      string
+	ToolWorkspace string
 }
 
 // New creates an Agent.
 func New(cfg *config.Config) *Agent {
 	workspace, _ := os.Getwd()
 	return &Agent{
-		cfg:        cfg,
-		router:     router.New(cfg.Agent.Routing),
-		session:    session.NewStore(),
-		tools:      tools.NewRegistry(workspace),
-		skills:     skills.NewRegistryFromConfig(cfg),
-		mcp:        mcp.NewMockClient(),
-		memory:     memory.NewManager(),
-		projects:   project.NewStore(""),
-		httpClient: &http.Client{Timeout: 120 * time.Second},
-		runs:       map[string]context.CancelFunc{},
+		cfg:           cfg,
+		router:        router.New(cfg.Agent.Routing),
+		session:       session.NewStore(),
+		sessionStores: map[string]*session.Store{},
+		tools:         tools.NewRegistry(workspace),
+		skills:        skills.NewRegistryFromConfig(cfg),
+		mcp:           mcp.NewMockClient(),
+		memory:        memory.NewManager(),
+		projects:      project.NewStore(""),
+		httpClient:       &http.Client{Timeout: 120 * time.Second},
+		runs:             map[string]context.CancelFunc{},
+		pendingApprovals: map[string]pendingApproval{},
 	}
 }
+
+var ErrSessionProjectConflict = errors.New("session is bound to another project")
 
 // NewWithModel creates a restricted child agent. It is used by subagents and tests.
 func NewWithModel(model string, blockedTools map[string]bool) *Agent {
@@ -133,19 +156,75 @@ func (a *Agent) ReloadProjectSkills(workspace string) {
 // Sessions exposes the session store for API handlers.
 func (a *Agent) Sessions() *session.Store { return a.session }
 
+// ProjectSessions returns the session store persisted under the project's config directory.
+func (a *Agent) ProjectSessions(projectID string) (*session.Store, project.Project, bool) {
+	p, ok := a.projects.Get(projectID)
+	if !ok {
+		return nil, project.Project{}, false
+	}
+	return a.projectSessionStore(p), p, true
+}
+
 // Memories exposes the memory manager for API handlers.
 func (a *Agent) Memories() *memory.Manager { return a.memory }
 
 // RefreshSessionMemorySnapshot rebuilds the frozen memory snapshot for a session.
 func (a *Agent) RefreshSessionMemorySnapshot(sessionID, projectID, agentID string) string {
-	sess := a.session.GetOrCreate(sessionID)
-	snapshot := a.memory.BuildScopedSystemPrompt(projectID, agentID, sessionID)
+	store, p, ok := a.ProjectSessions(projectID)
+	memoryProject := projectID
+	if ok {
+		memoryProject = p.WorkspacePath
+	} else {
+		store = a.session
+	}
+	sess := store.GetOrCreate(sessionID)
+	snapshot := a.memory.BuildScopedSystemPrompt(memoryProject, agentID, sessionID)
 	sess.RefreshMemorySnapshot(snapshot)
 	return snapshot
 }
 
 // Projects exposes the project store for API handlers.
 func (a *Agent) Projects() *project.Store { return a.projects }
+
+func (a *Agent) projectSessionStore(p project.Project) *session.Store {
+	root := filepath.Join(paths.ProjectsDir(), p.ID, "sessions")
+	a.sessionsMu.Lock()
+	defer a.sessionsMu.Unlock()
+	if store, ok := a.sessionStores[root]; ok {
+		return store
+	}
+	store := session.NewStoreAt(root)
+	a.sessionStores[root] = store
+	return store
+}
+
+func (a *Agent) projectRunContext(projectID string) (store *session.Store, projectIDOut, projectPath, memoryProject string, registered bool) {
+	if p, ok := a.projects.Get(projectID); ok {
+		return a.projectSessionStore(p), p.ID, p.WorkspacePath, p.WorkspacePath, true
+	}
+	if strings.TrimSpace(projectID) != "" {
+		return a.session, projectID, projectID, projectID, false
+	}
+	return a.session, "", "", "", false
+}
+
+func (a *Agent) sessionExistsInOtherProject(sessionID, projectID string) bool {
+	if sessionID == "" || projectID == "" {
+		return false
+	}
+	for _, p := range a.projects.List() {
+		if p.ID == projectID {
+			continue
+		}
+		if sess, ok := a.projectSessionStore(p).Get(sessionID); ok {
+			snap := sess.Snapshot()
+			if len(snap.Messages) > 0 || len(snap.Runs) > 0 {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 // Skills returns the active skill registry for API handlers.
 func (a *Agent) Skills() *skills.Registry { return a.skills }
@@ -389,6 +468,10 @@ func (a *Agent) runWithResolvedProfile(ctx context.Context, sessionID, projectID
 			prompt += p.Text
 		}
 	}
+	sessionStore, boundProjectID, projectPath, memoryProject, registeredProject := a.projectRunContext(projectID)
+	if registeredProject && a.sessionExistsInOtherProject(sessionID, boundProjectID) {
+		return nil, ErrSessionProjectConflict
+	}
 	model, tier := a.Route(prompt, 0)
 	if profile.Model != "" {
 		model = profile.Model
@@ -403,12 +486,19 @@ func (a *Agent) runWithResolvedProfile(ctx context.Context, sessionID, projectID
 		events <- Event{Type: "run", RunID: runID}
 		events <- Event{Type: "route", RunID: runID, Model: model, Tier: string(tier)}
 
-		sess := a.session.GetOrCreate(sessionID)
+		sess := sessionStore.GetOrCreate(sessionID)
+		if registeredProject {
+			if err := sess.BindProject(boundProjectID, projectPath); err != nil {
+				events <- Event{Type: "error", RunID: runID, Text: err.Error()}
+				return
+			}
+		}
 		if a.cfg.Agent.Context.AutoCompress {
 			if summary, ok := sess.MaybeCompress(a.cfg.Agent.Context.MaxTokens, a.cfg.Agent.Context.CompressThreshold, a.cfg.Agent.Context.KeepLastMessages); ok {
 				events <- Event{Type: "status", RunID: runID, Text: fmt.Sprintf("context compressed: %d -> %d tokens", summary.TokenBefore, summary.TokenAfter)}
 			}
 		}
+		sess.MaybeTitleFromPrompt(prompt)
 		if len(parts) == 1 && parts[0].Type == "text" {
 			sess.Append("user", prompt)
 		} else {
@@ -417,7 +507,7 @@ func (a *Agent) runWithResolvedProfile(ctx context.Context, sessionID, projectID
 
 		events <- Event{Type: "status", RunID: runID, Text: "thinking..."}
 		policy := runtimePolicyFromProfile(profile)
-		sess.AppendRun(session.RunInfo{ID: runID, Status: "running", AgentID: profile.ID, Model: model, Prompt: prompt, Tools: a.toolNamesForPolicy(policy), MCPServers: policy.mcpNames()})
+		sess.AppendRun(session.RunInfo{ID: runID, Status: "running", AgentID: profile.ID, ProjectID: boundProjectID, ProjectPath: projectPath, Model: model, Prompt: prompt, Tools: a.toolNamesForPolicy(policy), MCPServers: policy.mcpNames()})
 		defer func() {
 			if ctx.Err() != nil {
 				sess.UpdateRunStatus(runID, "cancelled")
@@ -432,14 +522,15 @@ func (a *Agent) runWithResolvedProfile(ctx context.Context, sessionID, projectID
 			maxTurns = 20
 		}
 
+		toolWorkspace := a.toolWorkspace(projectPath)
 		for turn := 0; turn < maxTurns; turn++ {
 			if ctx.Err() != nil {
 				events <- Event{Type: "error", RunID: runID, Text: ctx.Err().Error()}
 				return
 			}
-			memorySnapshot := sess.EnsureMemorySnapshot(a.memory.BuildScopedSystemPrompt(projectID, profile.ID, sessionID))
+			memorySnapshot := sess.EnsureMemorySnapshot(a.memory.BuildScopedSystemPrompt(memoryProject, profile.ID, sessionID))
 			messages := a.withSystemPrompt(sess.Snapshot().Messages, profile, memorySnapshot, prompt)
-			response, toolCalls, err := a.callLLMStream(ctx, model, messages, policy, func(delta string) {
+			response, toolCalls, usage, err := a.callLLMStream(ctx, model, messages, policy, func(delta string) {
 				if delta != "" {
 					events <- Event{Type: "content", RunID: runID, Text: delta}
 				}
@@ -450,8 +541,9 @@ func (a *Agent) runWithResolvedProfile(ctx context.Context, sessionID, projectID
 			}
 
 			sess.AppendMessage(Message{Role: "assistant", Content: response, ToolCalls: toolCalls})
+			sess.AddRunUsage(runID, usage.withFallback(messages, response))
 			if len(toolCalls) == 0 {
-				a.queueAutoDraftMemory(prompt, response, projectID)
+				a.queueAutoDraftMemory(prompt, response, memoryProject)
 				sess.UpdateRunStatus(runID, "done")
 				events <- Event{Type: "done", RunID: runID}
 				return
@@ -460,9 +552,15 @@ func (a *Agent) runWithResolvedProfile(ctx context.Context, sessionID, projectID
 			for _, tc := range toolCalls {
 				name := toolCallName(tc)
 				events <- Event{Type: "tool_start", RunID: runID, ToolName: name, ToolID: tc.ID}
-				result := a.executeTool(ctx, tc, policy)
+				result := a.executeTool(ctx, tc, policy, toolWorkspace)
 				events <- Event{Type: "tool_result", RunID: runID, ToolID: tc.ID, Text: result}
 				sess.AppendTool(tc.ID, name, result)
+				if isApprovalRequiredResult(result) {
+					a.storePendingApproval(pendingApproval{Session: sess, RunID: runID, Model: model, Prompt: prompt, Profile: profile, Policy: policy, ToolCall: tc, ToolName: name, ToolWorkspace: toolWorkspace})
+					sess.UpdateRunStatus(runID, "waiting_approval")
+					events <- Event{Type: "status", RunID: runID, Text: "approval required"}
+					return
+				}
 			}
 			events <- Event{Type: "status", RunID: runID, Text: "tools complete; continuing..."}
 		}
@@ -470,6 +568,129 @@ func (a *Agent) runWithResolvedProfile(ctx context.Context, sessionID, projectID
 	}()
 
 	return events, nil
+}
+
+func (a *Agent) storePendingApproval(p pendingApproval) {
+	a.approvalsMu.Lock()
+	defer a.approvalsMu.Unlock()
+	a.pendingApprovals[p.RunID] = p
+}
+
+func (a *Agent) takePendingApproval(runID string) (pendingApproval, bool) {
+	a.approvalsMu.Lock()
+	defer a.approvalsMu.Unlock()
+	p, ok := a.pendingApprovals[runID]
+	if ok {
+		delete(a.pendingApprovals, runID)
+	}
+	return p, ok
+}
+
+func (a *Agent) ApproveRun(ctx context.Context, runID string) (string, error) {
+	events, err := a.ApproveRunEvents(ctx, runID)
+	if err != nil {
+		return "", err
+	}
+	var content strings.Builder
+	for evt := range events {
+		if evt.Type == "error" {
+			return content.String(), fmt.Errorf(evt.Text)
+		}
+		if evt.Type == "content" {
+			content.WriteString(evt.Text)
+		}
+	}
+	return content.String(), nil
+}
+
+func (a *Agent) ApproveRunEvents(ctx context.Context, runID string) (<-chan Event, error) {
+	p, ok := a.takePendingApproval(runID)
+	if !ok {
+		return nil, fmt.Errorf("pending approval not found")
+	}
+	events := make(chan Event, 32)
+	go func() {
+		defer close(events)
+		args := map[string]any{}
+		if argText := strings.TrimSpace(toolCallArgs(p.ToolCall)); argText != "" {
+			_ = json.Unmarshal([]byte(argText), &args)
+		}
+		args["approved"] = true
+		p.ToolCall.Function.Arguments = mustJSON(args)
+		events <- Event{Type: "tool_start", RunID: runID, ToolName: p.ToolName, ToolID: p.ToolCall.ID}
+		result := a.executeTool(ctx, p.ToolCall, p.Policy, p.ToolWorkspace)
+		events <- Event{Type: "tool_result", RunID: runID, ToolName: p.ToolName, ToolID: p.ToolCall.ID, Text: result}
+		p.Session.AppendTool(p.ToolCall.ID, p.ToolName, result)
+
+		maxTurns := p.Profile.MaxTurns
+		if maxTurns <= 0 {
+			maxTurns = a.cfg.Agent.MaxTurns
+		}
+		if maxTurns <= 0 || maxTurns > 20 {
+			maxTurns = 20
+		}
+		for turn := 0; turn < maxTurns; turn++ {
+			memorySnapshot := p.Session.EnsureMemorySnapshot(a.memory.BuildScopedSystemPrompt(p.Session.Snapshot().ProjectPath, p.Profile.ID, p.Session.Snapshot().ID))
+			messages := a.withSystemPrompt(p.Session.Snapshot().Messages, p.Profile, memorySnapshot, p.Prompt)
+			response, toolCalls, usage, err := a.callLLM(ctx, p.Model, messages, p.Policy, false, func(delta string) {
+				if delta != "" {
+					events <- Event{Type: "content", RunID: runID, Text: delta}
+				}
+			})
+			if err != nil {
+				p.Session.UpdateRunStatus(runID, "failed")
+				events <- Event{Type: "error", RunID: runID, Text: err.Error()}
+				return
+			}
+			p.Session.AppendMessage(Message{Role: "assistant", Content: response, ToolCalls: toolCalls})
+			p.Session.AddRunUsage(runID, usage.withFallback(messages, response))
+			if len(toolCalls) == 0 {
+				p.Session.UpdateRunStatus(runID, "done")
+				events <- Event{Type: "done", RunID: runID}
+				return
+			}
+			for _, tc := range toolCalls {
+				name := toolCallName(tc)
+				events <- Event{Type: "tool_start", RunID: runID, ToolName: name, ToolID: tc.ID}
+				result := a.executeTool(ctx, tc, p.Policy, p.ToolWorkspace)
+				events <- Event{Type: "tool_result", RunID: runID, ToolName: name, ToolID: tc.ID, Text: result}
+				p.Session.AppendTool(tc.ID, name, result)
+				if isApprovalRequiredResult(result) {
+					a.storePendingApproval(pendingApproval{Session: p.Session, RunID: runID, Model: p.Model, Prompt: p.Prompt, Profile: p.Profile, Policy: p.Policy, ToolCall: tc, ToolName: name, ToolWorkspace: p.ToolWorkspace})
+					p.Session.UpdateRunStatus(runID, "waiting_approval")
+					events <- Event{Type: "status", RunID: runID, Text: "approval required"}
+					return
+				}
+			}
+		}
+		p.Session.UpdateRunStatus(runID, "failed")
+		events <- Event{Type: "error", RunID: runID, Text: fmt.Sprintf("max agent turns reached (%d)", maxTurns)}
+	}()
+	return events, nil
+}
+
+func (a *Agent) DenyRun(runID string) error {
+	p, ok := a.takePendingApproval(runID)
+	if !ok {
+		return fmt.Errorf("pending approval not found")
+	}
+	p.Session.UpdateRunStatus(runID, "denied")
+	return nil
+}
+
+func mustJSON(v any) string {
+	data, _ := json.Marshal(v)
+	return string(data)
+}
+
+func isApprovalRequiredResult(result string) bool {
+	var payload struct {
+		ApprovalRequired bool `json:"approval_required"`
+	}
+	if err := json.Unmarshal([]byte(result), &payload); err != nil {
+		return false
+	}
+	return payload.ApprovalRequired
 }
 
 func (a *Agent) queueAutoDraftMemory(userPrompt, assistantResponse, projectID string) {
@@ -553,7 +774,27 @@ type chatCompletionResponse struct {
 			} `json:"tool_calls"`
 		} `json:"message"`
 	} `json:"choices"`
-	Error any `json:"error,omitempty"`
+	Usage tokenUsage `json:"usage"`
+	Error any        `json:"error,omitempty"`
+}
+
+type tokenUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+}
+
+func (u tokenUsage) withFallback(messages []Message, response string) session.TokenUsage {
+	if u.PromptTokens > 0 || u.CompletionTokens > 0 || u.TotalTokens > 0 {
+		total := u.TotalTokens
+		if total == 0 {
+			total = u.PromptTokens + u.CompletionTokens
+		}
+		return session.TokenUsage{InputTokens: u.PromptTokens, OutputTokens: u.CompletionTokens, TotalTokens: total}
+	}
+	input := contextmgr.EstimateTokens(messages)
+	output := contextmgr.EstimateTokens([]Message{{Role: "assistant", Content: response}})
+	return session.TokenUsage{EstimatedInputTokens: input, EstimatedOutputTokens: output, TotalTokens: input + output, Estimated: true}
 }
 
 type chatCompletionChunk struct {
@@ -615,21 +856,21 @@ func (a *Agent) toolNamesForPolicy(policy runtimePolicy) []string {
 
 // callLLMStream calls OpenAI-compatible Chat Completions. It requests stream=true
 // and falls back to non-stream parsing if the provider returns JSON.
-func (a *Agent) callLLMStream(ctx context.Context, model string, messages []Message, policy runtimePolicy, onDelta func(string)) (string, []ToolCall, error) {
+func (a *Agent) callLLMStream(ctx context.Context, model string, messages []Message, policy runtimePolicy, onDelta func(string)) (string, []ToolCall, tokenUsage, error) {
 	return a.callLLM(ctx, model, messages, policy, true, onDelta)
 }
 
-func (a *Agent) callLLM(ctx context.Context, model string, messages []Message, policy runtimePolicy, stream bool, onDelta func(string)) (string, []ToolCall, error) {
+func (a *Agent) callLLM(ctx context.Context, model string, messages []Message, policy runtimePolicy, stream bool, onDelta func(string)) (string, []ToolCall, tokenUsage, error) {
 	baseURL := strings.TrimRight(a.cfg.Agent.ProxyURL, "/")
 	if baseURL == "" {
-		return "", nil, fmt.Errorf("agent proxy-url is empty")
+		return "", nil, tokenUsage{}, fmt.Errorf("agent proxy-url is empty")
 	}
 	apiKey := strings.TrimSpace(os.Getenv("UUAGENT_API_KEY"))
 	if apiKey == "" {
 		apiKey = strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
 	}
 
-	toolDefs := a.tools.DefinitionsFor(policy.AllowedTools)
+	toolDefs := tools.NewRegistryWithOptions(".", tools.Options{PermissionMode: toolPermissionMode(policy.PermissionMode)}).DefinitionsFor(policy.AllowedTools)
 	if len(policy.AllowedTools) == 0 || policy.AllowedTools["memory"] {
 		toolDefs = append(toolDefs, memoryToolDefinition())
 	}
@@ -639,12 +880,12 @@ func (a *Agent) callLLM(ctx context.Context, model string, messages []Message, p
 	payload := chatCompletionRequest{Model: model, Messages: messages, Tools: toolDefs, Stream: stream}
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return "", nil, err
+		return "", nil, tokenUsage{}, err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
-		return "", nil, err
+		return "", nil, tokenUsage{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if stream {
@@ -656,28 +897,29 @@ func (a *Agent) callLLM(ctx context.Context, model string, messages []Message, p
 
 	resp, err := a.httpClient.Do(req)
 	if err != nil {
-		return "", nil, err
+		return "", nil, tokenUsage{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024*1024))
-		return "", nil, fmt.Errorf("llm request failed: status=%d body=%s", resp.StatusCode, string(data))
+		return "", nil, tokenUsage{}, fmt.Errorf("llm request failed: status=%d body=%s", resp.StatusCode, string(data))
 	}
 	ct := resp.Header.Get("Content-Type")
 	if stream && strings.Contains(ct, "text/event-stream") {
-		return parseChatStream(resp.Body, onDelta)
+		text, calls, err := parseChatStream(resp.Body, onDelta)
+		return text, calls, tokenUsage{}, err
 	}
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024*1024))
 	return parseChatJSON(data, onDelta)
 }
 
-func parseChatJSON(data []byte, onDelta func(string)) (string, []ToolCall, error) {
+func parseChatJSON(data []byte, onDelta func(string)) (string, []ToolCall, tokenUsage, error) {
 	var parsed chatCompletionResponse
 	if err := json.Unmarshal(data, &parsed); err != nil {
-		return "", nil, err
+		return "", nil, tokenUsage{}, err
 	}
 	if len(parsed.Choices) == 0 {
-		return "", nil, fmt.Errorf("llm response has no choices")
+		return "", nil, tokenUsage{}, fmt.Errorf("llm response has no choices")
 	}
 	msg := parsed.Choices[0].Message
 	if msg.Content != "" && onDelta != nil {
@@ -687,7 +929,7 @@ func parseChatJSON(data []byte, onDelta func(string)) (string, []ToolCall, error
 	for _, tc := range msg.ToolCalls {
 		calls = append(calls, normalizeToolCall(ToolCall{ID: tc.ID, Type: tc.Type, Function: types.ToolFunction{Name: tc.Function.Name, Arguments: tc.Function.Arguments}}))
 	}
-	return msg.Content, calls, nil
+	return msg.Content, calls, parsed.Usage, nil
 }
 
 type streamToolCall struct{ id, name, args string }
@@ -770,7 +1012,7 @@ func streamResult(content string, toolsByIndex map[int]*streamToolCall) (string,
 	return content, calls
 }
 
-func (a *Agent) executeTool(ctx context.Context, tc ToolCall, policy runtimePolicy) string {
+func (a *Agent) executeTool(ctx context.Context, tc ToolCall, policy runtimePolicy, workspace string) string {
 	name := toolCallName(tc)
 	argText := toolCallArgs(tc)
 	if a.blockedTools != nil && a.blockedTools[name] {
@@ -796,7 +1038,6 @@ func (a *Agent) executeTool(ctx context.Context, tc ToolCall, policy runtimePoli
 	}
 	if tool, ok := a.tools.Get(name); ok {
 		if policy.PermissionMode != "" {
-			workspace := a.toolWorkspace()
 			toolRegistry := tools.NewRegistryWithOptions(workspace, tools.Options{PermissionMode: toolPermissionMode(policy.PermissionMode)})
 			if configuredTool, ok := toolRegistry.Get(name); ok {
 				tool = configuredTool
@@ -886,7 +1127,10 @@ func (a *Agent) executeMemoryTool(args map[string]any) string {
 	}
 }
 
-func (a *Agent) toolWorkspace() string {
+func (a *Agent) toolWorkspace(projectID string) string {
+	if projectID != "" {
+		return projectID
+	}
 	workspace, err := os.Getwd()
 	if err != nil || workspace == "" {
 		return "."
@@ -896,7 +1140,7 @@ func (a *Agent) toolWorkspace() string {
 
 func toolPermissionMode(mode string) tools.PermissionMode {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
-	case "ask", "approval", "approval-required":
+	case "ask", "approval", "approval-required", "workspace-write":
 		return tools.PermissionAsk
 	case "allow", "unrestricted":
 		return tools.PermissionAllow

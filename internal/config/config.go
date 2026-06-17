@@ -150,7 +150,7 @@ func Default() *Config {
 			},
 			Context: ContextConfig{
 				MaxTokens:         32000,
-				CompressThreshold: 0.8,
+				CompressThreshold: 0.75,
 				KeepLastMessages:  12,
 				AutoCompress:      true,
 			},

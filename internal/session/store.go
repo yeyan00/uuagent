@@ -24,29 +24,52 @@ type Store struct {
 
 // RunInfo records per-turn runtime metadata, including exposed tools.
 type RunInfo struct {
-	ID         string   `json:"id"`
-	Status     string   `json:"status,omitempty"`
-	AgentID    string   `json:"agent_id,omitempty"`
-	Model      string   `json:"model"`
-	Prompt     string   `json:"prompt,omitempty"`
-	Tools      []string `json:"tools,omitempty"`
-	MCPServers []string `json:"mcp_servers,omitempty"`
-	CreatedAt  int64    `json:"created_at"`
+	ID          string     `json:"id"`
+	Status      string     `json:"status,omitempty"`
+	AgentID     string     `json:"agent_id,omitempty"`
+	ProjectID   string     `json:"project_id,omitempty"`
+	ProjectPath string     `json:"project_path,omitempty"`
+	Model       string     `json:"model"`
+	Prompt      string     `json:"prompt,omitempty"`
+	Tools       []string   `json:"tools,omitempty"`
+	MCPServers  []string   `json:"mcp_servers,omitempty"`
+	Usage       TokenUsage `json:"usage,omitempty"`
+	CreatedAt   int64      `json:"created_at"`
+}
+
+// TokenUsage tracks model token consumption for a run or session.
+type TokenUsage struct {
+	InputTokens           int  `json:"input_tokens,omitempty"`
+	OutputTokens          int  `json:"output_tokens,omitempty"`
+	TotalTokens           int  `json:"total_tokens,omitempty"`
+	EstimatedInputTokens  int  `json:"estimated_input_tokens,omitempty"`
+	EstimatedOutputTokens int  `json:"estimated_output_tokens,omitempty"`
+	Estimated             bool `json:"estimated,omitempty"`
+}
+
+// ContextStats describes current session context size.
+type ContextStats struct {
+	EstimatedTokens int     `json:"estimated_tokens"`
+	MaxTokens       int     `json:"max_tokens"`
+	Percent         float64 `json:"percent"`
 }
 
 // Session is one conversation thread.
 type Session struct {
-	ID        string               `json:"id"`
-	Title     string               `json:"title,omitempty"`
-	ParentID  string               `json:"parent_id,omitempty"`
-	Messages  []types.Message      `json:"messages"`
-	Runs      []RunInfo            `json:"runs,omitempty"`
-	Summaries []contextmgr.Summary `json:"summaries,omitempty"`
-	Memory    string               `json:"memory_snapshot,omitempty"`
-	CreatedAt int64                `json:"created_at"`
-	UpdatedAt int64                `json:"updated_at"`
-	path      string               `json:"-"`
-	mu        sync.Mutex
+	ID          string               `json:"id"`
+	Title       string               `json:"title,omitempty"`
+	ProjectID   string               `json:"project_id,omitempty"`
+	ProjectPath string               `json:"project_path,omitempty"`
+	ParentID    string               `json:"parent_id,omitempty"`
+	Messages    []types.Message      `json:"messages"`
+	Runs        []RunInfo            `json:"runs,omitempty"`
+	Usage       TokenUsage           `json:"usage,omitempty"`
+	Summaries   []contextmgr.Summary `json:"summaries,omitempty"`
+	Memory      string               `json:"memory_snapshot,omitempty"`
+	CreatedAt   int64                `json:"created_at"`
+	UpdatedAt   int64                `json:"updated_at"`
+	path        string               `json:"-"`
+	mu          sync.Mutex
 }
 
 // NewStore creates a session store persisted under ~/.uuagent/sessions.
@@ -137,6 +160,42 @@ func (s *Session) UpdateTitle(title string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.Title = strings.TrimSpace(title)
+	s.UpdatedAt = time.Now().Unix()
+	_ = s.saveLocked()
+}
+
+// BindProject records the project that owns this session.
+func (s *Session) BindProject(projectID, projectPath string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ProjectID != "" && s.ProjectID != projectID {
+		return fmt.Errorf("session %q is bound to project %q", s.ID, s.ProjectID)
+	}
+	s.ProjectID = projectID
+	s.ProjectPath = projectPath
+	s.UpdatedAt = time.Now().Unix()
+	return s.saveLocked()
+}
+
+// MaybeTitleFromPrompt sets a default title from the first user prompt.
+func (s *Session) MaybeTitleFromPrompt(prompt string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.Messages) > 0 {
+		return
+	}
+	if s.Title != "" && s.Title != s.ID && s.Title != "New Session" {
+		return
+	}
+	title := strings.Join(strings.Fields(prompt), " ")
+	if len([]rune(title)) > 40 {
+		runes := []rune(title)
+		title = string(runes[:40]) + "..."
+	}
+	if title == "" {
+		title = s.ID
+	}
+	s.Title = title
 	s.UpdatedAt = time.Now().Unix()
 	_ = s.saveLocked()
 }
@@ -260,11 +319,45 @@ func (s *Session) ListSummaries() []contextmgr.Summary {
 func (s *Session) Snapshot() Session {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	cp := Session{ID: s.ID, Title: s.Title, ParentID: s.ParentID, Memory: s.Memory, CreatedAt: s.CreatedAt, UpdatedAt: s.UpdatedAt}
+	cp := Session{ID: s.ID, Title: s.Title, ProjectID: s.ProjectID, ProjectPath: s.ProjectPath, ParentID: s.ParentID, Usage: s.Usage, Memory: s.Memory, CreatedAt: s.CreatedAt, UpdatedAt: s.UpdatedAt}
 	cp.Messages = append([]types.Message(nil), s.Messages...)
 	cp.Runs = append([]RunInfo(nil), s.Runs...)
 	cp.Summaries = append([]contextmgr.Summary(nil), s.Summaries...)
 	return cp
+}
+
+// AddRunUsage records token usage for a run and session totals.
+func (s *Session) AddRunUsage(runID string, usage TokenUsage) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.Runs {
+		if s.Runs[i].ID == runID {
+			s.Runs[i].Usage = usage
+			break
+		}
+	}
+	s.Usage.InputTokens += usage.InputTokens
+	s.Usage.OutputTokens += usage.OutputTokens
+	s.Usage.TotalTokens += usage.TotalTokens
+	s.Usage.EstimatedInputTokens += usage.EstimatedInputTokens
+	s.Usage.EstimatedOutputTokens += usage.EstimatedOutputTokens
+	if usage.Estimated {
+		s.Usage.Estimated = true
+	}
+	s.UpdatedAt = time.Now().Unix()
+	_ = s.saveLocked()
+}
+
+// ContextStats returns current estimated context size against the configured max.
+func (s *Session) ContextStats(maxTokens int) ContextStats {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	estimated := contextmgr.EstimateTokens(s.Messages)
+	percent := 0.0
+	if maxTokens > 0 {
+		percent = float64(estimated) / float64(maxTokens)
+	}
+	return ContextStats{EstimatedTokens: estimated, MaxTokens: maxTokens, Percent: percent}
 }
 
 // Fork copies an existing session into a new session. If upto is >= 0, only

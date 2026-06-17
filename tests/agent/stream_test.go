@@ -12,6 +12,7 @@ import (
 )
 
 func TestRunStreamsContentDeltas(t *testing.T) {
+	t.Setenv("UUAGENT_HOME", t.TempDir())
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hel\"}}]}\n\n")

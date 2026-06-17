@@ -3,6 +3,7 @@ package session_test
 import (
 	"testing"
 
+	"github.com/yeyan00/uuagent/internal/config"
 	"github.com/yeyan00/uuagent/internal/session"
 )
 
@@ -21,5 +22,12 @@ func TestSessionCompressionSummaries(t *testing.T) {
 	}
 	if len(s.ListSummaries()) != 1 {
 		t.Fatalf("expected one summary")
+	}
+}
+
+func TestDefaultCompressionThresholdIsSeventyFivePercent(t *testing.T) {
+	cfg := config.Default()
+	if cfg.Agent.Context.CompressThreshold != 0.75 {
+		t.Fatalf("expected default compression threshold 0.75, got %v", cfg.Agent.Context.CompressThreshold)
 	}
 }

@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -20,6 +21,13 @@ func RegisterRoutes(r *gin.RouterGroup, agt *agent.Agent) {
 	r.POST("/projects", handleCreateProject(agt))
 	r.GET("/projects/:id", handleGetProject(agt))
 	r.POST("/projects/:id/open", handleOpenProject(agt))
+	r.GET("/projects/:id/sessions", handleListProjectSessions(agt))
+	r.POST("/projects/:id/sessions", handleCreateProjectSession(agt))
+	r.GET("/projects/:id/sessions/:session_id", handleGetProjectSession(agt))
+	r.GET("/projects/:id/sessions/:session_id/context", handleGetProjectSessionContext(agt))
+	r.PATCH("/projects/:id/sessions/:session_id", handlePatchProjectSession(agt))
+	r.DELETE("/projects/:id/sessions/:session_id", handleDeleteProjectSession(agt))
+	r.POST("/projects/:id/sessions/:session_id/fork", handleForkProjectSession(agt))
 	r.GET("/agents", handleListAgents(agt))
 	r.POST("/agents", handleUpsertAgent(agt))
 	r.GET("/agents/:id", handleGetAgent(agt))
@@ -50,6 +58,9 @@ func RegisterRoutes(r *gin.RouterGroup, agt *agent.Agent) {
 	r.POST("/memory/:id/confirm", handleConfirmMemory(agt))
 	r.DELETE("/memory/:id", handleDeleteMemory(agt))
 	r.POST("/runs/:id/stop", handleStopRun(agt))
+	r.POST("/runs/:id/approve", handleApproveRun(agt))
+	r.POST("/runs/:id/approve/stream", handleApproveRunStream(agt))
+	r.POST("/runs/:id/deny", handleDenyRun(agt))
 	r.GET("/config", handleConfig(agt))
 	r.GET("/health", handleHealth)
 }
@@ -107,6 +118,138 @@ func handleOpenProject(agt *agent.Agent) gin.HandlerFunc {
 		agt.ReloadConfig(cfg)
 		agt.ReloadProjectSkills(p.WorkspacePath)
 		c.JSON(http.StatusOK, gin.H{"project": p, "config_sources": sources, "config": cfg.Safe()})
+	}
+}
+
+type projectSessionRequest struct {
+	ID string `json:"id"`
+}
+
+func handleListProjectSessions(agt *agent.Agent) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		store, _, ok := agt.ProjectSessions(c.Param("id"))
+		if !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "project not found"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"sessions": store.List(), "path": store.Root()})
+	}
+}
+
+func handleCreateProjectSession(agt *agent.Agent) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		store, p, ok := agt.ProjectSessions(c.Param("id"))
+		if !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "project not found"})
+			return
+		}
+		var req projectSessionRequest
+		_ = c.ShouldBindJSON(&req)
+		if req.ID == "" {
+			req.ID = fmt.Sprintf("s-%d", time.Now().UnixMilli())
+		}
+		sess := store.GetOrCreate(req.ID)
+		if err := sess.BindProject(p.ID, p.WorkspacePath); err != nil {
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, sess.Snapshot())
+	}
+}
+
+func handleGetProjectSession(agt *agent.Agent) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		store, _, ok := agt.ProjectSessions(c.Param("id"))
+		if !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "project not found"})
+			return
+		}
+		sess, ok := store.Get(c.Param("session_id"))
+		if !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+			return
+		}
+		c.JSON(http.StatusOK, sess.Snapshot())
+	}
+}
+
+func handleGetProjectSessionContext(agt *agent.Agent) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		store, _, ok := agt.ProjectSessions(c.Param("id"))
+		if !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "project not found"})
+			return
+		}
+		sess, ok := store.Get(c.Param("session_id"))
+		if !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+			return
+		}
+		snap := sess.Snapshot()
+		c.JSON(http.StatusOK, gin.H{
+			"context":   sess.ContextStats(agt.Config().Agent.Context.MaxTokens),
+			"usage":     snap.Usage,
+			"summaries": snap.Summaries,
+		})
+	}
+}
+
+func handlePatchProjectSession(agt *agent.Agent) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		store, _, ok := agt.ProjectSessions(c.Param("id"))
+		if !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "project not found"})
+			return
+		}
+		sess, ok := store.Get(c.Param("session_id"))
+		if !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+			return
+		}
+		var req sessionPatchRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		sess.UpdateTitle(req.Title)
+		c.JSON(http.StatusOK, sess.Snapshot())
+	}
+}
+
+func handleDeleteProjectSession(agt *agent.Agent) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		store, _, ok := agt.ProjectSessions(c.Param("id"))
+		if !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "project not found"})
+			return
+		}
+		if !store.Delete(c.Param("session_id")) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	}
+}
+
+func handleForkProjectSession(agt *agent.Agent) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		store, p, ok := agt.ProjectSessions(c.Param("id"))
+		if !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "project not found"})
+			return
+		}
+		parentID := c.Param("session_id")
+		newID := c.Query("new_id")
+		if newID == "" {
+			newID = fmt.Sprintf("%s-fork-%d", parentID, time.Now().Unix())
+		}
+		child, err := store.Fork(parentID, newID, -1)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		_ = child.BindProject(p.ID, p.WorkspacePath)
+		c.JSON(http.StatusOK, child.Snapshot())
 	}
 }
 
@@ -257,10 +400,6 @@ func handleChatSSE(agt *agent.Agent) gin.HandlerFunc {
 			sessionID = "default"
 		}
 
-		c.Header("Content-Type", "text/event-stream")
-		c.Header("Cache-Control", "no-cache")
-		c.Header("Connection", "keep-alive")
-
 		agentID := c.Query("agent_id")
 		parts := []types.ContentPart{{Type: "text", Text: prompt}}
 		for _, imageURL := range c.QueryArray("image_url") {
@@ -268,12 +407,20 @@ func handleChatSSE(agt *agent.Agent) gin.HandlerFunc {
 				parts = append(parts, types.ContentPart{Type: "image_url", ImageURL: &types.ImageURL{URL: imageURL}})
 			}
 		}
-		projectID := resolveProjectMemoryKey(agt, c.Query("project_id"))
+		projectID := c.Query("project_id")
 		events, err := agt.RunWithAgentProjectParts(c.Request.Context(), sessionID, agentID, projectID, parts)
 		if err != nil {
-			writeSSE(c, agent.Event{Type: "error", Text: err.Error()})
+			if errors.Is(err, agent.ErrSessionProjectConflict) {
+				c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
+
+		c.Header("Content-Type", "text/event-stream")
+		c.Header("Cache-Control", "no-cache")
+		c.Header("Connection", "keep-alive")
 
 		for evt := range events {
 			writeSSE(c, evt)
@@ -508,6 +655,48 @@ func handleStopRun(agt *agent.Agent) gin.HandlerFunc {
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"status": "stopping"})
+	}
+}
+
+func handleApproveRun(agt *agent.Agent) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		content, err := agt.ApproveRun(c.Request.Context(), c.Param("id"))
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "approved", "content": content})
+	}
+}
+
+func handleDenyRun(agt *agent.Agent) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if err := agt.DenyRun(c.Param("id")); err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "denied"})
+	}
+}
+
+func handleApproveRunStream(agt *agent.Agent) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		events, err := agt.ApproveRunEvents(c.Request.Context(), c.Param("id"))
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+			return
+		}
+		c.Header("Content-Type", "text/event-stream")
+		c.Header("Cache-Control", "no-cache")
+		c.Header("Connection", "keep-alive")
+		flusher, _ := c.Writer.(http.Flusher)
+		for evt := range events {
+			data, _ := json.Marshal(evt)
+			fmt.Fprintf(c.Writer, "data: %s\n\n", data)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
 	}
 }
 

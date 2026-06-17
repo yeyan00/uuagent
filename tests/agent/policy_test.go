@@ -12,6 +12,7 @@ import (
 )
 
 func TestAgentProfileToolPolicyFiltersDefinitions(t *testing.T) {
+	t.Setenv("UUAGENT_HOME", t.TempDir())
 	var toolNames []string
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {

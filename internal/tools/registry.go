@@ -110,7 +110,7 @@ func (r *Registry) register(t *Tool) {
 func readFile(ws string, options Options) *Tool {
 	return &Tool{
 		Name:        "read",
-		Description: "Read the contents of a file. The path should be relative to the workspace root.",
+		Description: pathToolDescription("Read the contents of a file. The path should be relative to the workspace root.", options),
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			path, ok := args["path"].(string)
 			if !ok {
@@ -139,7 +139,7 @@ func readFile(ws string, options Options) *Tool {
 func writeFile(ws string, options Options) *Tool {
 	return &Tool{
 		Name:        "write",
-		Description: "Write content to a file. The path should be relative to the workspace root.",
+		Description: pathToolDescription("Write content to a file. The path should be relative to the workspace root.", options),
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			path, _ := args["path"].(string)
 			content, _ := args["content"].(string)
@@ -286,7 +286,7 @@ func grep(ws string) *Tool {
 func listDir(ws string, options Options) *Tool {
 	return &Tool{
 		Name:        "list_dir",
-		Description: "List files in a directory.",
+		Description: pathToolDescription("List files in a directory.", options),
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			path, _ := args["path"].(string)
 			fullPath, err := resolveToolPath(ws, path, options, approved(args), "list_dir")
@@ -313,6 +313,13 @@ func listDir(ws string, options Options) *Tool {
 			return strings.Join(lines, "\n"), nil
 		},
 	}
+}
+
+func pathToolDescription(base string, options Options) string {
+	if options.PermissionMode != PermissionAsk {
+		return base
+	}
+	return base + " Absolute paths and paths outside the workspace are allowed to be requested; the tool will return an approval_required JSON payload instead of reading or writing until the user approves."
 }
 
 func shellCommand(ctx context.Context, command string) *exec.Cmd {
