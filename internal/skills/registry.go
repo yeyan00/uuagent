@@ -38,15 +38,7 @@ type Registry struct {
 
 // NewRegistry creates a registry with a mock skill for tests and demos.
 func NewRegistry() *Registry {
-	r := &Registry{skills: map[string]Skill{}}
-	r.Register(Skill{
-		Name:        "mock-planner",
-		Description: "A tiny simulated skill that asks the agent to answer with a concise plan before acting.",
-		Prompt:      "Skill mock-planner: first state a short plan, then execute the user's request concisely.",
-		Enabled:     true,
-		Scope:       "global",
-	})
-	return r
+	return &Registry{skills: map[string]Skill{}}
 }
 
 // NewRegistryFromConfig creates a registry from merged system/user/project config.

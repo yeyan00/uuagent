@@ -1,7 +1,11 @@
 package agent_test
 
 import (
+	"archive/zip"
+	"bytes"
 	"encoding/json"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -291,6 +295,160 @@ func TestProjectSkillOverridesUserSkillAndCanLoadFullContent(t *testing.T) {
 	}
 }
 
+func TestSkillManagementAPIDeleteRemovesConfigBackedSkill(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	t.Setenv("UUAGENT_HOME", home)
+	if err := os.MkdirAll(home, 0755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Skills = []config.SkillConfig{{Name: "mock-planner", Description: "Configured planner", Prompt: "plan", Enabled: true, Scope: "global"}}
+	if err := config.SaveUser(cfg); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := config.Load(config.UserConfigPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	server.RegisterRoutes(r.Group("/api"), agent.New(loaded))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/api/skills/mock-planner", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("delete skill status=%d body=%s", w.Code, w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/skills", nil))
+	if strings.Contains(w.Body.String(), "mock-planner") {
+		t.Fatalf("expected config-backed mock-planner to be deleted, got %s", w.Body.String())
+	}
+	saved, err := config.Load(config.UserConfigPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, skill := range saved.Skills {
+		if skill.Name == "mock-planner" {
+			t.Fatalf("expected mock-planner removed from config.yaml")
+		}
+	}
+}
+
+func TestSkillManagementAPIDeleteRemovesVisibleProjectSkill(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	t.Setenv("UUAGENT_HOME", home)
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	projectSkillDir := filepath.Join(workspace, ".uuagent", "skills", "reviewer")
+	if err := os.MkdirAll(projectSkillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectSkillDir, "SKILL.md"), []byte("---\nname: reviewer\ndescription: Project reviewer\n---\nPROJECT BODY"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	server.RegisterRoutes(r.Group("/api"), agent.New(config.Default()))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/projects", strings.NewReader(`{"name":"P","workspace_path":"`+strings.ReplaceAll(workspace, `\`, `\\`)+`"}`)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("create project status=%d body=%s", w.Code, w.Body.String())
+	}
+	var projectResp struct{ ID string `json:"id"` }
+	if err := json.Unmarshal(w.Body.Bytes(), &projectResp); err != nil {
+		t.Fatal(err)
+	}
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/projects/"+projectResp.ID+"/open", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("open project status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/api/skills/reviewer", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("delete skill status=%d body=%s", w.Code, w.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(projectSkillDir, "SKILL.md")); !os.IsNotExist(err) {
+		t.Fatalf("expected project skill file to be removed, err=%v", err)
+	}
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/skills/reviewer/content", nil))
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected deleted visible skill to be gone, status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestSkillManagementAPICreateUploadAndDelete(t *testing.T) {
+	t.Setenv("UUAGENT_HOME", filepath.Join(t.TempDir(), "home"))
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	server.RegisterRoutes(r.Group("/api"), agent.New(config.Default()))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/skills", strings.NewReader(`{"name":"reviewer","description":"Review code","content":"REVIEW BODY"}`)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("create skill status=%d body=%s", w.Code, w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/skills/reviewer/content", nil))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "REVIEW BODY") {
+		t.Fatalf("expected created skill content, status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	zipPath := filepath.Join(t.TempDir(), "skill.zip")
+	makeSkillZip(t, zipPath, "zipper", "Zip skill", "ZIP BODY")
+	body, contentType := multipartFileBody(t, "file", zipPath)
+	w = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/skills/upload", body)
+	req.Header.Set("Content-Type", contentType)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("upload skill status=%d body=%s", w.Code, w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/skills/zipper/content", nil))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "ZIP BODY") {
+		t.Fatalf("expected uploaded skill content, status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/api/skills/reviewer", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("delete skill status=%d body=%s", w.Code, w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/skills/reviewer/content", nil))
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected deleted skill to be gone, status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestSkillManagementAPICreateFromURL(t *testing.T) {
+	t.Setenv("UUAGENT_HOME", filepath.Join(t.TempDir(), "home"))
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("---\nname: remote\ndescription: Remote skill\n---\nREMOTE BODY"))
+	}))
+	defer remote.Close()
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	server.RegisterRoutes(r.Group("/api"), agent.New(config.Default()))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/skills", strings.NewReader(`{"url":"`+remote.URL+`"}`)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("create from url status=%d body=%s", w.Code, w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/skills/remote/content", nil))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "REMOTE BODY") {
+		t.Fatalf("expected remote skill content, status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
 func TestDisabledMCPServerIsNotExposedInToolsAPI(t *testing.T) {
 	t.Setenv("UUAGENT_HOME", filepath.Join(t.TempDir(), "home"))
 	cfg := config.Default()
@@ -504,6 +662,43 @@ func TestSubagentProfileAPIsPersistAndListProfiles(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "tasks") {
 		t.Fatalf("task list response malformed: %s", w.Body.String())
 	}
+}
+
+func makeSkillZip(t *testing.T, path, name, description, body string) {
+	t.Helper()
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	zw := zip.NewWriter(file)
+	entry, err := zw.Create(name + "/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = entry.Write([]byte("---\nname: " + name + "\ndescription: " + description + "\n---\n" + body))
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func multipartFileBody(t *testing.T, field, path string) (io.Reader, string) {
+	t.Helper()
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	part, err := mw.CreateFormFile(field, filepath.Base(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = part.Write(data)
+	if err := mw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return &buf, mw.FormDataContentType()
 }
 
 func urlQueryEscape(value string) string {

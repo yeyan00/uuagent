@@ -92,6 +92,26 @@ button:hover:not(:disabled) { filter: brightness(.985); transform: translateY(-1
 .sessionTitle small, .emptyMini { color: #62738f; font-size: 11px; }
 .miniButton { width: 28px; height: 28px; border: 0; border-radius: 9px; padding: 0; display: grid; place-items: center; background: #edf2fb; color: #31415d; }
 .settingsPanel { display: grid; gap: 10px; padding-top: 12px; }
+.settingsSideMenu { display: grid; gap: 8px; }
+.settingsWorkspacePanel { max-width: 1120px; width: 100%; margin: 0 auto; }
+.settingsPageHeader { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 16px; border: 1px solid #e2eaf6; border-radius: 18px; background: #f7faff; }
+.settingsPageHeader strong { display: block; color: #25324b; font-size: 18px; margin-bottom: 4px; }
+.settingsPageHeader p { margin: 0; color: #62738f; line-height: 1.5; }
+.addRoundButton { width: 42px; height: 42px; padding: 0; border-radius: 15px; font-size: 22px; display: grid; place-items: center; }
+.skillCardGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; }
+.skillToolbar { display: flex; gap: 8px; align-items: center; }
+.skillCard { position: relative; min-height: 132px; border: 1px solid #e2eaf6; border-radius: 18px; background: #fff; text-align: left; padding: 14px; display: grid; align-content: start; gap: 8px; color: #25324b; box-shadow: 0 10px 24px rgba(26,42,74,.05); }
+.skillCard.selected { border-color: #4c78ff; background: #f2f6ff; }
+.skillCard input[type="checkbox"] { position: absolute; top: 10px; left: 10px; width: auto; }
+.skillCard input[type="checkbox"] + span { padding-left: 24px; }
+.skillCard span { font-weight: 850; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.skillCard small { width: fit-content; border-radius: 999px; padding: 4px 8px; background: #eef4ff; color: #3157d5; font-size: 11px; font-weight: 850; }
+.skillCard p { margin: 0; color: #62738f; font-size: 12px; line-height: 1.45; }
+.modalIconActions { display: flex; gap: 8px; }
+.dangerButton { background: #ffeceb; color: #b42318; }
+.skillDetailLayout { display: grid; grid-template-columns: 220px 1fr; gap: 14px; min-height: 360px; }
+.skillFileList { display: grid; align-content: start; gap: 8px; }
+.skillContentPreview { min-height: 360px; max-height: 62vh; margin: 0; }
 .contextStats { border: 1px solid #e2eaf6; border-radius: 16px; padding: 12px; background: #f8fbff; display: grid; gap: 5px; color: #344054; }
 .contextStats h3 { margin: 0; font-size: 13px; color: #62738f; }
 .contextStats strong { font-size: 22px; color: #25324b; letter-spacing: -.03em; }

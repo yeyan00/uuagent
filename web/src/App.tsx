@@ -197,6 +197,7 @@ const toolEventFromMessage = (message: Message, toolArgs: Record<string, string>
 
 function App() {
   const [mainPage, setMainPage] = useState<MainPage>('projects')
+  const [workspaceMode, setWorkspaceMode] = useState<'chat' | 'settings'>('chat')
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [isStreaming, setIsStreaming] = useState(false)
@@ -222,6 +223,15 @@ function App() {
   const [currentRunId, setCurrentRunId] = useState('')
   const [agentDraft, setAgentDraft] = useState<AgentProfile | null>(null)
   const [subagentDraft, setSubagentDraft] = useState<SubagentProfile | null>(null)
+  const [selectedSkillName, setSelectedSkillName] = useState('')
+  const [selectedSkillContent, setSelectedSkillContent] = useState('')
+  const [newSkillName, setNewSkillName] = useState('')
+  const [newSkillDescription, setNewSkillDescription] = useState('')
+  const [newSkillContent, setNewSkillContent] = useState('')
+  const [newSkillURL, setNewSkillURL] = useState('')
+  const [isSkillCreateOpen, setSkillCreateOpen] = useState(false)
+  const [isSkillDeleteMode, setSkillDeleteMode] = useState(false)
+  const [selectedSkillDeletes, setSelectedSkillDeletes] = useState<string[]>([])
   const [forcedSkill, setForcedSkill] = useState('')
   const [isAgentSettingsOpen, setAgentSettingsOpen] = useState(false)
   const [settingsProjectId, setSettingsProjectId] = useState('')
@@ -355,10 +365,47 @@ function App() {
   }
 
   const updateSubagentDraft = (patch: Partial<SubagentProfile>) => setSubagentDraft(prev => prev ? { ...prev, ...patch } : prev)
+  const newSubagent = () => setSubagentDraft({ id: `subagent-${Date.now()}`, name: '', enabled_tools: [], enabled_mcp_servers: [], enabled_skills: [], permission_mode: 'ask', max_turns: 10 })
   const saveSubagent = async () => {
     if (!subagentDraft) return
     const saved = await api<SubagentProfile>('/api/subagents', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(subagentDraft) })
     setSubagentDraft(saved); setStatus(`Saved subagent ${saved.name || saved.id}`); await refresh()
+  }
+  const deleteSubagent = async () => {
+    if (!subagentDraft?.id) return
+    await api(`/api/subagents/${encodeURIComponent(subagentDraft.id)}`, { method:'DELETE' })
+    setStatus(`Deleted subagent ${subagentDraft.id}`); setSubagentDraft(null); await refresh()
+  }
+
+  const loadSkillContent = async (name: string) => {
+    setSelectedSkillName(name)
+    const r = await api<{content: string}>(`/api/skills/${encodeURIComponent(name)}/content`)
+    setSelectedSkillContent(r.content || '')
+  }
+  const createSkill = async () => {
+    if (!newSkillName.trim() && !newSkillURL.trim()) return
+    const payload = newSkillURL.trim() ? { url: newSkillURL.trim() } : { name: newSkillName.trim(), description: newSkillDescription, content: newSkillContent }
+    await api('/api/skills', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) })
+    setNewSkillName(''); setNewSkillDescription(''); setNewSkillContent(''); setNewSkillURL(''); setSkillCreateOpen(false); setStatus('Skill added'); await refresh()
+  }
+  const uploadSkillZip = async (file: File | null) => {
+    if (!file) return
+    const form = new FormData()
+    form.append('file', file)
+    await api('/api/skills/upload', { method:'POST', body: form })
+    setStatus('Skill uploaded'); await refresh()
+  }
+  const deleteSkill = async () => {
+    if (!selectedSkillName) return
+    await api(`/api/skills/${encodeURIComponent(selectedSkillName)}`, { method:'DELETE' })
+    setSelectedSkillName(''); setSelectedSkillContent(''); setStatus('Skill deleted'); await refresh()
+  }
+  const toggleSkillDelete = (name: string) => setSelectedSkillDeletes(prev => prev.includes(name) ? prev.filter(item => item !== name) : [...prev, name])
+  const deleteSelectedSkills = async () => {
+    if (selectedSkillDeletes.length === 0) return
+    if (!window.confirm(`Delete ${selectedSkillDeletes.length} selected skill(s)?`)) return
+    for (const name of selectedSkillDeletes) await api(`/api/skills/${encodeURIComponent(name)}`, { method:'DELETE' })
+    setSelectedSkillDeletes([]); setSkillDeleteMode(false); setStatus('Skills deleted'); await refresh()
   }
 
   const addMemory = async () => {
@@ -543,41 +590,74 @@ function App() {
     </div>
   }
 
+  const renderSkillCreateModal = () => isSkillCreateOpen && <div className="modalBackdrop" onMouseDown={()=>setSkillCreateOpen(false)}>
+    <div className="modal" onMouseDown={e=>e.stopPropagation()}>
+      <div className="modalHeader"><div><h2>Add Skill</h2><p>Create from pasted content, URL, or zip upload.</p></div><button className="iconButton" onClick={()=>setSkillCreateOpen(false)}>×</button></div>
+      <div className="settingsGrid">
+        <label><input placeholder="Skill name" value={newSkillName} onChange={e=>setNewSkillName(e.target.value)} /></label>
+        <label><input placeholder="Skill description" value={newSkillDescription} onChange={e=>setNewSkillDescription(e.target.value)} /></label>
+        <label className="wide"><textarea placeholder="Paste SKILL.md content or instructions" value={newSkillContent} onChange={e=>setNewSkillContent(e.target.value)} /></label>
+        <label className="wide"><input placeholder="Skill URL" value={newSkillURL} onChange={e=>setNewSkillURL(e.target.value)} /></label>
+        <label className="wide"><input type="file" accept=".zip" onChange={e=>uploadSkillZip(e.target.files?.[0] || null).catch(err=>setStatus(String(err)))} /></label>
+      </div>
+      <div className="modalActions"><button className="primaryButton" onClick={()=>createSkill().catch(err=>setStatus(String(err)))}>Create Skill</button></div>
+    </div>
+  </div>
+
+  const renderSkillDetailModal = () => selectedSkillName && <div className="modalBackdrop" onMouseDown={()=>{ setSelectedSkillName(''); setSelectedSkillContent('') }}>
+    <div className="modal" onMouseDown={e=>e.stopPropagation()}>
+      <div className="modalHeader"><div><h2>{selectedSkillName}</h2><p>Skill files and content preview.</p></div><button className="iconButton" onClick={()=>{ setSelectedSkillName(''); setSelectedSkillContent('') }}>×</button></div>
+      <div className="skillDetailLayout"><div className="skillFileList"><button className="listItem active"><span>SKILL.md</span><small>Main skill file</small></button></div><pre className="codeBlock skillContentPreview">{selectedSkillContent}</pre></div>
+    </div>
+  </div>
+
   const renderSkillsSettings = () => <div className="settingsPanel">
-    <div className="emptyPanel"><strong>Skills</strong><br />Available skills are discovered from user config, user skill folders, and project skill folders. Empty agent selection means all skills.</div>
-    <div className="itemList">
-      {skills.map(skill => <div key={skill.name} className="listItem static"><span>{skill.name}</span><small>{skill.scope || 'global'} · {skill.description || 'No description'}</small></div>)}
+    <div className="settingsPageHeader"><div><strong>Skills</strong><p>Available skills are discovered from user config, user skill folders, and project skill folders.</p></div><div className="skillToolbar">{isSkillDeleteMode ? <><button className="softButton" onClick={()=>{ setSkillDeleteMode(false); setSelectedSkillDeletes([]) }}>Cancel</button><button className="primaryButton dangerButton" onClick={()=>deleteSelectedSkills().catch(err=>setStatus(String(err)))}>Delete selected</button></> : <><button className="softButton" onClick={()=>setSkillDeleteMode(true)}>Delete</button><button className="primaryButton addRoundButton" aria-label="Add skill" onClick={()=>setSkillCreateOpen(true)}>＋</button></>}</div></div>
+    <div className="skillCardGrid">
+      {skills.map(skill => <button key={skill.name} className={isSkillDeleteMode && selectedSkillDeletes.includes(skill.name) ? 'skillCard selected' : 'skillCard'} onClick={() => isSkillDeleteMode ? toggleSkillDelete(skill.name) : loadSkillContent(skill.name).catch(err=>setStatus(String(err)))}>{isSkillDeleteMode && <input aria-label={`Select ${skill.name}`} type="checkbox" checked={selectedSkillDeletes.includes(skill.name)} onChange={()=>toggleSkillDelete(skill.name)} onClick={e=>e.stopPropagation()} />}<span>{skill.name}</span><small>{skill.scope || 'global'}</small><p>{skill.description || 'No description'}</p></button>)}
       {skills.length === 0 && <div className="emptyPanel">No skills discovered.</div>}
     </div>
     {skillDiagnostics.length > 0 && <div className="settingsPanel"><h3>Diagnostics</h3>{skillDiagnostics.map((d, i) => <div key={i} className="listItem static"><span>{d.path}</span><small>{d.message}</small></div>)}</div>}
+    {renderSkillCreateModal()}
+    {renderSkillDetailModal()}
   </div>
 
   const renderSubagentSettings = () => <div className="settingsPanel">
+    <button className="primaryButton" onClick={newSubagent}>New Subagent</button>
     <div className="itemList">{subagents.map(sa => <button key={sa.id} className="listItem" onClick={() => setSubagentDraft({ ...sa })}><span>{sa.name || sa.id}</span><small>{joinList(sa.enabled_skills) || 'All skills'}</small></button>)}</div>
     {subagents.length === 0 && <div className="emptyPanel">No subagents configured.</div>}
     {subagentDraft && <div className="settingsGrid">
       <label>ID<input value={subagentDraft.id || ''} onChange={e=>updateSubagentDraft({ id:e.target.value })} /></label>
-      <label>Name<input value={subagentDraft.name || ''} onChange={e=>updateSubagentDraft({ name:e.target.value })} /></label>
+      <label>Name<input placeholder="Subagent name" value={subagentDraft.name || ''} onChange={e=>updateSubagentDraft({ name:e.target.value })} /></label>
       <label className="wide">System Prompt<textarea value={subagentDraft.system_prompt || ''} onChange={e=>updateSubagentDraft({ system_prompt:e.target.value })} /></label>
+      <label>Model<input value={subagentDraft.model || ''} onChange={e=>updateSubagentDraft({ model:e.target.value })} placeholder="empty = route automatically" /></label>
+      <label>Permission<input value={subagentDraft.permission_mode || ''} onChange={e=>updateSubagentDraft({ permission_mode:e.target.value })} placeholder="ask" /></label>
+      <label>Max Turns<input type="number" value={subagentDraft.max_turns || 0} onChange={e=>updateSubagentDraft({ max_turns:Number(e.target.value) })} /></label>
+      <label className="wide">Tools<input value={joinList(subagentDraft.enabled_tools)} onChange={e=>updateSubagentDraft({ enabled_tools:parseList(e.target.value) })} placeholder="read, grep, shell" /></label>
+      <label className="wide">MCP Servers<input value={joinList(subagentDraft.enabled_mcp_servers)} onChange={e=>updateSubagentDraft({ enabled_mcp_servers:parseList(e.target.value) })} placeholder="mock" /></label>
       {renderSkillPicker(subagentDraft.enabled_skills, enabled_skills => updateSubagentDraft({ enabled_skills }))}
       <button className="primaryButton" onClick={saveSubagent}>Save Subagent</button>
+      <button onClick={()=>deleteSubagent().catch(err=>setStatus(String(err)))}>Delete Subagent</button>
     </div>}
   </div>
 
-  const renderSettingsBody = () => {
-    if (settingsTab === 'Skills') return renderSkillsSettings()
-    if (settingsTab === 'Subagents') return renderSubagentSettings()
-    return <div className="itemList">
-      {settingsTabs.map(tab => <button key={tab} className={tab === settingsTab ? 'listItem active' : 'listItem'} onClick={() => {
-        setSettingsTab(tab)
-        if (tab === 'Agents') setAgentSettingsOpen(true)
-      }}><span>{tab}</span><small>{tab === 'Agents' ? 'Prompts, models, tools and MCP access' : tab === 'Subagents' ? 'Delegated agents and skills' : tab === 'Skills' ? 'Available skill registry' : 'Coming soon'}</small></button>)}
-    </div>
-  }
+  const renderSettingsSideMenu = () => <div className="settingsSideMenu">
+    {settingsTabs.map(tab => <button key={tab} aria-label={tab} className={tab === settingsTab ? 'listItem active' : 'listItem'} onClick={() => {
+      setSettingsTab(tab)
+      if (tab === 'Agents') setAgentSettingsOpen(true)
+    }}><span>{tab}</span><small>{tab === 'Agents' ? 'Prompts and tools' : tab === 'Subagents' ? 'Delegation profiles' : tab === 'Skills' ? 'Reusable instructions' : 'Coming soon'}</small></button>)}
+  </div>
+
+  const renderSettingsBody = () => <div className="settingsPanel settingsWorkspacePanel">
+    {settingsTab === 'Skills' ? renderSkillsSettings() : settingsTab === 'Subagents' ? renderSubagentSettings() : <div className="itemList">
+      <button className="listItem" onClick={() => setAgentSettingsOpen(true)}><span>Open agent settings</span><small>Prompts, models, tools and MCP access</small></button>
+      {settingsTab !== 'Agents' && <div className="emptyPanel">Coming soon.</div>}
+    </div>}
+  </div>
 
   const renderSidebarBody = () => {
     if (mainPage !== 'projects') {
-      if (mainPage === 'settings') return renderSettingsBody()
+      if (mainPage === 'settings') return renderSettingsSideMenu()
       const text = mainPage === 'extensions'
         ? 'Manage marketplace extensions and installable capability packs.'
         : 'Create recurring project scans, tests, reports and knowledge refresh jobs.'
@@ -615,7 +695,7 @@ function App() {
       <aside className="navRail">
         <div className="brandBlock"><div className="brandMark">U</div><div className="brandMini">UA</div></div>
         <nav className="navList">
-          {navItems.map(item => <button key={item.id} className={mainPage === item.id ? 'navItem active' : 'navItem'} onClick={() => setMainPage(item.id)} title={item.label}><span className="navIcon">{item.icon}</span><span>{item.label}</span></button>)}
+          {navItems.map(item => <button key={item.id} className={mainPage === item.id ? 'navItem active' : 'navItem'} onClick={() => { setMainPage(item.id); if (item.id === 'settings') setWorkspaceMode('settings') }} title={item.label}><span className="navIcon">{item.icon}</span><span>{item.label}</span></button>)}
         </nav>
       </aside>
 
@@ -637,31 +717,37 @@ function App() {
 
       <main className="workspace">
         <header className="workspaceHeader">
-          <div><h1>{activeSession?.title || sessionId}</h1><p>{activeProject?.workspace_path || 'Local workspace'} · {activeAgent?.name || agentId}</p></div>
-          {routeInfo && <div className="routePill">{routeInfo.model}<span>{routeInfo.tier}</span></div>}
+          <div><h1>{workspaceMode === 'settings' ? 'Settings' : (activeSession?.title || sessionId)}</h1><p>{activeProject?.workspace_path || 'Local workspace'} · {activeAgent?.name || agentId}</p></div>
+          <div className="workspaceActions">
+            {workspaceMode === 'settings' && <button className="softButton" onClick={()=>setWorkspaceMode('chat')}>Chat</button>}
+            {workspaceMode === 'settings' && isStreaming && <button className="sendButton" onClick={stopRun}>Stop</button>}
+            {routeInfo && <div className="routePill">{routeInfo.model}<span>{routeInfo.tier}</span></div>}
+          </div>
         </header>
 
-        <section className="messagesPane">
-          {messages.length === 0 && <div className="emptyState"><div>✨</div><h2>Start a coding session</h2><p>Open a project, choose an agent and ask UUAgent to inspect, explain or modify your code.</p></div>}
-          {groupMessagesIntoTurns(messages).map((turn, i) => renderTurn(turn, i))}
-          <div ref={messagesEndRef}/>
-        </section>
+        {workspaceMode === 'settings' ? <section className="settingsWorkspace">{renderSettingsBody()}</section> : <>
+          <section className="messagesPane">
+            {messages.length === 0 && <div className="emptyState"><div>✨</div><h2>Start a coding session</h2><p>Open a project, choose an agent and ask UUAgent to inspect, explain or modify your code.</p></div>}
+            {groupMessagesIntoTurns(messages).map((turn, i) => renderTurn(turn, i))}
+            <div ref={messagesEndRef}/>
+          </section>
 
-        <footer className="composerShell">
-          {attachmentNotice && <div className="attachmentNotice">{attachmentNotice}</div>}
-          <div className="composerBox">
-            <textarea value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter' && (e.ctrlKey || e.metaKey)){ e.preventDefault(); sendMessage() } }} placeholder="Ask UUAgent to inspect, edit or explain code... Ctrl+Enter to send" />
-            <button className="attachButton" onClick={onAttachClick} title="Attach image or file">＋</button>
-            {isStreaming ? <button className="sendButton" onClick={stopRun}>Stop</button> : <button className="sendButton" onClick={sendMessage} disabled={!input.trim()}>Send</button>}
-            <input ref={fileInputRef} type="file" multiple accept="image/*,.txt,.md,.json,.yaml,.yml,.go,.ts,.tsx" hidden onChange={e=>onFilesSelected(e.target.files)} />
-          </div>
-          <div className="composerMeta">
-            <label>Project<select value={projectId} onChange={e=>openProject(e.target.value)} disabled={activeSessionLocked}><option value="">None</option>{projects.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select>{activeSessionLocked && <span>locked</span>}</label>
-            <label>Agent<select value={agentId} onChange={e=>selectAgent(e.target.value)}>{agents.map(a=><option key={a.id} value={a.id}>{a.name || a.id}</option>)}</select></label>
-            <label>Skill<select aria-label="Skill" value={forcedSkill} onChange={e=>setForcedSkill(e.target.value)}><option value="">Auto</option>{skills.map(skill => <option key={skill.name} value={skill.name}>{skill.name}</option>)}</select></label>
-            <label>Model<select value={modelOverride} onChange={e=>setModelOverride(e.target.value)}>{availableModels.map(m=><option key={m} value={m}>{m === 'auto' ? 'Auto' : m}</option>)}</select></label>
-          </div>
-        </footer>
+          <footer className="composerShell">
+            {attachmentNotice && <div className="attachmentNotice">{attachmentNotice}</div>}
+            <div className="composerBox">
+              <textarea value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter' && (e.ctrlKey || e.metaKey)){ e.preventDefault(); sendMessage() } }} placeholder="Ask UUAgent to inspect, edit or explain code... Ctrl+Enter to send" />
+              <button className="attachButton" onClick={onAttachClick} title="Attach image or file">＋</button>
+              {isStreaming ? <button className="sendButton" onClick={stopRun}>Stop</button> : <button className="sendButton" onClick={sendMessage} disabled={!input.trim()}>Send</button>}
+              <input ref={fileInputRef} type="file" multiple accept="image/*,.txt,.md,.json,.yaml,.yml,.go,.ts,.tsx" hidden onChange={e=>onFilesSelected(e.target.files)} />
+            </div>
+            <div className="composerMeta">
+              <label>Project<select value={projectId} onChange={e=>openProject(e.target.value)} disabled={activeSessionLocked}><option value="">None</option>{projects.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select>{activeSessionLocked && <span>locked</span>}</label>
+              <label>Agent<select value={agentId} onChange={e=>selectAgent(e.target.value)}>{agents.map(a=><option key={a.id} value={a.id}>{a.name || a.id}</option>)}</select></label>
+              <label>Skill<select aria-label="Skill" value={forcedSkill} onChange={e=>setForcedSkill(e.target.value)}><option value="">Auto</option>{skills.map(skill => <option key={skill.name} value={skill.name}>{skill.name}</option>)}</select></label>
+              <label>Model<select value={modelOverride} onChange={e=>setModelOverride(e.target.value)}>{availableModels.map(m=><option key={m} value={m}>{m === 'auto' ? 'Auto' : m}</option>)}</select></label>
+            </div>
+          </footer>
+        </>}
       </main>
     </div>
 

@@ -1,16 +1,22 @@
 package server
 
 import (
+	"archive/zip"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/yeyan00/uuagent/internal/agent"
 	"github.com/yeyan00/uuagent/internal/config"
 	"github.com/yeyan00/uuagent/internal/memory"
+	"github.com/yeyan00/uuagent/internal/paths"
 	"github.com/yeyan00/uuagent/internal/subagent"
 	"github.com/yeyan00/uuagent/internal/types"
 )
@@ -40,7 +46,10 @@ func RegisterRoutes(r *gin.RouterGroup, agt *agent.Agent) {
 	r.DELETE("/subagents/:id", handleDeleteSubagent(agt))
 	r.GET("/subagent/tasks", handleListSubagentTasks(agt))
 	r.GET("/skills", handleListSkills(agt))
+	r.POST("/skills", handleCreateSkill(agt))
+	r.POST("/skills/upload", handleUploadSkill(agt))
 	r.GET("/skills/:name/content", handleGetSkillContent(agt))
+	r.DELETE("/skills/:name", handleDeleteSkill(agt))
 	r.GET("/mcp/servers", handleListMCPServers(agt))
 	r.GET("/tools", handleListTools(agt))
 	r.GET("/chat", handleChatSSE(agt))
@@ -443,6 +452,256 @@ func handleGetSkillContent(agt *agent.Agent) gin.HandlerFunc {
 		}
 		c.JSON(http.StatusOK, gin.H{"name": c.Param("name"), "content": content})
 	}
+}
+
+type createSkillRequest struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Content     string `json:"content"`
+	URL         string `json:"url"`
+}
+
+func handleCreateSkill(agt *agent.Agent) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req createSkillRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if strings.TrimSpace(req.URL) != "" {
+			resp, err := http.Get(req.URL)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+			defer resp.Body.Close()
+			data, _ := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
+			name, description := skillMetaFromMarkdown(string(data), req.Name, req.Description)
+			if err := writeUserSkill(name, description, string(data)); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+			agt.ReloadConfig(agt.Config())
+			c.JSON(http.StatusOK, gin.H{"name": name, "description": description})
+			return
+		}
+		if err := writeUserSkill(req.Name, req.Description, req.Content); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		agt.ReloadConfig(agt.Config())
+		c.JSON(http.StatusOK, gin.H{"name": req.Name, "description": req.Description})
+	}
+}
+
+func handleUploadSkill(agt *agent.Agent) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		file, err := c.FormFile("file")
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		src, err := file.Open()
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		defer src.Close()
+		tmp, err := os.CreateTemp("", "uuagent-skill-*.zip")
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		defer os.Remove(tmp.Name())
+		_, _ = io.Copy(tmp, src)
+		_ = tmp.Close()
+		zr, err := zip.OpenReader(tmp.Name())
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		defer zr.Close()
+		var created []string
+		for _, f := range zr.File {
+			if filepath.Base(f.Name) != "SKILL.md" && !strings.HasSuffix(strings.ToLower(f.Name), ".md") {
+				continue
+			}
+			rc, err := f.Open()
+			if err != nil {
+				continue
+			}
+			data, _ := io.ReadAll(io.LimitReader(rc, 1024*1024))
+			_ = rc.Close()
+			fallback := strings.TrimSuffix(filepath.Base(filepath.Dir(f.Name)), filepath.Ext(filepath.Base(filepath.Dir(f.Name))))
+			if fallback == "." || fallback == "" {
+				fallback = strings.TrimSuffix(filepath.Base(f.Name), filepath.Ext(filepath.Base(f.Name)))
+			}
+			name, description := skillMetaFromMarkdown(string(data), fallback, "")
+			if err := writeUserSkill(name, description, string(data)); err == nil {
+				created = append(created, name)
+			}
+		}
+		if len(created) == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "no skill markdown found"})
+			return
+		}
+		agt.ReloadConfig(agt.Config())
+		c.JSON(http.StatusOK, gin.H{"skills": created})
+	}
+}
+
+func handleDeleteSkill(agt *agent.Agent) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		name := safeSkillName(c.Param("name"))
+		if name == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid skill name"})
+			return
+		}
+		workspace := ""
+		removedFromConfig := false
+		removePath := filepath.Join(paths.UserDir(), "skills", name)
+		if skill, ok := agt.Skills().Get(name); ok && strings.TrimSpace(skill.Path) != "" {
+			removePath = deletableSkillPath(skill.Path)
+			workspace = skillWorkspaceRoot(skill.Path)
+		} else if removeSkillFromUserConfig(name) {
+			removedFromConfig = true
+			removePath = ""
+		}
+		if removePath != "" {
+			if err := os.RemoveAll(removePath); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+		} else if !removedFromConfig {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "skill cannot be deleted from its configured source"})
+			return
+		}
+		if removedFromConfig {
+			if cfg, err := config.Load(config.UserConfigPath()); err == nil {
+				agt.ReloadConfig(cfg)
+			}
+		} else {
+			agt.ReloadConfig(agt.Config())
+		}
+		if workspace != "" {
+			agt.ReloadProjectSkills(workspace)
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	}
+}
+
+func removeSkillFromUserConfig(name string) bool {
+	cfg, err := config.Load(config.UserConfigPath())
+	if err != nil {
+		return false
+	}
+	kept := cfg.Skills[:0]
+	removed := false
+	for _, skill := range cfg.Skills {
+		if skill.Name == name {
+			removed = true
+			continue
+		}
+		kept = append(kept, skill)
+	}
+	if !removed {
+		return false
+	}
+	cfg.Skills = kept
+	for i := range cfg.Agents {
+		cfg.Agents[i].EnabledSkills = removeString(cfg.Agents[i].EnabledSkills, name)
+	}
+	for i := range cfg.Agent.Subagent.Profiles {
+		cfg.Agent.Subagent.Profiles[i].EnabledSkills = removeString(cfg.Agent.Subagent.Profiles[i].EnabledSkills, name)
+	}
+	return config.SaveUser(cfg) == nil
+}
+
+func removeString(items []string, value string) []string {
+	kept := items[:0]
+	for _, item := range items {
+		if item != value {
+			kept = append(kept, item)
+		}
+	}
+	return kept
+}
+
+func deletableSkillPath(skillPath string) string {
+	clean := filepath.Clean(skillPath)
+	base := filepath.Base(clean)
+	dir := filepath.Dir(clean)
+	if base == "SKILL.md" {
+		return dir
+	}
+	if strings.HasSuffix(strings.ToLower(base), ".md") {
+		return clean
+	}
+	return ""
+}
+
+func skillWorkspaceRoot(skillPath string) string {
+	clean := filepath.Clean(skillPath)
+	markers := []string{filepath.Join(".uuagent", "skills"), filepath.Join(".agents", "skills")}
+	for _, marker := range markers {
+		idx := strings.Index(clean, marker)
+		if idx > 0 {
+			return strings.TrimRight(clean[:idx], string(filepath.Separator))
+		}
+	}
+	return ""
+}
+
+func writeUserSkill(name, description, content string) error {
+	name = safeSkillName(name)
+	if name == "" {
+		return fmt.Errorf("name is required")
+	}
+	if strings.TrimSpace(description) == "" {
+		description = name
+	}
+	body := strings.TrimSpace(content)
+	if body == "" {
+		body = description
+	}
+	if !strings.HasPrefix(body, "---") {
+		body = fmt.Sprintf("---\nname: %s\ndescription: %s\n---\n%s", name, description, body)
+	}
+	dir := filepath.Join(paths.UserDir(), "skills", name)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(body), 0644)
+}
+
+func skillMetaFromMarkdown(raw, fallbackName, fallbackDescription string) (string, string) {
+	name := fallbackName
+	description := fallbackDescription
+	if strings.HasPrefix(raw, "---") {
+		lines := strings.Split(raw, "\n")
+		for _, line := range lines[1:] {
+			line = strings.TrimSpace(line)
+			if line == "---" {
+				break
+			}
+			if v, ok := strings.CutPrefix(line, "name:"); ok {
+				name = strings.Trim(strings.TrimSpace(v), `"'`)
+			}
+			if v, ok := strings.CutPrefix(line, "description:"); ok {
+				description = strings.Trim(strings.TrimSpace(v), `"'`)
+			}
+		}
+	}
+	return safeSkillName(name), description
+}
+
+func safeSkillName(name string) string {
+	name = strings.TrimSpace(name)
+	name = strings.Trim(name, `/\\`)
+	if name == "" || strings.Contains(name, "..") || strings.ContainsAny(name, `/\\`) {
+		return ""
+	}
+	return name
 }
 
 func handleListMCPServers(agt *agent.Agent) gin.HandlerFunc {
