@@ -12,9 +12,10 @@ interface SkillDiagnostic { path: string; name?: string; message: string }
 interface Session { id: string; title?: string; project_id?: string; project_path?: string; parent_id?: string; messages: Message[] }
 interface MemoryEntry { id: string; content: string; status: string; source: string; project: string; scope: string }
 interface Summary { id: string; summary: string; token_before: number; token_after: number; created_at: number }
+interface CompactArchive { id: string; summary: string; token_before: number; token_after: number; created_at: number }
 interface ContextStats { estimated_tokens: number; max_tokens: number; percent: number }
 interface TokenUsage { input_tokens?: number; output_tokens?: number; total_tokens?: number; estimated_input_tokens?: number; estimated_output_tokens?: number; estimated?: boolean }
-interface SessionContext { context?: ContextStats; usage?: TokenUsage; summaries?: Summary[] }
+interface SessionContext { context?: ContextStats; usage?: TokenUsage; summaries?: Summary[]; archives?: CompactArchive[] }
 interface ApprovalPayload { approval_required?: boolean; tool?: string; path?: string; reason?: string; run_id?: string; status?: string }
 interface ToolEventPayload { kind?: 'tool_start' | 'tool_result'; tool?: string; tool_id?: string; args?: string; text?: string }
 interface ModelsSettings { proxy_url: string; fallback_tier: string; routing_tiers: Record<string, string[]>; model_ids: string[] }
@@ -213,6 +214,7 @@ function App() {
   const [projectSessions, setProjectSessions] = useState<Record<string, Session[]>>({})
   const [memories, setMemories] = useState<MemoryEntry[]>([])
   const [summaries, setSummaries] = useState<Summary[]>([])
+  const [archives, setArchives] = useState<CompactArchive[]>([])
   const [sessionContext, setSessionContext] = useState<SessionContext>({})
   const [projectId, setProjectId] = useState('')
   const [agentId, setAgentId] = useState('default')
@@ -299,7 +301,7 @@ function App() {
   useEffect(() => {
     if (!projectId || !sessionId) return
     api<SessionContext>(`/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/context`)
-      .then(r => { setSessionContext(r || {}); setSummaries(r.summaries || []) }).catch(() => { setSessionContext({}); setSummaries([]) })
+      .then(r => { setSessionContext(r || {}); setSummaries(r.summaries || []); setArchives(r.archives || []) }).catch(() => { setSessionContext({}); setSummaries([]); setArchives([]) })
   }, [projectId, sessionId, isStreaming])
   useEffect(() => {
     const profile = agents.find(a => a.id === agentId)
@@ -330,7 +332,7 @@ function App() {
     const s = await api<Session>(`/api/projects/${encodeURIComponent(pid)}/sessions/${encodeURIComponent(id)}`)
     setMessages(s.messages || [])
     const ctx = await api<SessionContext>(`/api/projects/${encodeURIComponent(pid)}/sessions/${encodeURIComponent(id)}/context`).catch((): SessionContext => ({}))
-    setSessionContext(ctx); setSummaries(ctx.summaries || [])
+    setSessionContext(ctx); setSummaries(ctx.summaries || []); setArchives(ctx.archives || [])
     setStatus(`Loaded ${s.title || s.id}`)
   }
   const forkSession = async (id = sessionId, pid = projectId) => {
@@ -351,6 +353,16 @@ function App() {
     await api(`/api/projects/${encodeURIComponent(pid)}/sessions/${encodeURIComponent(id)}`, { method:'DELETE' })
     if (id === sessionId) { setSessionId(''); setMessages([]) }
     setStatus(`Deleted session ${id}`); await refresh()
+  }
+  const compactSession = async () => {
+    if (!projectId || !sessionId) return
+    setStatus('Compacting...')
+    const result = await api<SessionContext>(`/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/compact`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) })
+    setSessionContext(result)
+    setSummaries(result.summaries || [])
+    setArchives(result.archives || [])
+    setStatus('Compacted')
+    await refresh()
   }
 
   const selectAgent = (id: string) => {
@@ -791,6 +803,7 @@ function App() {
           <div><h1>{workspaceMode === 'settings' ? 'Settings' : (activeSession?.title || sessionId)}</h1><p>{activeProject?.workspace_path || 'Local workspace'} · {activeAgent?.name || agentId}</p></div>
           <div className="workspaceActions">
             {workspaceMode !== 'settings' && hasSessionUsage && <div className="routePill"><strong>Session Tokens</strong><span>Input {formatTokens(usageInputTokens)}</span><span>Output {formatTokens(usageOutputTokens)}</span><span>Total {formatTokens(usageTotalTokens)}</span></div>}
+            {workspaceMode !== 'settings' && projectId && sessionId && <button className="softButton" onClick={compactSession}>Compact</button>}
             {workspaceMode === 'settings' && <button className="softButton" onClick={()=>setWorkspaceMode('chat')}>Chat</button>}
             {workspaceMode === 'settings' && isStreaming && <button className="sendButton" onClick={stopRun}>Stop</button>}
             {routeInfo && <div className="routePill">{routeInfo.model}<span>{routeInfo.tier}</span></div>}
@@ -851,6 +864,9 @@ function App() {
           <div className="contextStats"><h3>Session Token Usage</h3><span>Input: {formatTokens(sessionContext.usage?.input_tokens || sessionContext.usage?.estimated_input_tokens)}</span><span>Output: {formatTokens(sessionContext.usage?.output_tokens || sessionContext.usage?.estimated_output_tokens)}</span><span>Total: {formatTokens(sessionContext.usage?.total_tokens)}</span></div>
           {summaries.length === 0 && <div className="emptyPanel">No compression summaries yet.</div>}
           {summaries.map(s => <details key={s.id} className="summaryCard"><summary>{formatTokens(s.token_before)} → {formatTokens(s.token_after)}</summary><pre>{s.summary}</pre></details>)}
+          <h3>Compact Archives</h3>
+          {archives.length === 0 && <div className="emptyPanel">No compact archives yet.</div>}
+          {archives.map(a => <details key={a.id} className="summaryCard"><summary>{formatTokens(a.token_before)} → {formatTokens(a.token_after)}</summary><pre>{a.summary}</pre></details>)}
         </div>}
         {projectSettingsTab === 'config' && <div className="settingsPanel"><div className="emptyPanel"><strong>Workspace</strong><br />{projects.find(p=>p.id===settingsProjectId)?.workspace_path || ''}</div></div>}
       </div>

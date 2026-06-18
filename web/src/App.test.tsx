@@ -792,4 +792,52 @@ describe('App', () => {
     await waitFor(() => expect(screen.getAllByText('gpt-4o-mini').length).toBeGreaterThan(0))
     expect(screen.getAllByText('claude-sonnet-4').length).toBeGreaterThan(0)
   })
+
+  it('compacts the active session and shows compact archive history', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    globalThis.fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push({ url, init })
+      if (url === '/api/projects') return Response.json({ projects: [{ id: 'proj-1', name: 'Repo', workspace_path: 'C:/repo', temporary: false }] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/projects/proj-1/sessions') return Response.json({ sessions: [{ id: 's1', title: 'Session to compact', messages: [{ role: 'user', content: 'hi' }] }] })
+      if (url === '/api/projects/proj-1/sessions/s1') return Response.json({ id: 's1', title: 'Session to compact', messages: [{ role: 'user', content: 'hi' }] })
+      if (url === '/api/memory') return Response.json({ memories: [] })
+      if (url === '/api/memory?project=proj-1') return Response.json({ memories: [] })
+      if (url === '/api/projects/proj-1/open') return Response.json({ config_sources: [] })
+      if (url === '/api/projects/proj-1/sessions/s1/context') return Response.json({ context: { estimated_tokens: 50000, max_tokens: 32000, percent: 1.56 }, usage: { input_tokens: 48000, output_tokens: 9000, total_tokens: 57000 }, summaries: [], archives: [] })
+      if (url === '/api/projects/proj-1/sessions/s1/compact' && init?.method === 'POST') {
+        return Response.json({
+          context: { estimated_tokens: 8000, max_tokens: 32000, percent: 0.25 },
+          usage: { input_tokens: 7000, output_tokens: 1000, total_tokens: 8000 },
+          summaries: [{ id: 'sum1', token_before: 50000, token_after: 8000, summary: 'Compacted conversation', created_at: Date.now() }],
+          archives: [{ id: 'arch1', token_before: 50000, token_after: 8000, summary: 'Archived conversation block', created_at: Date.now() }]
+        })
+      }
+      if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
+      return Response.json({})
+    }) as any
+
+    render(<App />)
+    fireEvent.click(await screen.findByText('Session to compact'))
+    await waitFor(() => expect(calls.some(c => c.url === '/api/projects/proj-1/sessions/s1')).toBe(true))
+
+    // Compact button should be visible in workspace actions
+    const compactButton = await screen.findByRole('button', { name: 'Compact' })
+    expect(compactButton).toBeTruthy()
+
+    // Click compact button
+    fireEvent.click(compactButton)
+
+    // Verify compact API was called
+    await waitFor(() => expect(calls.some(c => c.url === '/api/projects/proj-1/sessions/s1/compact' && c.init?.method === 'POST')).toBe(true))
+
+    // Open project settings and check context tab for archives
+    fireEvent.click(await screen.findByTitle('Project settings'))
+    fireEvent.click(await screen.findByText('context'))
+
+    // Should show compact archives
+    expect(await screen.findByText('Compact Archives')).toBeTruthy()
+    expect(await screen.findByText('Archived conversation block')).toBeTruthy()
+  })
 })
