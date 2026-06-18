@@ -17,6 +17,8 @@ interface TokenUsage { input_tokens?: number; output_tokens?: number; total_toke
 interface SessionContext { context?: ContextStats; usage?: TokenUsage; summaries?: Summary[] }
 interface ApprovalPayload { approval_required?: boolean; tool?: string; path?: string; reason?: string; run_id?: string; status?: string }
 interface ToolEventPayload { kind?: 'tool_start' | 'tool_result'; tool?: string; tool_id?: string; args?: string; text?: string }
+interface ModelsSettings { proxy_url: string; fallback_tier: string; routing_tiers: Record<string, string[]>; model_ids: string[] }
+interface ModelsTestResult { success: boolean; model_ids?: string[]; error?: string }
 
 type MainPage = 'projects' | 'extensions' | 'schedules' | 'settings'
 type ProjectSettingsTab = 'memory' | 'context' | 'config'
@@ -233,6 +235,9 @@ function App() {
   const [isSkillDeleteMode, setSkillDeleteMode] = useState(false)
   const [selectedSkillDeletes, setSelectedSkillDeletes] = useState<string[]>([])
   const [forcedSkill, setForcedSkill] = useState('')
+  const [modelsSettings, setModelsSettings] = useState<ModelsSettings | null>(null)
+  const [modelsDraft, setModelsDraft] = useState<ModelsSettings | null>(null)
+  const [modelsTestResult, setModelsTestResult] = useState<ModelsTestResult | null>(null)
   const [isAgentSettingsOpen, setAgentSettingsOpen] = useState(false)
   const [settingsProjectId, setSettingsProjectId] = useState('')
   const [projectSettingsTab, setProjectSettingsTab] = useState<ProjectSettingsTab>('memory')
@@ -247,7 +252,11 @@ function App() {
   const activeProjectSessions = projectId ? (projectSessions[projectId] || []) : []
   const activeSession = activeProjectSessions.find(s => s.id === sessionId)
   const activeSessionLocked = !!activeSession && ((activeSession.messages?.length || 0) > 0 || !!activeSession.project_id)
-  const availableModels = useMemo(() => ['auto', ...Array.from(new Set(agents.map(a => a.model).filter(Boolean) as string[]))], [agents])
+  const availableModels = useMemo(() => {
+    const agentModels = agents.map(a => a.model).filter((model): model is string => Boolean(model))
+    const configuredModels = modelsSettings?.model_ids || []
+    return ['auto', ...Array.from(new Set([...agentModels, ...configuredModels]))]
+  }, [agents, modelsSettings])
   const memoryURL = projectId ? `/api/memory?project=${encodeURIComponent(projectId)}` : '/api/memory'
   const formatTokens = (n?: number) => {
     const value = n || 0
@@ -256,12 +265,13 @@ function App() {
   }
 
   const refresh = async () => {
-    const [p, a, m, sa, sk] = await Promise.all([
+    const [p, a, m, sa, sk, ms] = await Promise.all([
       api<{projects: Project[]}>('/api/projects'),
       api<{agents: AgentProfile[]}>('/api/agents'),
       api<{memories: MemoryEntry[]}>(memoryURL),
       api<{subagents: SubagentProfile[]}>('/api/subagents').catch(() => ({ subagents: [] })),
       api<{skills: SkillInfo[]; diagnostics?: SkillDiagnostic[]}>('/api/skills').catch(() => ({ skills: [], diagnostics: [] })),
+      api<ModelsSettings>('/api/models/settings').catch(() => ({ proxy_url: '', fallback_tier: 'strong', routing_tiers: {}, model_ids: [] })),
     ])
     const projectList = p.projects || []
     setProjects(projectList)
@@ -270,6 +280,8 @@ function App() {
     setSkills(sk.skills || [])
     setSkillDiagnostics(sk.diagnostics || [])
     setMemories(m.memories || [])
+    setModelsSettings(ms)
+    setModelsDraft(ms)
     const pairs = await Promise.all(projectList.map(async p => {
       const r = await api<{sessions: Session[]}>(`/api/projects/${encodeURIComponent(p.id)}/sessions`).catch(() => ({ sessions: [] }))
       return [p.id, r.sessions || []] as const
@@ -375,6 +387,32 @@ function App() {
     if (!subagentDraft?.id) return
     await api(`/api/subagents/${encodeURIComponent(subagentDraft.id)}`, { method:'DELETE' })
     setStatus(`Deleted subagent ${subagentDraft.id}`); setSubagentDraft(null); await refresh()
+  }
+
+  const saveModelsSettings = async () => {
+    if (!modelsDraft) return
+    const payload = {
+      proxy_url: modelsDraft.proxy_url,
+      fallback_tier: modelsDraft.fallback_tier,
+      routing_tiers: modelsDraft.routing_tiers
+    }
+    await api('/api/models/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+    setModelsSettings(modelsDraft)
+    setStatus('Models settings saved')
+  }
+
+  const testModelsConnection = async () => {
+    if (!modelsDraft) return
+    setModelsTestResult(null)
+    setStatus('Testing connection...')
+    try {
+      const result = await api<ModelsTestResult>('/api/models/test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ proxy_url: modelsDraft.proxy_url }) })
+      setModelsTestResult(result)
+      setStatus(result.success ? 'Connection successful' : 'Connection failed')
+    } catch (err) {
+      setModelsTestResult({ success: false, error: String(err) })
+      setStatus('Connection test failed')
+    }
   }
 
   const loadSkillContent = async (name: string) => {
@@ -641,15 +679,44 @@ function App() {
     </div>}
   </div>
 
+  const updateModelsDraft = (patch: Partial<ModelsSettings>) => setModelsDraft(prev => prev ? { ...prev, ...patch } : prev)
+  const updateRoutingTier = (tier: string, value: string) => setModelsDraft(prev => prev ? { ...prev, routing_tiers: { ...prev.routing_tiers, [tier]: parseList(value) } } : prev)
+  const renderModelsSettings = () => <div className="settingsPanel">
+    <div className="settingsPageHeader"><div><strong>Models</strong><p>Configure proxy URL, fallback tier, and model routing.</p></div></div>
+    {modelsDraft && <div className="settingsGrid">
+      <label className="wide">Proxy URL<input value={modelsDraft.proxy_url} onChange={e=>updateModelsDraft({ proxy_url:e.target.value })} placeholder="http://localhost:8080/v1" /></label>
+      <label>Fallback Tier<input value={modelsDraft.fallback_tier} onChange={e=>updateModelsDraft({ fallback_tier:e.target.value })} placeholder="strong" /></label>
+      <div className="wide"><h4>Routing Tiers</h4></div>
+      {Object.entries(modelsDraft.routing_tiers || {}).map(([tier, models]) => (
+        <label key={tier} className="wide">{tier}<textarea value={joinList(models)} onChange={e=>updateRoutingTier(tier, e.target.value)} placeholder="model-1, model-2" /></label>
+      ))}
+      <div className="settingsActions">
+        <button className="primaryButton" onClick={saveModelsSettings}>Save Settings</button>
+        <button onClick={testModelsConnection}>Test Connection</button>
+      </div>
+      {modelsTestResult && <div className={`testResult ${modelsTestResult.success ? 'success' : 'error'}`}>
+        {modelsTestResult.success ? (
+          <><strong>Connection successful</strong><p>Available models: {joinList(modelsTestResult.model_ids)}</p></>
+        ) : (
+          <><strong>Connection failed</strong><p>{modelsTestResult.error || 'Unknown error'}</p></>
+        )}
+      </div>}
+    </div>}
+    {!modelsDraft && <div className="emptyPanel">Loading models settings...</div>}
+  </div>
+
   const renderSettingsSideMenu = () => <div className="settingsSideMenu">
     {settingsTabs.map(tab => <button key={tab} aria-label={tab} className={tab === settingsTab ? 'listItem active' : 'listItem'} onClick={() => {
       setSettingsTab(tab)
       if (tab === 'Agents') setAgentSettingsOpen(true)
-    }}><span>{tab}</span><small>{tab === 'Agents' ? 'Prompts and tools' : tab === 'Subagents' ? 'Delegation profiles' : tab === 'Skills' ? 'Reusable instructions' : 'Coming soon'}</small></button>)}
+      if (tab === 'Models') {
+        api<ModelsSettings>('/api/models/settings').then(ms => { setModelsSettings(ms); setModelsDraft(ms) }).catch(() => undefined)
+      }
+    }}><span>{tab}</span><small>{tab === 'Agents' ? 'Prompts and tools' : tab === 'Subagents' ? 'Delegation profiles' : tab === 'Skills' ? 'Reusable instructions' : tab === 'Models' ? 'Proxy and routing' : 'Coming soon'}</small></button>)}
   </div>
 
   const renderSettingsBody = () => <div className="settingsPanel settingsWorkspacePanel">
-    {settingsTab === 'Skills' ? renderSkillsSettings() : settingsTab === 'Subagents' ? renderSubagentSettings() : <div className="itemList">
+    {settingsTab === 'Skills' ? renderSkillsSettings() : settingsTab === 'Subagents' ? renderSubagentSettings() : settingsTab === 'Models' ? renderModelsSettings() : <div className="itemList">
       <button className="listItem" onClick={() => setAgentSettingsOpen(true)}><span>Open agent settings</span><small>Prompts, models, tools and MCP access</small></button>
       {settingsTab !== 'Agents' && <div className="emptyPanel">Coming soon.</div>}
     </div>}

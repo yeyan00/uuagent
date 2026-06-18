@@ -625,4 +625,145 @@ describe('App', () => {
     expect(await screen.findByText('Previous summary')).toBeTruthy()
     expect(screen.queryByText(/threshold/i)).toBeNull()
   })
+
+  it('loads and displays Models Settings with proxy URL, fallback tier, and routing configuration', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const fetchMock: typeof fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/projects') return Response.json({ projects: [] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/subagents') return Response.json({ subagents: [] })
+      if (url === '/api/skills') return Response.json({ skills: [], diagnostics: [] })
+      if (url === '/api/memory') return Response.json({ memories: [] })
+      if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
+      if (url === '/api/models/settings') return Response.json({
+        proxy_url: 'http://localhost:8080/v1',
+        fallback_tier: 'strong',
+        routing_tiers: {
+          fast: ['gpt-4o-mini', 'deepseek-chat'],
+          strong: ['claude-sonnet-4', 'gpt-4o'],
+          large_ctx: ['gemini-2.5-pro']
+        },
+        model_ids: ['gpt-4o-mini', 'deepseek-chat', 'claude-sonnet-4', 'gpt-4o', 'gemini-2.5-pro']
+      })
+      return Response.json({})
+    })
+    globalThis.fetch = fetchMock
+
+    render(<App />)
+    fireEvent.click(await screen.findByText('Settings'))
+    fireEvent.click(await screen.findByText('Models'))
+
+    expect(await screen.findByDisplayValue('http://localhost:8080/v1')).toBeTruthy()
+    expect(await screen.findByDisplayValue('strong')).toBeTruthy()
+    expect(await screen.findByText('fast')).toBeTruthy()
+    expect(await screen.findByText('strong')).toBeTruthy()
+    expect(await screen.findByText('large_ctx')).toBeTruthy()
+  })
+
+  it('saves Models Settings via PUT /api/models/settings', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    const fetchMock: typeof fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      calls.push({ url, init })
+      if (url === '/api/projects') return Response.json({ projects: [] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/subagents') return Response.json({ subagents: [] })
+      if (url === '/api/skills') return Response.json({ skills: [], diagnostics: [] })
+      if (url === '/api/memory') return Response.json({ memories: [] })
+      if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
+      if (url === '/api/models/settings' && init?.method === 'PUT') return Response.json({ status: 'saved' })
+      if (url === '/api/models/settings') return Response.json({
+        proxy_url: 'http://localhost:8080/v1',
+        fallback_tier: 'strong',
+        routing_tiers: { fast: ['gpt-4o-mini'], strong: ['gpt-4o'] },
+        model_ids: ['gpt-4o-mini', 'gpt-4o']
+      })
+      return Response.json({})
+    })
+    globalThis.fetch = fetchMock
+
+    render(<App />)
+    fireEvent.click(await screen.findByText('Settings'))
+    fireEvent.click(await screen.findByText('Models'))
+
+    fireEvent.change(await screen.findByDisplayValue('http://localhost:8080/v1'), { target: { value: 'http://new-proxy:9000/v1' } })
+    fireEvent.click(await screen.findByText('Save Settings'))
+
+    await waitFor(() => {
+      const put = calls.find(c => c.url === '/api/models/settings' && c.init?.method === 'PUT')
+      expect(put).toBeTruthy()
+      expect(JSON.parse(String(put?.init?.body))).toMatchObject({
+        proxy_url: 'http://new-proxy:9000/v1',
+        fallback_tier: 'strong',
+        routing_tiers: { fast: ['gpt-4o-mini'], strong: ['gpt-4o'] }
+      })
+    })
+  })
+
+  it('tests model connection via POST /api/models/test and displays results', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    const fetchMock: typeof fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      calls.push({ url, init })
+      if (url === '/api/projects') return Response.json({ projects: [] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/subagents') return Response.json({ subagents: [] })
+      if (url === '/api/skills') return Response.json({ skills: [], diagnostics: [] })
+      if (url === '/api/memory') return Response.json({ memories: [] })
+      if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
+      if (url === '/api/models/settings') return Response.json({
+        proxy_url: 'http://localhost:8080/v1',
+        fallback_tier: 'strong',
+        routing_tiers: { fast: ['gpt-4o-mini'] },
+        model_ids: ['gpt-4o-mini']
+      })
+      if (url === '/api/models/test') return Response.json({
+        success: true,
+        model_ids: ['gpt-4o-mini', 'gpt-4o'],
+        error: null
+      })
+      return Response.json({})
+    })
+    globalThis.fetch = fetchMock
+
+    render(<App />)
+    fireEvent.click(await screen.findByText('Settings'))
+    fireEvent.click(await screen.findByText('Models'))
+    fireEvent.click(await screen.findByText('Test Connection'))
+
+    expect(await screen.findByText('Available models: gpt-4o-mini, gpt-4o')).toBeTruthy()
+    await waitFor(() => {
+      const post = calls.find(c => c.url === '/api/models/test' && c.init?.method === 'POST')
+      expect(post).toBeTruthy()
+      expect(JSON.parse(String(post?.init?.body))).toMatchObject({ proxy_url: 'http://localhost:8080/v1' })
+    })
+  })
+
+  it('includes configured model IDs in chat composer model dropdown', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const fetchMock: typeof fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/projects') return Response.json({ projects: [] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent', model: 'gpt-4o' }] })
+      if (url === '/api/subagents') return Response.json({ subagents: [] })
+      if (url === '/api/skills') return Response.json({ skills: [], diagnostics: [] })
+      if (url === '/api/memory') return Response.json({ memories: [] })
+      if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
+      if (url === '/api/models/settings') return Response.json({
+        proxy_url: 'http://localhost:8080/v1',
+        fallback_tier: 'strong',
+        routing_tiers: { fast: ['gpt-4o-mini'], strong: ['gpt-4o'] },
+        model_ids: ['gpt-4o-mini', 'gpt-4o', 'claude-sonnet-4']
+      })
+      return Response.json({})
+    })
+    globalThis.fetch = fetchMock
+
+    render(<App />)
+    await waitFor(() => expect(screen.getAllByText('gpt-4o-mini').length).toBeGreaterThan(0))
+    expect(screen.getAllByText('claude-sonnet-4').length).toBeGreaterThan(0)
+  })
 })
