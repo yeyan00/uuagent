@@ -626,6 +626,32 @@ describe('App', () => {
     expect(screen.queryByText(/threshold/i)).toBeNull()
   })
 
+  it('shows active session token usage without opening project settings', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const fetchMock: typeof fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/projects') return Response.json({ projects: [{ id: 'proj-1', name: 'Repo', workspace_path: 'C:/repo', temporary: false }] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/projects/proj-1/sessions') return Response.json({ sessions: [{ id: 's1', title: 'Token session', messages: [{ role: 'user', content: 'hi' }] }] })
+      if (url === '/api/projects/proj-1/sessions/s1') return Response.json({ id: 's1', title: 'Token session', messages: [{ role: 'user', content: 'hi' }] })
+      if (url === '/api/projects/proj-1/sessions/s1/context') return Response.json({ context: { estimated_tokens: 18400, max_tokens: 32000, percent: 0.575 }, usage: { input_tokens: 48000, output_tokens: 9000, total_tokens: 57000 }, summaries: [] })
+      if (url === '/api/memory') return Response.json({ memories: [] })
+      if (url === '/api/memory?project=proj-1') return Response.json({ memories: [] })
+      if (url === '/api/projects/proj-1/open') return Response.json({ config_sources: [] })
+      return Response.json({})
+    })
+    globalThis.fetch = fetchMock
+
+    render(<App />)
+    fireEvent.click(await screen.findByText('Token session'))
+
+    expect(await screen.findByText('Session Tokens')).toBeTruthy()
+    expect(await screen.findByText('Input 48k')).toBeTruthy()
+    expect(await screen.findByText('Output 9k')).toBeTruthy()
+    expect(await screen.findByText('Total 57k')).toBeTruthy()
+    expect(screen.queryByText('Project Settings')).toBeNull()
+  })
+
   it('loads and displays Models Settings with proxy URL, fallback tier, and routing configuration', async () => {
     Element.prototype.scrollIntoView = vi.fn()
     const fetchMock: typeof fetch = vi.fn(async (input: RequestInfo | URL) => {

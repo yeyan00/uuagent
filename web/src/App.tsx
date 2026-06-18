@@ -263,6 +263,10 @@ function App() {
     if (value >= 1000) return `${Number((value / 1000).toFixed(1))}k`
     return `${value}`
   }
+  const usageInputTokens = sessionContext.usage?.input_tokens || sessionContext.usage?.estimated_input_tokens
+  const usageOutputTokens = sessionContext.usage?.output_tokens || sessionContext.usage?.estimated_output_tokens
+  const usageTotalTokens = sessionContext.usage?.total_tokens
+  const hasSessionUsage = !!(usageInputTokens || usageOutputTokens || usageTotalTokens)
 
   const refresh = async () => {
     const [p, a, m, sa, sk, ms] = await Promise.all([
@@ -786,6 +790,7 @@ function App() {
         <header className="workspaceHeader">
           <div><h1>{workspaceMode === 'settings' ? 'Settings' : (activeSession?.title || sessionId)}</h1><p>{activeProject?.workspace_path || 'Local workspace'} · {activeAgent?.name || agentId}</p></div>
           <div className="workspaceActions">
+            {workspaceMode !== 'settings' && hasSessionUsage && <div className="routePill"><strong>Session Tokens</strong><span>Input {formatTokens(usageInputTokens)}</span><span>Output {formatTokens(usageOutputTokens)}</span><span>Total {formatTokens(usageTotalTokens)}</span></div>}
             {workspaceMode === 'settings' && <button className="softButton" onClick={()=>setWorkspaceMode('chat')}>Chat</button>}
             {workspaceMode === 'settings' && isStreaming && <button className="sendButton" onClick={stopRun}>Stop</button>}
             {routeInfo && <div className="routePill">{routeInfo.model}<span>{routeInfo.tier}</span></div>}
