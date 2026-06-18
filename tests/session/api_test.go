@@ -255,6 +255,50 @@ func TestProjectSessionCompactAPIArchivesContext(t *testing.T) {
 	}
 }
 
+func TestProjectSessionCompactMalformedJSON(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	t.Setenv("UUAGENT_HOME", home)
+	if err := os.MkdirAll(workspace, 0755); err != nil {
+		t.Fatal(err)
+	}
+	gin.SetMode(gin.TestMode)
+	cfg := config.Default()
+	cfg.Agent.Context.CompressThreshold = 0.01
+	a := agent.New(cfg)
+	r := gin.New()
+	server.RegisterRoutes(r.Group("/api"), a)
+	projectID := createProjectForSessionTest(t, r, workspace)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/sessions", strings.NewReader(`{"id":"s-malformed"}`)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("create session status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	store, _, ok := a.ProjectSessions(projectID)
+	if !ok {
+		t.Fatal("project session store missing")
+	}
+	sess, ok := store.Get("s-malformed")
+	if !ok {
+		t.Fatal("project session missing")
+	}
+	for i := range 20 {
+		sess.Append("user", strings.Repeat("archive candidate message ", 120)+fmt.Sprintf("%d", i))
+	}
+
+	w = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/sessions/s-malformed/compact", strings.NewReader(`{"keep_last_messages":`))
+	req.Header.Set("Content-Type", "application/json")
+
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected malformed compact JSON to return 400, status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
 func TestChatRejectsSessionProjectSwitch(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "home")
 	workspaceA := filepath.Join(t.TempDir(), "workspace-a")

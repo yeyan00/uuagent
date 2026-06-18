@@ -225,7 +225,10 @@ func handleCompactProjectSession(agt *agent.Agent) gin.HandlerFunc {
 			return
 		}
 		var req compactSessionRequest
-		_ = c.ShouldBindJSON(&req)
+		if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 		cfg := agt.Config().Agent.Context
 		keepLast := cfg.KeepLastMessages
 		if req.KeepLastMessages > 0 {
