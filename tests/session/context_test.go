@@ -4,7 +4,9 @@ import (
 	"testing"
 
 	"github.com/yeyan00/uuagent/internal/config"
+	"github.com/yeyan00/uuagent/internal/contextmgr"
 	"github.com/yeyan00/uuagent/internal/session"
+	"github.com/yeyan00/uuagent/internal/types"
 )
 
 func TestSessionCompressionSummaries(t *testing.T) {
@@ -29,5 +31,36 @@ func TestDefaultCompressionThresholdIsSeventyFivePercent(t *testing.T) {
 	cfg := config.Default()
 	if cfg.Agent.Context.CompressThreshold != 0.75 {
 		t.Fatalf("expected default compression threshold 0.75, got %v", cfg.Agent.Context.CompressThreshold)
+	}
+}
+
+func TestSessionCompactArchivePreservesCompactedMessages(t *testing.T) {
+	// Given
+	messages := []types.Message{
+		{Role: "system", Content: "system prompt"},
+		{Role: "user", Content: "first request"},
+		{Role: "assistant", Content: "first response"},
+		{Role: "user", Content: "latest request"},
+		{Role: "assistant", Content: "latest response"},
+	}
+
+	// When
+	result, ok := contextmgr.CompactOldMessages("archive-session", messages, 2)
+
+	// Then
+	if !ok {
+		t.Fatalf("expected compact result")
+	}
+	if len(result.Messages) != 3 {
+		t.Fatalf("expected summary plus 2 kept messages, got %d", len(result.Messages))
+	}
+	if len(result.Archive.Messages) != 3 {
+		t.Fatalf("expected 3 archived messages, got %d", len(result.Archive.Messages))
+	}
+	if result.Archive.Messages[0].Content != "system prompt" {
+		t.Fatalf("expected archive to preserve first compacted message, got %+v", result.Archive.Messages[0])
+	}
+	if result.Summary.ToIndex != 2 {
+		t.Fatalf("expected summary to cover compacted messages through index 2, got %d", result.Summary.ToIndex)
 	}
 }

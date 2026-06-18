@@ -54,6 +54,14 @@ type ContextStats struct {
 	Percent         float64 `json:"percent"`
 }
 
+// CompactArchive records messages removed from active context during compaction.
+type CompactArchive struct {
+	ID        string          `json:"id"`
+	SummaryID string          `json:"summary_id"`
+	Messages  []types.Message `json:"messages"`
+	CreatedAt int64           `json:"created_at"`
+}
+
 // Session is one conversation thread.
 type Session struct {
 	ID          string               `json:"id"`
@@ -65,6 +73,7 @@ type Session struct {
 	Runs        []RunInfo            `json:"runs,omitempty"`
 	Usage       TokenUsage           `json:"usage,omitempty"`
 	Summaries   []contextmgr.Summary `json:"summaries,omitempty"`
+	Archives    []CompactArchive     `json:"archives,omitempty"`
 	Memory      string               `json:"memory_snapshot,omitempty"`
 	CreatedAt   int64                `json:"created_at"`
 	UpdatedAt   int64                `json:"updated_at"`
@@ -297,15 +306,21 @@ func (s *Session) MaybeCompress(maxTokens int, threshold float64, keepLast int) 
 	if !contextmgr.ShouldCompress(s.Messages, maxTokens, threshold) {
 		return contextmgr.Summary{}, false
 	}
-	compressed, summary, ok := contextmgr.CompressOldMessages(s.ID, s.Messages, keepLast)
+	result, ok := contextmgr.CompactOldMessages(s.ID, s.Messages, keepLast)
 	if !ok {
 		return contextmgr.Summary{}, false
 	}
-	s.Messages = compressed
-	s.Summaries = append(s.Summaries, summary)
+	s.Messages = result.Messages
+	s.Summaries = append(s.Summaries, result.Summary)
+	s.Archives = append(s.Archives, CompactArchive{
+		ID:        fmt.Sprintf("archive-%d", time.Now().UnixNano()),
+		SummaryID: result.Summary.ID,
+		Messages:  append([]types.Message(nil), result.Archive.Messages...),
+		CreatedAt: result.Summary.CreatedAt,
+	})
 	s.UpdatedAt = time.Now().Unix()
 	_ = s.saveLocked()
-	return summary, true
+	return result.Summary, true
 }
 
 // ListSummaries returns a copy of compression summaries.
@@ -313,6 +328,33 @@ func (s *Session) ListSummaries() []contextmgr.Summary {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]contextmgr.Summary(nil), s.Summaries...)
+}
+
+// CompactArchive persists a compact summary and its archived messages.
+func (s *Session) CompactArchive(summary contextmgr.Summary, archive CompactArchive) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if archive.ID == "" {
+		archive.ID = fmt.Sprintf("archive-%d", time.Now().UnixNano())
+	}
+	if archive.SummaryID == "" {
+		archive.SummaryID = summary.ID
+	}
+	if archive.CreatedAt == 0 {
+		archive.CreatedAt = time.Now().Unix()
+	}
+	archive.Messages = append([]types.Message(nil), archive.Messages...)
+	s.Summaries = append(s.Summaries, summary)
+	s.Archives = append(s.Archives, archive)
+	s.UpdatedAt = time.Now().Unix()
+	_ = s.saveLocked()
+}
+
+// ListArchives returns a copy of compact archives.
+func (s *Session) ListArchives() []CompactArchive {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return cloneArchives(s.Archives)
 }
 
 // Snapshot returns a copy safe for JSON responses.
@@ -323,6 +365,7 @@ func (s *Session) Snapshot() Session {
 	cp.Messages = append([]types.Message(nil), s.Messages...)
 	cp.Runs = append([]RunInfo(nil), s.Runs...)
 	cp.Summaries = append([]contextmgr.Summary(nil), s.Summaries...)
+	cp.Archives = cloneArchives(s.Archives)
 	return cp
 }
 
@@ -388,8 +431,9 @@ func (s *Store) Fork(parentID, newID string, upto int) (*Session, error) {
 
 	now := time.Now().Unix()
 	summaries := append([]contextmgr.Summary(nil), parent.Summaries...)
+	archives := cloneArchives(parent.Archives)
 	runs := append([]RunInfo(nil), parent.Runs...)
-	child := &Session{ID: newID, Title: newID, ParentID: parentID, Messages: messages, Runs: runs, Summaries: summaries, CreatedAt: now, UpdatedAt: now, path: s.pathFor(newID)}
+	child := &Session{ID: newID, Title: newID, ParentID: parentID, Messages: messages, Runs: runs, Summaries: summaries, Archives: archives, CreatedAt: now, UpdatedAt: now, path: s.pathFor(newID)}
 	s.sessions[newID] = child
 	if err := child.saveLocked(); err != nil {
 		return nil, err
@@ -426,6 +470,15 @@ func (s *Store) List() []Session {
 
 func (s *Store) pathFor(id string) string {
 	return filepath.Join(s.root, safeFileName(id)+".json")
+}
+
+func cloneArchives(archives []CompactArchive) []CompactArchive {
+	out := make([]CompactArchive, len(archives))
+	for i, archive := range archives {
+		out[i] = archive
+		out[i].Messages = append([]types.Message(nil), archive.Messages...)
+	}
+	return out
 }
 
 func (s *Session) saveLocked() error {

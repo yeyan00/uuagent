@@ -21,6 +21,18 @@ type Summary struct {
 	CompressionBy string `json:"compression_by"`
 }
 
+// CompactArchive preserves messages removed from active context during compaction.
+type CompactArchive struct {
+	Messages []types.Message `json:"messages"`
+}
+
+// CompactResult contains active context plus archival data from compaction.
+type CompactResult struct {
+	Messages []types.Message `json:"messages"`
+	Summary  Summary         `json:"summary"`
+	Archive  CompactArchive  `json:"archive"`
+}
+
 // EstimateTokens is a cheap deterministic approximation for P0.
 func EstimateTokens(messages []types.Message) int {
 	chars := 0
@@ -45,14 +57,21 @@ func ShouldCompress(messages []types.Message, maxTokens int, threshold float64) 
 // messages verbatim. P0 uses deterministic local summarization; later versions
 // can use a model-based compressor.
 func CompressOldMessages(sessionID string, messages []types.Message, keepLast int) ([]types.Message, Summary, bool) {
+	result, ok := CompactOldMessages(sessionID, messages, keepLast)
+	return result.Messages, result.Summary, ok
+}
+
+// CompactOldMessages summarizes older messages, keeps recent messages active,
+// and returns the compacted messages as an archive.
+func CompactOldMessages(sessionID string, messages []types.Message, keepLast int) (CompactResult, bool) {
 	if keepLast < 1 {
 		keepLast = 1
 	}
 	if len(messages) <= keepLast+1 {
-		return messages, Summary{}, false
+		return CompactResult{Messages: messages}, false
 	}
 	cut := len(messages) - keepLast
-	old := messages[:cut]
+	old := append([]types.Message(nil), messages[:cut]...)
 	kept := append([]types.Message(nil), messages[cut:]...)
 	before := EstimateTokens(messages)
 
@@ -80,7 +99,7 @@ func CompressOldMessages(sessionID string, messages []types.Message, keepLast in
 	}
 	compressed := append([]types.Message{{Role: "system", Content: summaryText}}, kept...)
 	after := EstimateTokens(compressed)
-	return compressed, Summary{
+	summary := Summary{
 		ID:            fmt.Sprintf("sum-%d", time.Now().UnixNano()),
 		SessionID:     sessionID,
 		FromIndex:     0,
@@ -90,5 +109,6 @@ func CompressOldMessages(sessionID string, messages []types.Message, keepLast in
 		TokenAfter:    after,
 		CreatedAt:     time.Now().Unix(),
 		CompressionBy: "local-p0",
-	}, true
+	}
+	return CompactResult{Messages: compressed, Summary: summary, Archive: CompactArchive{Messages: old}}, true
 }
