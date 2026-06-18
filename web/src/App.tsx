@@ -12,7 +12,7 @@ interface SkillDiagnostic { path: string; name?: string; message: string }
 interface Session { id: string; title?: string; project_id?: string; project_path?: string; parent_id?: string; messages: Message[] }
 interface MemoryEntry { id: string; content: string; status: string; source: string; project: string; scope: string }
 interface Summary { id: string; summary: string; token_before: number; token_after: number; created_at: number }
-interface CompactArchive { id: string; summary: string; token_before: number; token_after: number; created_at: number }
+interface CompactArchive { id: string; summary: Summary; messages?: Message[]; token_before?: number; token_after?: number; created_at?: string }
 interface ContextStats { estimated_tokens: number; max_tokens: number; percent: number }
 interface TokenUsage { input_tokens?: number; output_tokens?: number; total_tokens?: number; estimated_input_tokens?: number; estimated_output_tokens?: number; estimated?: boolean }
 interface SessionContext { context?: ContextStats; usage?: TokenUsage; summaries?: Summary[]; archives?: CompactArchive[] }
@@ -866,7 +866,7 @@ function App() {
           {summaries.map(s => <details key={s.id} className="summaryCard"><summary>{formatTokens(s.token_before)} → {formatTokens(s.token_after)}</summary><pre>{s.summary}</pre></details>)}
           <h3>Compact Archives</h3>
           {archives.length === 0 && <div className="emptyPanel">No compact archives yet.</div>}
-          {archives.map(a => <details key={a.id} className="summaryCard"><summary>{formatTokens(a.token_before)} → {formatTokens(a.token_after)}</summary><pre>{a.summary}</pre></details>)}
+          {archives.map(a => <details key={a.id} className="summaryCard"><summary>{formatTokens(a.summary?.token_before || a.token_before)} → {formatTokens(a.summary?.token_after || a.token_after)}</summary><pre>{a.summary?.summary}</pre></details>)}
         </div>}
         {projectSettingsTab === 'config' && <div className="settingsPanel"><div className="emptyPanel"><strong>Workspace</strong><br />{projects.find(p=>p.id===settingsProjectId)?.workspace_path || ''}</div></div>}
       </div>

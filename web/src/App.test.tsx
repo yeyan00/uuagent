@@ -811,7 +811,7 @@ describe('App', () => {
           context: { estimated_tokens: 8000, max_tokens: 32000, percent: 0.25 },
           usage: { input_tokens: 7000, output_tokens: 1000, total_tokens: 8000 },
           summaries: [{ id: 'sum1', token_before: 50000, token_after: 8000, summary: 'Compacted conversation', created_at: Date.now() }],
-          archives: [{ id: 'arch1', token_before: 50000, token_after: 8000, summary: 'Archived conversation block', created_at: Date.now() }]
+          archives: [{ id: 'arch1', summary: { id: 'arch1-summary', summary: 'Archived conversation block', token_before: 50000, token_after: 8000, created_at: Date.now() }, token_before: 50000, token_after: 8000, created_at: new Date().toISOString() }]
         })
       }
       if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
