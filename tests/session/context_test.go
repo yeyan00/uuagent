@@ -4,9 +4,7 @@ import (
 	"testing"
 
 	"github.com/yeyan00/uuagent/internal/config"
-	"github.com/yeyan00/uuagent/internal/contextmgr"
 	"github.com/yeyan00/uuagent/internal/session"
-	"github.com/yeyan00/uuagent/internal/types"
 )
 
 func TestSessionCompressionSummaries(t *testing.T) {
@@ -36,31 +34,39 @@ func TestDefaultCompressionThresholdIsSeventyFivePercent(t *testing.T) {
 
 func TestSessionCompactArchivePreservesCompactedMessages(t *testing.T) {
 	// Given
-	messages := []types.Message{
-		{Role: "system", Content: "system prompt"},
-		{Role: "user", Content: "first request"},
-		{Role: "assistant", Content: "first response"},
-		{Role: "user", Content: "latest request"},
-		{Role: "assistant", Content: "latest response"},
+	store := session.NewStoreAt(t.TempDir())
+	s := store.GetOrCreate("archive-session")
+	for i := 0; i < 12; i++ {
+		s.Append("user", "this older message should contribute to archive token pressure")
 	}
 
 	// When
-	result, ok := contextmgr.CompactOldMessages("archive-session", messages, 2)
+	archive, ok := s.CompactArchive(80, 0.5, 4)
 
 	// Then
 	if !ok {
-		t.Fatalf("expected compact result")
+		t.Fatalf("expected compact archive")
 	}
-	if len(result.Messages) != 3 {
-		t.Fatalf("expected summary plus 2 kept messages, got %d", len(result.Messages))
+	if len(archive.Messages) != 8 {
+		t.Fatalf("expected 8 archived messages, got %d", len(archive.Messages))
 	}
-	if len(result.Archive.Messages) != 3 {
-		t.Fatalf("expected 3 archived messages, got %d", len(result.Archive.Messages))
+	if archive.FromIndex != 0 || archive.ToIndex != 7 {
+		t.Fatalf("expected archive indexes 0..7, got %d..%d", archive.FromIndex, archive.ToIndex)
 	}
-	if result.Archive.Messages[0].Content != "system prompt" {
-		t.Fatalf("expected archive to preserve first compacted message, got %+v", result.Archive.Messages[0])
+	if archive.Summary.ID == "" || archive.Summary.SessionID != "archive-session" {
+		t.Fatalf("unexpected archive summary: %+v", archive.Summary)
 	}
-	if result.Summary.ToIndex != 2 {
-		t.Fatalf("expected summary to cover compacted messages through index 2, got %d", result.Summary.ToIndex)
+	if archive.TokenAfter >= archive.TokenBefore {
+		t.Fatalf("expected token reduction: before=%d after=%d", archive.TokenBefore, archive.TokenAfter)
+	}
+	if len(s.ListSummaries()) != 1 {
+		t.Fatalf("expected one summary")
+	}
+	if len(s.ListArchives()) != 1 {
+		t.Fatalf("expected one archive")
+	}
+	snap := s.Snapshot()
+	if len(snap.Messages) != 5 {
+		t.Fatalf("expected active context summary plus 4 kept messages, got %d", len(snap.Messages))
 	}
 }

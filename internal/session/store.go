@@ -56,10 +56,15 @@ type ContextStats struct {
 
 // CompactArchive records messages removed from active context during compaction.
 type CompactArchive struct {
-	ID        string          `json:"id"`
-	SummaryID string          `json:"summary_id"`
-	Messages  []types.Message `json:"messages"`
-	CreatedAt int64           `json:"created_at"`
+	ID          string             `json:"id"`
+	SessionID   string             `json:"session_id"`
+	Summary     contextmgr.Summary `json:"summary"`
+	Messages    []types.Message    `json:"messages"`
+	FromIndex   int                `json:"from_index"`
+	ToIndex     int                `json:"to_index"`
+	TokenBefore int                `json:"token_before"`
+	TokenAfter  int                `json:"token_after"`
+	CreatedAt   time.Time          `json:"created_at"`
 }
 
 // Session is one conversation thread.
@@ -306,21 +311,15 @@ func (s *Session) MaybeCompress(maxTokens int, threshold float64, keepLast int) 
 	if !contextmgr.ShouldCompress(s.Messages, maxTokens, threshold) {
 		return contextmgr.Summary{}, false
 	}
-	result, ok := contextmgr.CompactOldMessages(s.ID, s.Messages, keepLast)
+	compressed, summary, ok := contextmgr.CompressOldMessages(s.ID, s.Messages, keepLast)
 	if !ok {
 		return contextmgr.Summary{}, false
 	}
-	s.Messages = result.Messages
-	s.Summaries = append(s.Summaries, result.Summary)
-	s.Archives = append(s.Archives, CompactArchive{
-		ID:        fmt.Sprintf("archive-%d", time.Now().UnixNano()),
-		SummaryID: result.Summary.ID,
-		Messages:  append([]types.Message(nil), result.Archive.Messages...),
-		CreatedAt: result.Summary.CreatedAt,
-	})
+	s.Messages = compressed
+	s.Summaries = append(s.Summaries, summary)
 	s.UpdatedAt = time.Now().Unix()
 	_ = s.saveLocked()
-	return result.Summary, true
+	return summary, true
 }
 
 // ListSummaries returns a copy of compression summaries.
@@ -330,24 +329,34 @@ func (s *Session) ListSummaries() []contextmgr.Summary {
 	return append([]contextmgr.Summary(nil), s.Summaries...)
 }
 
-// CompactArchive persists a compact summary and its archived messages.
-func (s *Session) CompactArchive(summary contextmgr.Summary, archive CompactArchive) {
+// CompactArchive compacts active context and persists archived messages.
+func (s *Session) CompactArchive(maxTokens int, threshold float64, keepLast int) (CompactArchive, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if archive.ID == "" {
-		archive.ID = fmt.Sprintf("archive-%d", time.Now().UnixNano())
+	if !contextmgr.ShouldCompress(s.Messages, maxTokens, threshold) {
+		return CompactArchive{}, false
 	}
-	if archive.SummaryID == "" {
-		archive.SummaryID = summary.ID
+	result := contextmgr.CompactOldMessages(s.ID, s.Messages, keepLast)
+	if !result.Compacted {
+		return CompactArchive{}, false
 	}
-	if archive.CreatedAt == 0 {
-		archive.CreatedAt = time.Now().Unix()
+	archive := CompactArchive{
+		ID:          fmt.Sprintf("archive-%d", time.Now().UnixNano()),
+		SessionID:   s.ID,
+		Summary:     result.Summary,
+		Messages:    append([]types.Message(nil), result.ArchivedMessages...),
+		FromIndex:   result.Summary.FromIndex,
+		ToIndex:     result.Summary.ToIndex,
+		TokenBefore: result.Summary.TokenBefore,
+		TokenAfter:  result.Summary.TokenAfter,
+		CreatedAt:   time.Unix(result.Summary.CreatedAt, 0),
 	}
-	archive.Messages = append([]types.Message(nil), archive.Messages...)
-	s.Summaries = append(s.Summaries, summary)
+	s.Messages = result.Messages
+	s.Summaries = append(s.Summaries, result.Summary)
 	s.Archives = append(s.Archives, archive)
 	s.UpdatedAt = time.Now().Unix()
 	_ = s.saveLocked()
+	return archive, true
 }
 
 // ListArchives returns a copy of compact archives.

@@ -5,9 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/yeyan00/uuagent/internal/contextmgr"
 	"github.com/yeyan00/uuagent/internal/session"
-	"github.com/yeyan00/uuagent/internal/types"
 )
 
 func TestSessionPersistsToJSON(t *testing.T) {
@@ -58,21 +56,17 @@ func TestCompactArchivesPersistToJSON(t *testing.T) {
 	root := t.TempDir()
 	store := session.NewStoreAt(root)
 	s := store.GetOrCreate("archive-me")
-	archive := session.CompactArchive{
-		ID:        "archive-1",
-		SummaryID: "summary-1",
-		Messages: []types.Message{
-			{Role: "user", Content: "old prompt"},
-			{Role: "assistant", Content: "old answer"},
-		},
-		CreatedAt: 123,
+	for i := 0; i < 12; i++ {
+		s.Append("user", "this older message should persist inside compact archive")
 	}
-	summary := contextmgr.Summary{ID: "summary-1", SessionID: "archive-me", FromIndex: 0, ToIndex: 1, Summary: "archived", CreatedAt: 123}
 
 	// When
-	s.CompactArchive(summary, archive)
+	archive, ok := s.CompactArchive(80, 0.5, 4)
 
 	// Then
+	if !ok {
+		t.Fatalf("expected compact archive")
+	}
 	reloaded := session.NewStoreAt(root)
 	loaded, ok := reloaded.Get("archive-me")
 	if !ok {
@@ -82,15 +76,21 @@ func TestCompactArchivesPersistToJSON(t *testing.T) {
 	if len(archives) != 1 {
 		t.Fatalf("expected one archive, got %d", len(archives))
 	}
-	if archives[0].Messages[1].Content != "old answer" {
-		t.Fatalf("expected archive message to persist, got %+v", archives[0].Messages[1])
+	if archives[0].ID != archive.ID {
+		t.Fatalf("expected archive ID %s, got %s", archive.ID, archives[0].ID)
+	}
+	if len(archives[0].Messages) != len(archive.Messages) {
+		t.Fatalf("expected %d archived messages, got %d", len(archive.Messages), len(archives[0].Messages))
+	}
+	if archives[0].Messages[0].Content != archive.Messages[0].Content {
+		t.Fatalf("expected first archive message to persist")
 	}
 	snap := loaded.Snapshot()
 	if len(snap.Archives) != 1 {
 		t.Fatalf("expected snapshot archive copy, got %d", len(snap.Archives))
 	}
 	snap.Archives[0].Messages[0].Content = "mutated"
-	if loaded.ListArchives()[0].Messages[0].Content != "old prompt" {
+	if loaded.ListArchives()[0].Messages[0].Content != archive.Messages[0].Content {
 		t.Fatalf("expected snapshot archive mutation not to affect session")
 	}
 }
