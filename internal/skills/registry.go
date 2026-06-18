@@ -36,7 +36,6 @@ type Registry struct {
 	diagnostics []Diagnostic
 }
 
-// NewRegistry creates a registry with a mock skill for tests and demos.
 func NewRegistry() *Registry {
 	return &Registry{skills: map[string]Skill{}}
 }
