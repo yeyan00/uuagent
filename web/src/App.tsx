@@ -222,6 +222,7 @@ function App() {
   const [modelOverride, setModelOverride] = useState('auto')
   const [newProjectName, setNewProjectName] = useState('')
   const [newProjectPath, setNewProjectPath] = useState('')
+  const [createProjectError, setCreateProjectError] = useState('')
   const [memoryText, setMemoryText] = useState('')
   const [status, setStatus] = useState('Ready')
   const [currentRunId, setCurrentRunId] = useState('')
@@ -309,8 +310,20 @@ function App() {
   }, [agents, agentId])
 
   const createProject = async () => {
-    const p = await api<Project>('/api/projects', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name: newProjectName || 'Untitled', workspace_path: newProjectPath }) })
-    setProjectId(p.id); setNewProjectName(''); setNewProjectPath(''); setStatus(`Opened ${p.name}`); await refresh()
+    const trimmedName = newProjectName.trim()
+    const trimmedPath = newProjectPath.trim()
+    try {
+      const p = await api<Project>('/api/projects', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name: trimmedName || 'Untitled', workspace_path: trimmedPath }) })
+      setProjectId(p.id)
+      setNewProjectName('')
+      setNewProjectPath('')
+      setCreateProjectError('')
+      setStatus(`Opened ${p.name}`)
+      await refresh()
+    } catch (err) {
+      setCreateProjectError(String(err))
+      setStatus(String(err))
+    }
   }
 
   const openProject = async (id: string) => {
@@ -789,9 +802,10 @@ function App() {
         </div>
         {mainPage === 'projects' && <>
           <div className="projectPicker">
-            <input value={newProjectName} onChange={e=>setNewProjectName(e.target.value)} placeholder="Project name" />
-            <input value={newProjectPath} onChange={e=>setNewProjectPath(e.target.value)} placeholder="Workspace path optional" />
+            <input value={newProjectName} onChange={e=>{ setNewProjectName(e.target.value); if (createProjectError) setCreateProjectError('') }} placeholder="Project name" />
+            <input value={newProjectPath} onChange={e=>{ setNewProjectPath(e.target.value); if (createProjectError) setCreateProjectError('') }} placeholder="Workspace path optional" />
             <button onClick={createProject}>Create</button>
+            {createProjectError && <div className="createProjectError">{createProjectError}</div>}
           </div>
         </>}
         <div className="sidebarBody">{renderSidebarBody()}</div>

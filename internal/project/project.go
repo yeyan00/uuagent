@@ -100,8 +100,14 @@ func (s *Store) Create(name, workspace string) (Project, error) {
 		workspace = filepath.Join(s.root, id, "workspace")
 	}
 	workspace = filepath.Clean(workspace)
+
+	// Check if workspace path exists and is not a directory
+	if info, err := os.Stat(workspace); err == nil && !info.IsDir() {
+		return Project{}, fmt.Errorf("workspace path is not a directory: %s", workspace)
+	}
+
 	if err := os.MkdirAll(workspace, 0755); err != nil {
-		return Project{}, err
+		return Project{}, fmt.Errorf("workspace path cannot be created: %w", err)
 	}
 
 	configDir := filepath.Join(workspace, ".uuagent")

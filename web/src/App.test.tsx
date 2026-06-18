@@ -842,4 +842,74 @@ describe('App', () => {
     expect(await screen.findByText('Compact Archives')).toBeTruthy()
     expect(await screen.findByText('Archived conversation block')).toBeTruthy()
   })
+
+  it('trims project name and workspace path when creating a project', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    const fetchMock: typeof fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      calls.push({ url, init })
+      if (url === '/api/projects') {
+        if (init?.method === 'POST') {
+          const body = JSON.parse(String(init.body))
+          return Response.json({ id: 'proj-trimmed', name: body.name, workspace_path: body.workspace_path, temporary: false })
+        }
+        return Response.json({ projects: [] })
+      }
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/sessions') return Response.json({ sessions: [] })
+      if (url === '/api/memory') return Response.json({ memories: [] })
+      if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
+      return Response.json({})
+    })
+    globalThis.fetch = fetchMock
+
+    render(<App />)
+    const nameInput = await screen.findByPlaceholderText('Project name')
+    const pathInput = await screen.findByPlaceholderText('Workspace path optional')
+
+    fireEvent.change(nameInput, { target: { value: '  My Project  ' } })
+    fireEvent.change(pathInput, { target: { value: '  C:/workspace/path  ' } })
+    fireEvent.click(screen.getByText('Create'))
+
+    await waitFor(() => {
+      const post = calls.find(c => c.url === '/api/projects' && c.init?.method === 'POST')
+      expect(post).toBeTruthy()
+      const body = JSON.parse(String(post?.init?.body))
+      expect(body.name).toBe('My Project')
+      expect(body.workspace_path).toBe('C:/workspace/path')
+    })
+  })
+
+  it('shows create project error and preserves input fields on failure', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const fetchMock: typeof fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/projects' && init?.method === 'POST') {
+        return new Response('workspace path is not a directory: C:/some/file.txt', { status: 400, statusText: 'Bad Request' })
+      }
+      if (url === '/api/projects') return Response.json({ projects: [] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/sessions') return Response.json({ sessions: [] })
+      if (url === '/api/memory') return Response.json({ memories: [] })
+      if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
+      return Response.json({})
+    })
+    globalThis.fetch = fetchMock
+
+    render(<App />)
+    const nameInput = await screen.findByPlaceholderText('Project name')
+    const pathInput = await screen.findByPlaceholderText('Workspace path optional')
+
+    fireEvent.change(nameInput, { target: { value: 'Test Project' } })
+    fireEvent.change(pathInput, { target: { value: 'C:/some/file.txt' } })
+    fireEvent.click(screen.getByText('Create'))
+
+    // Should show error status in create project error div
+    await waitFor(() => expect(document.querySelector('.createProjectError')?.textContent).toMatch(/workspace path is not a directory/i))
+
+    // Input fields should still have their values
+    expect((nameInput as HTMLInputElement).value).toBe('Test Project')
+    expect((pathInput as HTMLInputElement).value).toBe('C:/some/file.txt')
+  })
 })
