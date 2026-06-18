@@ -48,6 +48,9 @@ logs/
 .uuagent-server.log
 cmd/uuagent/__debug_bin.exe
 
+# Worktrees
+.worktrees/
+
 # Pi local state
 .pi/
 findings.md
