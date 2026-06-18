@@ -3,6 +3,7 @@ package session_test
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -185,6 +186,72 @@ func TestProjectSessionContextAPIReportsCurrentContextAndUsage(t *testing.T) {
 	}
 	if got.Usage.InputTokens != 123 || got.Usage.OutputTokens != 45 || got.Usage.TotalTokens != 168 {
 		t.Fatalf("unexpected usage stats: %+v", got.Usage)
+	}
+}
+
+func TestProjectSessionCompactAPIArchivesContext(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	t.Setenv("UUAGENT_HOME", home)
+	if err := os.MkdirAll(workspace, 0755); err != nil {
+		t.Fatal(err)
+	}
+	gin.SetMode(gin.TestMode)
+	a := agent.New(config.Default())
+	r := gin.New()
+	server.RegisterRoutes(r.Group("/api"), a)
+	projectID := createProjectForSessionTest(t, r, workspace)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/sessions", strings.NewReader(`{"id":"s-compact"}`)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("create session status=%d body=%s", w.Code, w.Body.String())
+	}
+	store, _, ok := a.ProjectSessions(projectID)
+	if !ok {
+		t.Fatal("project session store missing")
+	}
+	sess, ok := store.Get("s-compact")
+	if !ok {
+		t.Fatal("project session missing")
+	}
+	for i := range 8 {
+		sess.Append("user", strings.Repeat("archive candidate message ", 120)+fmt.Sprintf("%d", i))
+	}
+
+	w = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/sessions/s-compact/compact", strings.NewReader(`{"keep_last_messages":1,"threshold":0.01}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("compact status=%d body=%s", w.Code, w.Body.String())
+	}
+	var got struct {
+		Context struct {
+			EstimatedTokens int     `json:"estimated_tokens"`
+			MaxTokens       int     `json:"max_tokens"`
+			Percent         float64 `json:"percent"`
+		} `json:"context"`
+		Usage     map[string]any `json:"usage"`
+		Summaries []any          `json:"summaries"`
+		Archives  []any          `json:"archives"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Context.MaxTokens != 32000 || got.Context.EstimatedTokens == 0 || got.Context.Percent <= 0 {
+		t.Fatalf("unexpected context stats: %+v", got.Context)
+	}
+	if got.Usage == nil {
+		t.Fatalf("usage missing from compact response: %s", w.Body.String())
+	}
+	if len(got.Summaries) == 0 {
+		t.Fatalf("summaries missing from compact response: %s", w.Body.String())
+	}
+	if len(got.Archives) == 0 {
+		t.Fatalf("archives missing from compact response: %s", w.Body.String())
 	}
 }
 

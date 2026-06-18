@@ -31,6 +31,7 @@ func RegisterRoutes(r *gin.RouterGroup, agt *agent.Agent) {
 	r.POST("/projects/:id/sessions", handleCreateProjectSession(agt))
 	r.GET("/projects/:id/sessions/:session_id", handleGetProjectSession(agt))
 	r.GET("/projects/:id/sessions/:session_id/context", handleGetProjectSessionContext(agt))
+	r.POST("/projects/:id/sessions/:session_id/compact", handleCompactProjectSession(agt))
 	r.PATCH("/projects/:id/sessions/:session_id", handlePatchProjectSession(agt))
 	r.DELETE("/projects/:id/sessions/:session_id", handleDeleteProjectSession(agt))
 	r.POST("/projects/:id/sessions/:session_id/fork", handleForkProjectSession(agt))
@@ -202,6 +203,48 @@ func handleGetProjectSessionContext(agt *agent.Agent) gin.HandlerFunc {
 			"context":   sess.ContextStats(agt.Config().Agent.Context.MaxTokens),
 			"usage":     snap.Usage,
 			"summaries": snap.Summaries,
+		})
+	}
+}
+
+type compactSessionRequest struct {
+	KeepLastMessages int     `json:"keep_last_messages"`
+	Threshold        float64 `json:"threshold"`
+}
+
+func handleCompactProjectSession(agt *agent.Agent) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		store, _, ok := agt.ProjectSessions(c.Param("id"))
+		if !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "project not found"})
+			return
+		}
+		sess, ok := store.Get(c.Param("session_id"))
+		if !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+			return
+		}
+		var req compactSessionRequest
+		_ = c.ShouldBindJSON(&req)
+		cfg := agt.Config().Agent.Context
+		keepLast := cfg.KeepLastMessages
+		if req.KeepLastMessages > 0 {
+			keepLast = req.KeepLastMessages
+		}
+		threshold := cfg.CompressThreshold
+		if req.Threshold > 0 {
+			threshold = req.Threshold
+		}
+		if _, ok := sess.CompactArchive(cfg.MaxTokens, threshold, keepLast); !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "session context is below compact threshold"})
+			return
+		}
+		snap := sess.Snapshot()
+		c.JSON(http.StatusOK, gin.H{
+			"context":   sess.ContextStats(cfg.MaxTokens),
+			"usage":     snap.Usage,
+			"summaries": snap.Summaries,
+			"archives":  snap.Archives,
 		})
 	}
 }
