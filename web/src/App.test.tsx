@@ -796,7 +796,8 @@ describe('App', () => {
   it('compacts the active session and shows compact archive history', async () => {
     Element.prototype.scrollIntoView = vi.fn()
     const calls: Array<{ url: string; init?: RequestInit }> = []
-    globalThis.fetch = vi.fn(async (url: string, init?: RequestInit) => {
+    const fetchMock: typeof fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
       calls.push({ url, init })
       if (url === '/api/projects') return Response.json({ projects: [{ id: 'proj-1', name: 'Repo', workspace_path: 'C:/repo', temporary: false }] })
       if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
@@ -816,7 +817,8 @@ describe('App', () => {
       }
       if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
       return Response.json({})
-    }) as any
+    })
+    globalThis.fetch = fetchMock
 
     render(<App />)
     fireEvent.click(await screen.findByText('Session to compact'))
