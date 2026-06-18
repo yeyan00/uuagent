@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type ReactNode } from 'react'
 import './App.css'
 
 interface ToolCallRecord { id?: string; function?: { name?: string; arguments?: string }; name?: string; args?: string }
 interface ChatEvent { type: string; run_id?: string; model?: string; tier?: string; text?: string; tool_name?: string; tool_id?: string; args?: string }
-interface Message { role: 'user' | 'assistant' | 'system' | 'tool' | 'reasoning'; content: string; model?: string; tier?: string; tool_name?: string; tool_call_id?: string; tool_calls?: ToolCallRecord[] }
+interface ChatAttachment { id: string; name: string; mimeType: string; dataURL: string }
+interface Message { role: 'user' | 'assistant' | 'system' | 'tool' | 'reasoning'; content: string; model?: string; tier?: string; tool_name?: string; tool_call_id?: string; tool_calls?: ToolCallRecord[]; attachments?: ChatAttachment[] }
 interface Project { id: string; name: string; workspace_path: string; temporary: boolean }
 interface AgentProfile { id: string; name: string; description?: string; system_prompt?: string; model?: string; enabled_tools?: string[]; enabled_skills?: string[]; enabled_mcp_servers?: string[]; permission_mode?: string; max_turns?: number }
 interface SubagentProfile { id: string; name: string; description?: string; system_prompt?: string; model?: string; enabled_tools?: string[]; enabled_skills?: string[]; enabled_mcp_servers?: string[]; blocked_tools?: string[]; permission_mode?: string; max_turns?: number; workspace_path?: string }
@@ -245,6 +246,7 @@ function App() {
   const [settingsProjectId, setSettingsProjectId] = useState('')
   const [projectSettingsTab, setProjectSettingsTab] = useState<ProjectSettingsTab>('memory')
   const [attachmentNotice, setAttachmentNotice] = useState('')
+  const [attachments, setAttachments] = useState<ChatAttachment[]>([])
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const abortRef = useRef<AbortController | null>(null)
@@ -575,25 +577,60 @@ function App() {
     await refresh()
   }
 
+  const readImageAttachment = (file: File): Promise<ChatAttachment> => new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const result = reader.result
+      if (typeof result !== 'string') { reject(new Error(`Could not read ${file.name}`)); return }
+      resolve({ id: `${file.name}-${file.size}-${Date.now()}`, name: file.name, mimeType: file.type, dataURL: result })
+    }
+    reader.onerror = () => reject(new Error(`Could not read ${file.name}`))
+    reader.readAsDataURL(file)
+  })
+
+  const addImageFiles = async (files: readonly File[]) => {
+    const imageFiles = files.filter(file => file.type.startsWith('image/'))
+    const rejected = files.filter(file => !file.type.startsWith('image/'))
+    if (rejected.length > 0) setAttachmentNotice('Only image files are supported for chat attachments right now.')
+    else setAttachmentNotice('')
+    if (imageFiles.length === 0) return
+    try {
+      const loaded = await Promise.all(imageFiles.map(readImageAttachment))
+      setAttachments(prev => [...prev, ...loaded])
+    } catch (err) {
+      setAttachmentNotice(String(err))
+    }
+  }
+
   const onAttachClick = () => fileInputRef.current?.click()
   const onFilesSelected = (files: FileList | null) => {
     if (!files || files.length === 0) return
-    const names = Array.from(files).map(f => f.name).join(', ')
-    setAttachmentNotice(`Selected: ${names}. Attachment upload will be wired to chat next.`)
+    addImageFiles(Array.from(files)).catch(err => setAttachmentNotice(String(err)))
+  }
+  const removeAttachment = (id: string) => setAttachments(prev => prev.filter(item => item.id !== id))
+  const onComposerPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(event.clipboardData.files || [])
+    const itemFiles = Array.from(event.clipboardData.items || []).map(item => item.kind === 'file' ? item.getAsFile() : null).filter((file): file is File => Boolean(file))
+    const images = [...files, ...itemFiles].filter((file, index, all) => file.type.startsWith('image/') && all.findIndex(other => other.name === file.name && other.size === file.size && other.type === file.type) === index)
+    if (images.length === 0) return
+    event.preventDefault()
+    addImageFiles(images).catch(err => setAttachmentNotice(String(err)))
   }
 
   const sendMessage = async () => {
-    if (!input.trim() || isStreaming) return
-    const rawPrompt = input.trim()
+    if ((!input.trim() && attachments.length === 0) || isStreaming) return
+    const rawPrompt = input.trim() || 'Describe the attached image.'
     const prompt = forcedSkill ? `/skill:${forcedSkill} ${rawPrompt}` : rawPrompt
+    const messageAttachments = attachments
     const controller = new AbortController()
     abortRef.current = controller
-    setMessages(prev => [...prev, { role: 'user', content: prompt }])
-    setInput(''); setIsStreaming(true); setCurrentRunId(''); setRouteInfo(null); setStatus('Thinking...')
+    setMessages(prev => [...prev, { role: 'user', content: prompt, attachments: messageAttachments }])
+    setInput(''); setAttachments([]); setAttachmentNotice(''); setIsStreaming(true); setCurrentRunId(''); setRouteInfo(null); setStatus('Thinking...')
     try {
       const sid = sessionId || `s-${Date.now()}`
       if (!sessionId) setSessionId(sid)
-      const url = `/api/chat?prompt=${encodeURIComponent(prompt)}&session_id=${encodeURIComponent(sid)}&agent_id=${encodeURIComponent(agentId)}${projectId ? `&project_id=${encodeURIComponent(projectId)}` : ''}`
+      const imageParams = messageAttachments.map(item => `&image_url=${encodeURIComponent(item.dataURL)}`).join('')
+      const url = `/api/chat?prompt=${encodeURIComponent(prompt)}&session_id=${encodeURIComponent(sid)}&agent_id=${encodeURIComponent(agentId)}${projectId ? `&project_id=${encodeURIComponent(projectId)}` : ''}${imageParams}`
       const response = await fetch(url, { signal: controller.signal })
       const { approvalPending } = await consumeEventStream(response)
       await refresh(); setStatus(approvalPending ? 'Approval required' : 'Done')
@@ -624,9 +661,13 @@ function App() {
     <div className="toolActivityList">{tools.map((tool, i) => <div key={i} className="toolActivityItem">{renderToolEventCard(toolEventFromMessage(tool, toolArgs))}</div>)}</div>
   </details>
 
+  const renderAttachments = (items: readonly ChatAttachment[]) => items.length > 0 && <div className="attachmentPreviewGrid">
+    {items.map(item => <div key={item.id} className="attachmentPreview"><img src={item.dataURL} alt="Attachment preview" /><span>{item.name}</span></div>)}
+  </div>
+
   const renderTurn = (turn: ChatTurn, index: number) => {
     const nodes: ReactNode[] = []
-    if (turn.user) nodes.push(<div key="user" className="messageBubble user"><div className="messageMeta">You</div>{renderMarkdown(turn.user.content)}</div>)
+    if (turn.user) nodes.push(<div key="user" className="messageBubble user"><div className="messageMeta">You</div>{renderMarkdown(turn.user.content)}{renderAttachments(turn.user.attachments || [])}</div>)
     let pendingTools: Message[] = []
     const flushTools = (key: string) => {
       if (pendingTools.length === 0) return
@@ -833,11 +874,14 @@ function App() {
 
           <footer className="composerShell">
             {attachmentNotice && <div className="attachmentNotice">{attachmentNotice}</div>}
+            {attachments.length > 0 && <div className="attachmentPreviewGrid composerAttachments">
+              {attachments.map(item => <div key={item.id} className="attachmentPreview"><img src={item.dataURL} alt="Attachment preview" /><span>{item.name}</span><button type="button" aria-label="Remove attachment" onClick={() => removeAttachment(item.id)}>×</button></div>)}
+            </div>}
             <div className="composerBox">
-              <textarea value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter' && (e.ctrlKey || e.metaKey)){ e.preventDefault(); sendMessage() } }} placeholder="Ask UUAgent to inspect, edit or explain code... Ctrl+Enter to send" />
+              <textarea value={input} onChange={e=>setInput(e.target.value)} onPaste={onComposerPaste} onKeyDown={e=>{ if(e.key==='Enter' && (e.ctrlKey || e.metaKey)){ e.preventDefault(); sendMessage() } }} placeholder="Ask UUAgent to inspect, edit or explain code... Ctrl+Enter to send" />
               <button className="attachButton" onClick={onAttachClick} title="Attach image or file">＋</button>
-              {isStreaming ? <button className="sendButton" onClick={stopRun}>Stop</button> : <button className="sendButton" onClick={sendMessage} disabled={!input.trim()}>Send</button>}
-              <input ref={fileInputRef} type="file" multiple accept="image/*,.txt,.md,.json,.yaml,.yml,.go,.ts,.tsx" hidden onChange={e=>onFilesSelected(e.target.files)} />
+              {isStreaming ? <button className="sendButton" onClick={stopRun}>Stop</button> : <button className="sendButton" onClick={sendMessage} disabled={!input.trim() && attachments.length === 0}>Send</button>}
+              <input ref={fileInputRef} aria-label="Attach image or file" type="file" multiple accept="image/*,.txt,.md,.json,.yaml,.yml,.go,.ts,.tsx" hidden onChange={e=>{ onFilesSelected(e.target.files); e.currentTarget.value = '' }} />
             </div>
             <div className="composerMeta">
               <label>Project<select value={projectId} onChange={e=>openProject(e.target.value)} disabled={activeSessionLocked}><option value="">None</option>{projects.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select>{activeSessionLocked && <span>locked</span>}</label>

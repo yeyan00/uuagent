@@ -793,6 +793,118 @@ describe('App', () => {
     expect(screen.getAllByText('claude-sonnet-4').length).toBeGreaterThan(0)
   })
 
+  it('selecting an image file shows preview and enables send even when text input is empty', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const fetchMock: typeof fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/projects') return Response.json({ projects: [] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/sessions') return Response.json({ sessions: [] })
+      if (url === '/api/memory') return Response.json({ memories: [] })
+      if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
+      return Response.json({})
+    })
+    globalThis.fetch = fetchMock
+
+    render(<App />)
+    const fileInput = await screen.findByLabelText('Attach image or file')
+    const file = new File(['test'], 'test-image.png', { type: 'image/png' })
+    fireEvent.change(fileInput, { target: { files: [file] } })
+
+    expect(await screen.findByText('test-image.png')).toBeTruthy()
+    expect(await screen.findByRole('img', { name: 'Attachment preview' })).toBeTruthy()
+    expect((screen.getByText('Send') as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('removing an attachment removes preview and disables send again when no text', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const fetchMock: typeof fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/projects') return Response.json({ projects: [] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/sessions') return Response.json({ sessions: [] })
+      if (url === '/api/memory') return Response.json({ memories: [] })
+      if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
+      return Response.json({})
+    })
+    globalThis.fetch = fetchMock
+
+    render(<App />)
+    const fileInput = await screen.findByLabelText('Attach image or file')
+    const file = new File(['test'], 'test-image.png', { type: 'image/png' })
+    fireEvent.change(fileInput, { target: { files: [file] } })
+
+    expect(await screen.findByText('test-image.png')).toBeTruthy()
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove attachment' }))
+    expect(screen.queryByText('test-image.png')).toBeNull()
+    expect((screen.getByText('Send') as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('sending text and selected image appends encoded image_url param to chat request', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const encoder = new TextEncoder()
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    const fetchMock: typeof fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      calls.push({ url, init })
+      if (url === '/api/projects') return Response.json({ projects: [] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/sessions') return Response.json({ sessions: [] })
+      if (url === '/api/memory') return Response.json({ memories: [] })
+      if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
+      if (url.startsWith('/api/chat')) {
+        const stream = new ReadableStream<Uint8Array>({
+          start(c) {
+            c.enqueue(encoder.encode('data: {"type":"content","text":"I see the image"}\n\n'))
+            c.close()
+          },
+        })
+        return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } })
+      }
+      return Response.json({})
+    })
+    globalThis.fetch = fetchMock
+
+    render(<App />)
+    const fileInput = await screen.findByLabelText('Attach image or file')
+    const file = new File(['test'], 'test-image.png', { type: 'image/png' })
+    fireEvent.change(fileInput, { target: { files: [file] } })
+    expect(await screen.findByText('test-image.png')).toBeTruthy()
+
+    const input = await screen.findByPlaceholderText('Ask UUAgent to inspect, edit or explain code... Ctrl+Enter to send')
+    fireEvent.change(input, { target: { value: 'What is in this image?' } })
+    fireEvent.click(screen.getByText('Send'))
+
+    await waitFor(() => expect(calls.some(c => c.url.startsWith('/api/chat'))).toBe(true))
+    const chatCall = calls.find(c => c.url.startsWith('/api/chat'))
+    expect(chatCall?.url).toContain('image_url=')
+    expect(await screen.findByText('test-image.png')).toBeTruthy()
+    expect(await screen.findByRole('img', { name: 'Attachment preview' })).toBeTruthy()
+  })
+
+  it('pasting an image into the composer adds it as an attachment preview', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const fetchMock: typeof fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/projects') return Response.json({ projects: [] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/sessions') return Response.json({ sessions: [] })
+      if (url === '/api/memory') return Response.json({ memories: [] })
+      if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
+      return Response.json({})
+    })
+    globalThis.fetch = fetchMock
+
+    render(<App />)
+    const textarea = await screen.findByPlaceholderText('Ask UUAgent to inspect, edit or explain code... Ctrl+Enter to send')
+    const file = new File(['test'], 'pasted-image.png', { type: 'image/png' })
+    const clipboardData = { files: [file], getData: () => '', items: [{ kind: 'file', type: 'image/png', getAsFile: () => file }] }
+    fireEvent.paste(textarea, { clipboardData })
+
+    expect(await screen.findByText('pasted-image.png')).toBeTruthy()
+    expect(await screen.findByRole('img', { name: 'Attachment preview' })).toBeTruthy()
+  })
+
   it('compacts the active session and shows compact archive history', async () => {
     Element.prototype.scrollIntoView = vi.fn()
     const calls: Array<{ url: string; init?: RequestInit }> = []
@@ -912,4 +1024,5 @@ describe('App', () => {
     expect((nameInput as HTMLInputElement).value).toBe('Test Project')
     expect((pathInput as HTMLInputElement).value).toBe('C:/some/file.txt')
   })
+
 })
