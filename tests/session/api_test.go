@@ -335,6 +335,184 @@ func TestChatRejectsSessionProjectSwitch(t *testing.T) {
 	}
 }
 
+func TestProjectSessionRestoreArchiveAPIRestoresMessagesAndRemovesArchive(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	t.Setenv("UUAGENT_HOME", home)
+	if err := os.MkdirAll(workspace, 0755); err != nil {
+		t.Fatal(err)
+	}
+	gin.SetMode(gin.TestMode)
+	a := agent.New(config.Default())
+	r := gin.New()
+	server.RegisterRoutes(r.Group("/api"), a)
+	projectID := createProjectForSessionTest(t, r, workspace)
+
+	// Create session and add messages
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/sessions", strings.NewReader(`{"id":"s-restore"}`)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("create session status=%d body=%s", w.Code, w.Body.String())
+	}
+	store, _, ok := a.ProjectSessions(projectID)
+	if !ok {
+		t.Fatal("project session store missing")
+	}
+	sess, ok := store.Get("s-restore")
+	if !ok {
+		t.Fatal("project session missing")
+	}
+	for i := 0; i < 8; i++ {
+		sess.Append("user", strings.Repeat("archive candidate message ", 120)+fmt.Sprintf("%d", i))
+	}
+
+	// Compact the session
+	w = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/sessions/s-restore/compact", strings.NewReader(`{"keep_last_messages":1,"threshold":0.01}`))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("compact status=%d body=%s", w.Code, w.Body.String())
+	}
+	var compactRes struct {
+		Archives []struct {
+			ID string `json:"id"`
+		} `json:"archives"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &compactRes); err != nil {
+		t.Fatal(err)
+	}
+	if len(compactRes.Archives) == 0 {
+		t.Fatal("expected archive in compact response")
+	}
+	archiveID := compactRes.Archives[0].ID
+
+	// Restore the archive via API
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/sessions/s-restore/archives/"+archiveID+"/restore", nil)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("restore status=%d body=%s", w.Code, w.Body.String())
+	}
+	var restoreRes struct {
+		Session   map[string]interface{} `json:"session"`
+		Context   map[string]interface{} `json:"context"`
+		Usage     map[string]interface{} `json:"usage"`
+		Summaries []interface{}          `json:"summaries"`
+		Archives  []interface{}          `json:"archives"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &restoreRes); err != nil {
+		t.Fatal(err)
+	}
+	if restoreRes.Session == nil {
+		t.Fatal("expected session in restore response")
+	}
+	if len(restoreRes.Archives) != 0 {
+		t.Fatalf("expected 0 archives after restore, got %d", len(restoreRes.Archives))
+	}
+	if len(restoreRes.Summaries) != 0 {
+		t.Fatalf("expected 0 summaries after restore, got %d", len(restoreRes.Summaries))
+	}
+
+	// Verify session messages were restored
+	snap := sess.Snapshot()
+	if len(snap.Messages) == 0 {
+		t.Fatal("expected messages after restore")
+	}
+}
+
+func TestProjectSessionRestoreArchiveAPIReturns404ForMissingArchive(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	t.Setenv("UUAGENT_HOME", home)
+	if err := os.MkdirAll(workspace, 0755); err != nil {
+		t.Fatal(err)
+	}
+	gin.SetMode(gin.TestMode)
+	a := agent.New(config.Default())
+	r := gin.New()
+	server.RegisterRoutes(r.Group("/api"), a)
+	projectID := createProjectForSessionTest(t, r, workspace)
+
+	// Create session
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/sessions", strings.NewReader(`{"id":"s-restore-404"}`)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("create session status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	// Try to restore non-existent archive
+	w = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/sessions/s-restore-404/archives/non-existent-archive/restore", nil)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for missing archive, got status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestProjectSessionRestoreArchiveAPIReturns409OnMismatch(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	t.Setenv("UUAGENT_HOME", home)
+	if err := os.MkdirAll(workspace, 0755); err != nil {
+		t.Fatal(err)
+	}
+	gin.SetMode(gin.TestMode)
+	a := agent.New(config.Default())
+	r := gin.New()
+	server.RegisterRoutes(r.Group("/api"), a)
+	projectID := createProjectForSessionTest(t, r, workspace)
+
+	// Create session and add messages
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/sessions", strings.NewReader(`{"id":"s-restore-409"}`)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("create session status=%d body=%s", w.Code, w.Body.String())
+	}
+	store, _, ok := a.ProjectSessions(projectID)
+	if !ok {
+		t.Fatal("project session store missing")
+	}
+	sess, ok := store.Get("s-restore-409")
+	if !ok {
+		t.Fatal("project session missing")
+	}
+	for i := 0; i < 8; i++ {
+		sess.Append("user", strings.Repeat("archive candidate message ", 120)+fmt.Sprintf("%d", i))
+	}
+
+	w = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/sessions/s-restore-409/compact", strings.NewReader(`{"keep_last_messages":2,"threshold":0.01}`))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("compact status=%d body=%s", w.Code, w.Body.String())
+	}
+	var compactRes struct {
+		Archives []struct {
+			ID string `json:"id"`
+		} `json:"archives"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &compactRes); err != nil {
+		t.Fatal(err)
+	}
+	if len(compactRes.Archives) == 0 {
+		t.Fatal("expected archive in compact response")
+	}
+	archiveID := compactRes.Archives[0].ID
+
+	// Add a new message to break the match
+	sess.Append("user", "new message after compact")
+
+	// Try to restore with mismatched state
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/sessions/s-restore-409/archives/"+archiveID+"/restore", nil)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409 for mismatch, got status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
 func createProjectForSessionTest(t *testing.T, r http.Handler, workspace string) string {
 	t.Helper()
 	w := httptest.NewRecorder()

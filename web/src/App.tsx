@@ -380,6 +380,18 @@ function App() {
     await refresh()
   }
 
+  const restoreArchive = async (archiveId: string) => {
+    if (!projectId || !sessionId) return
+    if (!confirm('Restore this archive? This will replace the current session summary with the original messages.')) return
+    setStatus('Restoring...')
+    const result = await api<SessionContext>(`/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/archives/${encodeURIComponent(archiveId)}/restore`, { method: 'POST' })
+    setSessionContext(result)
+    setSummaries(result.summaries || [])
+    setArchives(result.archives || [])
+    setStatus('Restored archive')
+    await refresh()
+  }
+
   const selectAgent = (id: string) => {
     setAgentId(id)
     const profile = agents.find(a => a.id === id)
@@ -924,7 +936,13 @@ function App() {
           {summaries.map(s => <details key={s.id} className="summaryCard"><summary>{formatTokens(s.token_before)} → {formatTokens(s.token_after)}</summary><pre>{s.summary}</pre></details>)}
           <h3>Compact Archives</h3>
           {archives.length === 0 && <div className="emptyPanel">No compact archives yet.</div>}
-          {archives.map(a => <details key={a.id} className="summaryCard"><summary>{formatTokens(a.summary?.token_before || a.token_before)} → {formatTokens(a.summary?.token_after || a.token_after)}</summary><pre>{a.summary?.summary}</pre></details>)}
+          {archives.map(a => (
+            <details key={a.id} className="summaryCard">
+              <summary>{formatTokens(a.summary?.token_before || a.token_before)} → {formatTokens(a.summary?.token_after || a.token_after)}</summary>
+              <pre>{a.summary?.summary}</pre>
+              <button className="softButton" onClick={() => restoreArchive(a.id)}>Restore</button>
+            </details>
+          ))}
         </div>}
         {projectSettingsTab === 'config' && <div className="settingsPanel"><div className="emptyPanel"><strong>Workspace</strong><br />{projects.find(p=>p.id===settingsProjectId)?.workspace_path || ''}</div></div>}
       </div>

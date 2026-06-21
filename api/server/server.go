@@ -32,6 +32,7 @@ func RegisterRoutes(r *gin.RouterGroup, agt *agent.Agent) {
 	r.GET("/projects/:id/sessions/:session_id", handleGetProjectSession(agt))
 	r.GET("/projects/:id/sessions/:session_id/context", handleGetProjectSessionContext(agt))
 	r.POST("/projects/:id/sessions/:session_id/compact", handleCompactProjectSession(agt))
+	r.POST("/projects/:id/sessions/:session_id/archives/:archive_id/restore", handleRestoreProjectSessionArchive(agt))
 	r.PATCH("/projects/:id/sessions/:session_id", handlePatchProjectSession(agt))
 	r.DELETE("/projects/:id/sessions/:session_id", handleDeleteProjectSession(agt))
 	r.POST("/projects/:id/sessions/:session_id/fork", handleForkProjectSession(agt))
@@ -248,6 +249,44 @@ func handleCompactProjectSession(agt *agent.Agent) gin.HandlerFunc {
 			"usage":     snap.Usage,
 			"summaries": snap.Summaries,
 			"archives":  snap.Archives,
+		})
+	}
+}
+
+func handleRestoreProjectSessionArchive(agt *agent.Agent) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		store, _, ok := agt.ProjectSessions(c.Param("id"))
+		if !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "project not found"})
+			return
+		}
+		sess, ok := store.Get(c.Param("session_id"))
+		if !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+			return
+		}
+		archiveID := c.Param("archive_id")
+		restored, err := sess.RestoreCompactArchive(archiveID)
+		if err != nil {
+			if strings.Contains(err.Error(), "not found") {
+				c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+				return
+			}
+			if strings.Contains(err.Error(), "conflict") {
+				c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		snap := sess.Snapshot()
+		c.JSON(http.StatusOK, gin.H{
+			"session":   snap,
+			"context":   sess.ContextStats(agt.Config().Agent.Context.MaxTokens),
+			"usage":     snap.Usage,
+			"summaries": snap.Summaries,
+			"archives":  snap.Archives,
+			"restored":  len(restored),
 		})
 	}
 }

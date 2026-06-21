@@ -955,6 +955,61 @@ describe('App', () => {
     expect(await screen.findByText('Archived conversation block')).toBeTruthy()
   })
 
+  it('restores a compact archive and updates session messages', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    vi.stubGlobal('confirm', vi.fn(() => true))
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    const fetchMock: typeof fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      calls.push({ url, init })
+      if (url === '/api/projects') return Response.json({ projects: [{ id: 'proj-1', name: 'Repo', workspace_path: 'C:/repo', temporary: false }] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/projects/proj-1/sessions') return Response.json({ sessions: [{ id: 's1', title: 'Session to restore', messages: [{ role: 'user', content: 'hi' }] }] })
+      if (url === '/api/projects/proj-1/sessions/s1') return Response.json({ id: 's1', title: 'Session to restore', messages: [{ role: 'user', content: 'hi' }] })
+      if (url === '/api/memory') return Response.json({ memories: [] })
+      if (url === '/api/memory?project=proj-1') return Response.json({ memories: [] })
+      if (url === '/api/projects/proj-1/open') return Response.json({ config_sources: [] })
+      if (url === '/api/projects/proj-1/sessions/s1/context') {
+        return Response.json({
+          context: { estimated_tokens: 8000, max_tokens: 32000, percent: 0.25 },
+          usage: { input_tokens: 7000, output_tokens: 1000, total_tokens: 8000 },
+          summaries: [{ id: 'sum1', token_before: 50000, token_after: 8000, summary: 'Compacted conversation', created_at: Date.now() }],
+          archives: [{ id: 'arch1', summary: { id: 'arch1-summary', summary: 'Archived conversation block', token_before: 50000, token_after: 8000, created_at: Date.now() }, token_before: 50000, token_after: 8000, created_at: new Date().toISOString() }]
+        })
+      }
+      if (url === '/api/projects/proj-1/sessions/s1/archives/arch1/restore' && init?.method === 'POST') {
+        return Response.json({
+          session: { id: 's1', title: 'Session to restore', messages: [{ role: 'user', content: 'restored message' }] },
+          context: { estimated_tokens: 50000, max_tokens: 32000, percent: 1.56 },
+          usage: { input_tokens: 48000, output_tokens: 9000, total_tokens: 57000 },
+          summaries: [],
+          archives: [],
+          restored: 1
+        })
+      }
+      if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
+      return Response.json({})
+    })
+    globalThis.fetch = fetchMock
+
+    render(<App />)
+    fireEvent.click(await screen.findByText('Session to restore'))
+    await waitFor(() => expect(calls.some(c => c.url === '/api/projects/proj-1/sessions/s1')).toBe(true))
+
+    fireEvent.click(await screen.findByTitle('Project settings'))
+    fireEvent.click(await screen.findByText('context'))
+
+    expect(await screen.findByText('Compact Archives')).toBeTruthy()
+    expect(await screen.findByText('Archived conversation block')).toBeTruthy()
+
+    const restoreButton = await screen.findByRole('button', { name: 'Restore' })
+    expect(restoreButton).toBeTruthy()
+
+    fireEvent.click(restoreButton)
+
+    await waitFor(() => expect(calls.some(c => c.url === '/api/projects/proj-1/sessions/s1/archives/arch1/restore' && c.init?.method === 'POST')).toBe(true))
+  })
+
   it('trims project name and workspace path when creating a project', async () => {
     Element.prototype.scrollIntoView = vi.fn()
     const calls: Array<{ url: string; init?: RequestInit }> = []
