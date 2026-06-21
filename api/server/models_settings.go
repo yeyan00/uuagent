@@ -59,6 +59,10 @@ func handlePutModelsSettings(agt *agent.Agent) gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
+		if err := validateProxyURL(req.ProxyURL); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 		if err := agt.UpdateModelSettingsPersistent(req.ProxyURL, req.RoutingTiers, req.FallbackTier); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -102,18 +106,32 @@ func validateProxyURL(proxyURL string) error {
 		return fmt.Errorf("invalid URL: host is required")
 	}
 	host := u.Hostname()
+
+	// HTTPS: allow any host
+	if u.Scheme == "https" {
+		return nil
+	}
+
+	// HTTP: only allow loopback addresses
+	// Allow "localhost" hostname
+	if host == "localhost" {
+		return nil
+	}
+
+	// Check if it's a literal loopback IP
 	ip := net.ParseIP(host)
 	if ip != nil {
-		// Allow loopback addresses (localhost, 127.0.0.1, [::1]) for testing
-		// Reject private non-loopback IPs (192.168.x.x, 10.x.x.x, etc.)
-		if ip.IsPrivate() && !ip.IsLoopback() {
-			return fmt.Errorf("private IP addresses are not allowed")
+		if ip.IsLoopback() {
+			return nil
 		}
 		if ip.IsUnspecified() {
 			return fmt.Errorf("unspecified IP addresses are not allowed")
 		}
+		return fmt.Errorf("non-loopback IP addresses are not allowed with HTTP")
 	}
-	return nil
+
+	// HTTP with non-loopback hostname not allowed
+	return fmt.Errorf("non-loopback HTTP URLs are not allowed; use HTTPS or a loopback address (localhost, 127.0.0.1, [::1])")
 }
 
 func redactSensitiveData(body string) string {

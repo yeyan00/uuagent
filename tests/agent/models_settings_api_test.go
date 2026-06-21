@@ -74,7 +74,7 @@ func TestModelsSettingsAPI_put_persists_settings_and_reloads_router(t *testing.T
 	home := filepath.Join(t.TempDir(), "home")
 	t.Setenv("UUAGENT_HOME", home)
 	r := newModelsSettingsRouter(config.Default())
-	body := `{"proxy_url":"http://updated.local/v1","routing_tiers":{"fast":["fast-new"],"strong":["strong-new"]},"fallback_tier":"fast","api_key":"must-not-save"}`
+	body := `{"proxy_url":"https://updated.example.com/v1","routing_tiers":{"fast":["fast-new"],"strong":["strong-new"]},"fallback_tier":"fast","api_key":"must-not-save"}`
 
 	// When
 	w := httptest.NewRecorder()
@@ -92,7 +92,7 @@ func TestModelsSettingsAPI_put_persists_settings_and_reloads_router(t *testing.T
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.ProxyURL != "http://updated.local/v1" || got.FallbackTier != "fast" || got.RoutingTiers["fast"][0] != "fast-new" {
+	if got.ProxyURL != "https://updated.example.com/v1" || got.FallbackTier != "fast" || got.RoutingTiers["fast"][0] != "fast-new" {
 		t.Fatalf("runtime settings were not reloaded: %+v", got)
 	}
 	w = httptest.NewRecorder()
@@ -104,7 +104,7 @@ func TestModelsSettingsAPI_put_persists_settings_and_reloads_router(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(saved), "http://updated.local/v1") || !strings.Contains(string(saved), "fast-new") {
+	if !strings.Contains(string(saved), "https://updated.example.com/v1") || !strings.Contains(string(saved), "fast-new") {
 		t.Fatalf("config.yaml missing saved settings: %s", string(saved))
 	}
 	if strings.Contains(string(saved), "must-not-save") {
@@ -259,5 +259,126 @@ func TestModelsTestAPI_redacts_upstream_response_body_in_error(t *testing.T) {
 	}
 	if !strings.Contains(resp.Error, "[upstream error redacted]") {
 		t.Fatalf("expected redacted error message, got: %s", resp.Error)
+	}
+}
+
+func TestModelsSettingsPut_rejects_http_hostname_proxy_url(t *testing.T) {
+	t.Setenv("UUAGENT_HOME", filepath.Join(t.TempDir(), "home"))
+	cfg := config.Default()
+	r := newModelsSettingsRouter(cfg)
+
+	body := `{"proxy_url":"http://updated.local/v1","routing_tiers":{"fast":["gpt-4o-mini"]},"fallback_tier":"fast"}`
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/models/settings", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400 for HTTP hostname URL, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(resp["error"], "not allowed") && !strings.Contains(resp["error"], "loopback") {
+		t.Fatalf("expected error about non-loopback HTTP not allowed, got: %s", resp["error"])
+	}
+}
+
+func TestModelsSettingsPut_rejects_http_private_ip_proxy_url(t *testing.T) {
+	t.Setenv("UUAGENT_HOME", filepath.Join(t.TempDir(), "home"))
+	cfg := config.Default()
+	r := newModelsSettingsRouter(cfg)
+
+	body := `{"proxy_url":"http://192.168.1.10/v1","routing_tiers":{"fast":["gpt-4o-mini"]},"fallback_tier":"fast"}`
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/models/settings", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400 for HTTP private IP URL, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(resp["error"], "not allowed") && !strings.Contains(resp["error"], "private") {
+		t.Fatalf("expected error about private IP not allowed, got: %s", resp["error"])
+	}
+}
+
+func TestModelsSettingsPut_accepts_http_loopback_proxy_url(t *testing.T) {
+	t.Setenv("UUAGENT_HOME", filepath.Join(t.TempDir(), "home"))
+	cfg := config.Default()
+	r := newModelsSettingsRouter(cfg)
+
+	body := `{"proxy_url":"http://localhost:8080/v1","routing_tiers":{"fast":["gpt-4o-mini"]},"fallback_tier":"fast"}`
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/models/settings", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200 for HTTP localhost URL, got %d body=%s", w.Code, w.Body.String())
+	}
+
+	body = `{"proxy_url":"http://127.0.0.1:8080/v1","routing_tiers":{"fast":["gpt-4o-mini"]},"fallback_tier":"fast"}`
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPut, "/api/models/settings", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200 for HTTP 127.0.0.1 URL, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestModelsSettingsPut_accepts_https_any_host_proxy_url(t *testing.T) {
+	t.Setenv("UUAGENT_HOME", filepath.Join(t.TempDir(), "home"))
+	cfg := config.Default()
+	r := newModelsSettingsRouter(cfg)
+
+	body := `{"proxy_url":"https://example.com/v1","routing_tiers":{"fast":["gpt-4o-mini"]},"fallback_tier":"fast"}`
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/models/settings", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200 for HTTPS URL, got %d body=%s", w.Code, w.Body.String())
+	}
+
+	body = `{"proxy_url":"https://192.168.1.10/v1","routing_tiers":{"fast":["gpt-4o-mini"]},"fallback_tier":"fast"}`
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPut, "/api/models/settings", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200 for HTTPS private IP URL, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestModelsTestAPI_rejects_http_hostname_proxy_url(t *testing.T) {
+	t.Setenv("UUAGENT_HOME", filepath.Join(t.TempDir(), "home"))
+	cfg := config.Default()
+	r := newModelsSettingsRouter(cfg)
+
+	body := `{"proxy_url":"http://updated.local/v1"}`
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/models/test", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400 for HTTP hostname URL, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp modelsTestResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(resp.Error, "not allowed") && !strings.Contains(resp.Error, "loopback") {
+		t.Fatalf("expected error about non-loopback HTTP not allowed, got: %s", resp.Error)
 	}
 }
