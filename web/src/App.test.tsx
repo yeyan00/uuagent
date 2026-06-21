@@ -415,16 +415,17 @@ describe('App', () => {
 
   it('forces a single selected skill when sending from composer', async () => {
     Element.prototype.scrollIntoView = vi.fn()
-    const calls: string[] = []
+    const calls: Array<{ url: string; init?: RequestInit }> = []
     const encoder = new TextEncoder()
-    globalThis.fetch = vi.fn(async (url: string) => {
-      calls.push(url)
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      calls.push({ url, init })
       if (url === '/api/projects') return Response.json({ projects: [] })
       if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
       if (url === '/api/subagents') return Response.json({ subagents: [] })
       if (url === '/api/skills') return Response.json({ skills: [{ name: 'review', description: 'Review code', enabled: true, scope: 'global' }], diagnostics: [] })
       if (url === '/api/memory') return Response.json({ memories: [] })
-      if (url.startsWith('/api/chat')) {
+      if (url === '/api/chat') {
         const stream = new ReadableStream<Uint8Array>({ start(c) { c.enqueue(encoder.encode('data: {"type":"content","text":"ok"}\n\n')); c.close() } })
         return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } })
       }
@@ -437,7 +438,12 @@ describe('App', () => {
     const input = await screen.findByPlaceholderText('Ask UUAgent to inspect, edit or explain code... Ctrl+Enter to send')
     fireEvent.change(input, { target: { value: 'inspect code' } })
     fireEvent.click(screen.getByText('Send'))
-    await waitFor(() => expect(calls.some(url => url.startsWith('/api/chat') && decodeURIComponent(url).includes('/skill:review inspect code'))).toBe(true))
+    await waitFor(() => {
+      const chatCall = calls.find(c => c.url === '/api/chat')
+      expect(chatCall).toBeTruthy()
+      const body = JSON.parse(chatCall?.init?.body as string)
+      expect(body.prompt).toContain('/skill:review inspect code')
+    })
   })
 
   it('keeps Settings navigation visible and previews skill content', async () => {
@@ -840,7 +846,7 @@ describe('App', () => {
     expect((screen.getByText('Send') as HTMLButtonElement).disabled).toBe(true)
   })
 
-  it('sending text and selected image appends encoded image_url param to chat request', async () => {
+  it('sending text and selected image sends image_url in POST body, not URL params', async () => {
     Element.prototype.scrollIntoView = vi.fn()
     const encoder = new TextEncoder()
     const calls: Array<{ url: string; init?: RequestInit }> = []
@@ -852,7 +858,7 @@ describe('App', () => {
       if (url === '/api/sessions') return Response.json({ sessions: [] })
       if (url === '/api/memory') return Response.json({ memories: [] })
       if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
-      if (url.startsWith('/api/chat')) {
+      if (url === '/api/chat') {
         const stream = new ReadableStream<Uint8Array>({
           start(c) {
             c.enqueue(encoder.encode('data: {"type":"content","text":"I see the image"}\n\n'))
@@ -875,9 +881,14 @@ describe('App', () => {
     fireEvent.change(input, { target: { value: 'What is in this image?' } })
     fireEvent.click(screen.getByText('Send'))
 
-    await waitFor(() => expect(calls.some(c => c.url.startsWith('/api/chat'))).toBe(true))
-    const chatCall = calls.find(c => c.url.startsWith('/api/chat'))
-    expect(chatCall?.url).toContain('image_url=')
+    await waitFor(() => expect(calls.some(c => c.url === '/api/chat')).toBe(true))
+    const chatCall = calls.find(c => c.url === '/api/chat')
+    expect(chatCall?.init?.method).toBe('POST')
+    expect(chatCall?.init?.headers?.['Content-Type']).toBe('application/json')
+    const body = JSON.parse(chatCall?.init?.body as string)
+    expect(body.image_url).toBeDefined()
+    expect(body.image_url.length).toBeGreaterThan(0)
+    expect(chatCall?.url).not.toContain('image_url=')
     expect(await screen.findByText('test-image.png')).toBeTruthy()
     expect(await screen.findByRole('img', { name: 'Attachment preview' })).toBeTruthy()
   })
@@ -1008,6 +1019,46 @@ describe('App', () => {
     fireEvent.click(restoreButton)
 
     await waitFor(() => expect(calls.some(c => c.url === '/api/projects/proj-1/sessions/s1/archives/arch1/restore' && c.init?.method === 'POST')).toBe(true))
+  })
+
+  it('loads compact archives from context endpoint on session load without compacting', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    const fetchMock: typeof fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      calls.push({ url, init })
+      if (url === '/api/projects') return Response.json({ projects: [{ id: 'proj-1', name: 'Repo', workspace_path: 'C:/repo', temporary: false }] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/projects/proj-1/sessions') return Response.json({ sessions: [{ id: 's1', title: 'Session with archives', messages: [{ role: 'user', content: 'hi' }] }] })
+      if (url === '/api/projects/proj-1/sessions/s1') return Response.json({ id: 's1', title: 'Session with archives', messages: [{ role: 'user', content: 'hi' }] })
+      if (url === '/api/memory') return Response.json({ memories: [] })
+      if (url === '/api/memory?project=proj-1') return Response.json({ memories: [] })
+      if (url === '/api/projects/proj-1/open') return Response.json({ config_sources: [] })
+      if (url === '/api/projects/proj-1/sessions/s1/context') {
+        return Response.json({
+          context: { estimated_tokens: 8000, max_tokens: 32000, percent: 0.25 },
+          usage: { input_tokens: 7000, output_tokens: 1000, total_tokens: 8000 },
+          summaries: [{ id: 'sum1', token_before: 50000, token_after: 8000, summary: 'Compacted conversation', created_at: Date.now() }],
+          archives: [{ id: 'arch1', summary: { id: 'arch1-summary', summary: 'Previously archived block', token_before: 50000, token_after: 8000, created_at: Date.now() }, token_before: 50000, token_after: 8000, created_at: new Date().toISOString() }]
+        })
+      }
+      if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
+      return Response.json({})
+    })
+    globalThis.fetch = fetchMock
+
+    render(<App />)
+    fireEvent.click(await screen.findByText('Session with archives'))
+    await waitFor(() => expect(calls.some(c => c.url === '/api/projects/proj-1/sessions/s1')).toBe(true))
+
+    fireEvent.click(await screen.findByTitle('Project settings'))
+    fireEvent.click(await screen.findByText('context'))
+
+    expect(await screen.findByText('Compact Archives')).toBeTruthy()
+    expect(await screen.findByText('Previously archived block')).toBeTruthy()
+
+    const compactCalls = calls.filter(c => c.url.includes('/compact') && c.init?.method === 'POST')
+    expect(compactCalls.length).toBe(0)
   })
 
   it('trims project name and workspace path when creating a project', async () => {

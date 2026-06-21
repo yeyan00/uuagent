@@ -189,6 +189,65 @@ func TestProjectSessionContextAPIReportsCurrentContextAndUsage(t *testing.T) {
 	}
 }
 
+func TestProjectSessionContextAPIReportsArchivesFromSessionSnapshot(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	t.Setenv("UUAGENT_HOME", home)
+	if err := os.MkdirAll(workspace, 0755); err != nil {
+		t.Fatal(err)
+	}
+	gin.SetMode(gin.TestMode)
+	a := agent.New(config.Default())
+	r := gin.New()
+	server.RegisterRoutes(r.Group("/api"), a)
+	projectID := createProjectForSessionTest(t, r, workspace)
+
+	// Create session and add messages
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/sessions", strings.NewReader(`{"id":"s-context-archives"}`)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("create session status=%d body=%s", w.Code, w.Body.String())
+	}
+	store, _, ok := a.ProjectSessions(projectID)
+	if !ok {
+		t.Fatal("project session store missing")
+	}
+	sess, ok := store.Get("s-context-archives")
+	if !ok {
+		t.Fatal("project session missing")
+	}
+	for i := 0; i < 8; i++ {
+		sess.Append("user", strings.Repeat("archive candidate message ", 120)+fmt.Sprintf("%d", i))
+	}
+
+	// Compact the session
+	w = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/sessions/s-context-archives/compact", strings.NewReader(`{"keep_last_messages":1,"threshold":0.01}`))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("compact status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	// Now fetch context and verify archives are present
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/sessions/s-context-archives/context", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("context status=%d body=%s", w.Code, w.Body.String())
+	}
+	var got struct {
+		Archives []struct {
+			ID string `json:"id"`
+		} `json:"archives"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Archives) == 0 {
+		t.Fatalf("expected archives in context response, got: %s", w.Body.String())
+	}
+}
+
 func TestProjectSessionCompactAPIArchivesContext(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "home")
 	workspace := filepath.Join(t.TempDir(), "workspace")
@@ -527,4 +586,123 @@ func createProjectForSessionTest(t *testing.T, r http.Handler, workspace string)
 		t.Fatal(err)
 	}
 	return p.ID
+}
+
+func TestChatPostWithImageBodyAcceptsImagesInJSONBody(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	t.Setenv("UUAGENT_HOME", home)
+	if err := os.MkdirAll(workspace, 0755); err != nil {
+		t.Fatal(err)
+	}
+	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"I see the image"}}]}`))
+	}))
+	defer llm.Close()
+	cfg := config.Default()
+	cfg.Agent.ProxyURL = llm.URL + "/v1"
+	gin.SetMode(gin.TestMode)
+	a := agent.New(cfg)
+	r := gin.New()
+	server.RegisterRoutes(r.Group("/api"), a)
+	projectID := createProjectForSessionTest(t, r, workspace)
+
+	body := `{"prompt":"What is in this image?","session_id":"s-post-img","project_id":"` + projectID + `","image_url":["data:image/png;base64,test123"]}`
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("post chat status=%d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "I see the image") {
+		t.Fatalf("expected response to contain assistant message, got: %s", w.Body.String())
+	}
+}
+
+func TestChatPostWithMultipleImagesInBody(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	t.Setenv("UUAGENT_HOME", home)
+	if err := os.MkdirAll(workspace, 0755); err != nil {
+		t.Fatal(err)
+	}
+	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"I see multiple images"}}]}`))
+	}))
+	defer llm.Close()
+	cfg := config.Default()
+	cfg.Agent.ProxyURL = llm.URL + "/v1"
+	gin.SetMode(gin.TestMode)
+	a := agent.New(cfg)
+	r := gin.New()
+	server.RegisterRoutes(r.Group("/api"), a)
+	projectID := createProjectForSessionTest(t, r, workspace)
+
+	body := `{"prompt":"Compare these images","session_id":"s-post-multi","project_id":"` + projectID + `","image_url":["data:image/png;base64,img1","data:image/png;base64,img2","data:image/png;base64,img3"]}`
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("post chat with multiple images status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestChatImageAttachmentGuardRejectsTooManyImages(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	t.Setenv("UUAGENT_HOME", home)
+	if err := os.MkdirAll(workspace, 0755); err != nil {
+		t.Fatal(err)
+	}
+	gin.SetMode(gin.TestMode)
+	a := agent.New(config.Default())
+	r := gin.New()
+	server.RegisterRoutes(r.Group("/api"), a)
+	projectID := createProjectForSessionTest(t, r, workspace)
+
+	// Try to send 5 images (exceeds max of 4)
+	body := `{"prompt":"Too many images","session_id":"s-guard-1","project_id":"` + projectID + `","image_url":["data:image/png;base64,img1","data:image/png;base64,img2","data:image/png;base64,img3","data:image/png;base64,img4","data:image/png;base64,img5"]}`
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400 for too many images, got %d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "maximum 4 images") {
+		t.Fatalf("expected error message about max 4 images, got: %s", w.Body.String())
+	}
+}
+
+func TestChatImageAttachmentGuardRejectsOversizedImage(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	t.Setenv("UUAGENT_HOME", home)
+	if err := os.MkdirAll(workspace, 0755); err != nil {
+		t.Fatal(err)
+	}
+	gin.SetMode(gin.TestMode)
+	a := agent.New(config.Default())
+	r := gin.New()
+	server.RegisterRoutes(r.Group("/api"), a)
+	projectID := createProjectForSessionTest(t, r, workspace)
+
+	// Create a base64 string larger than 4MB (4MB = 4 * 1024 * 1024 bytes, base64 adds ~33% overhead)
+	// We need ~5.5MB of base64 to exceed 4MB decoded
+	largeData := strings.Repeat("A", 6*1024*1024) // ~6MB of base64
+	body := `{"prompt":"Oversized image","session_id":"s-guard-2","project_id":"` + projectID + `","image_url":["data:image/png;base64,` + largeData + `"]}`
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400 for oversized image, got %d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "4MB") {
+		t.Fatalf("expected error message about 4MB limit, got: %s", w.Body.String())
+	}
 }

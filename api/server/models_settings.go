@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -87,10 +90,51 @@ func handleTestModels() gin.HandlerFunc {
 	}
 }
 
+func validateProxyURL(proxyURL string) error {
+	u, err := url.Parse(proxyURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("invalid URL: scheme must be http or https")
+	}
+	if u.Host == "" {
+		return fmt.Errorf("invalid URL: host is required")
+	}
+	host := u.Hostname()
+	ip := net.ParseIP(host)
+	if ip != nil {
+		if ip.IsPrivate() || ip.IsLoopback() || ip.IsUnspecified() {
+			return fmt.Errorf("private IP addresses are not allowed")
+		}
+	}
+	return nil
+}
+
+func redactSensitiveData(body string) string {
+	// Redact API keys and tokens
+	patterns := []struct {
+		pattern *regexp.Regexp
+		repl    string
+	}{
+		{regexp.MustCompile(`(?i)(["']?(?:api[_-]?key|apikey|key|token|secret|password)["']?\s*[:=]\s*["'])[^"']{8,}(["']?)`), "${1}[REDACTED]${2}"},
+		{regexp.MustCompile(`(?i)(sk-[a-zA-Z0-9]{20,})`), "[REDACTED]"},
+		{regexp.MustCompile(`(?i)(Bearer\s+)[a-zA-Z0-9_\-\.]{20,}`), "${1}[REDACTED]"},
+	}
+	result := body
+	for _, p := range patterns {
+		result = p.pattern.ReplaceAllString(result, p.repl)
+	}
+	return result
+}
+
 func fetchModels(ctx context.Context, client *http.Client, proxyURL string) ([]string, int, error) {
 	baseURL := strings.TrimRight(strings.TrimSpace(proxyURL), "/")
 	if baseURL == "" {
 		return nil, http.StatusBadRequest, fmt.Errorf("proxy_url is required")
+	}
+	if err := validateProxyURL(baseURL); err != nil {
+		return nil, http.StatusBadRequest, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/models", nil)
 	if err != nil {
@@ -107,7 +151,8 @@ func fetchModels(ctx context.Context, client *http.Client, proxyURL string) ([]s
 		if readErr != nil {
 			return nil, http.StatusBadGateway, fmt.Errorf("models request failed: status=%d read body: %w", resp.StatusCode, readErr)
 		}
-		return nil, resp.StatusCode, fmt.Errorf("models request failed: status=%d body=%s", resp.StatusCode, string(data))
+		_ = redactSensitiveData(string(data))
+		return nil, resp.StatusCode, fmt.Errorf("models request failed: status=%d [upstream error redacted]", resp.StatusCode)
 	}
 	modelIDs, err := parseModelsResponse(io.LimitReader(resp.Body, 4*1024*1024))
 	if err != nil {

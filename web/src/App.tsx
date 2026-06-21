@@ -641,9 +641,20 @@ function App() {
     try {
       const sid = sessionId || `s-${Date.now()}`
       if (!sessionId) setSessionId(sid)
-      const imageParams = messageAttachments.map(item => `&image_url=${encodeURIComponent(item.dataURL)}`).join('')
-      const url = `/api/chat?prompt=${encodeURIComponent(prompt)}&session_id=${encodeURIComponent(sid)}&agent_id=${encodeURIComponent(agentId)}${projectId ? `&project_id=${encodeURIComponent(projectId)}` : ''}${imageParams}`
-      const response = await fetch(url, { signal: controller.signal })
+      const imageURLs = messageAttachments.map(item => item.dataURL)
+      const body = JSON.stringify({
+        prompt,
+        session_id: sid,
+        agent_id: agentId,
+        ...(projectId ? { project_id: projectId } : {}),
+        ...(imageURLs.length > 0 ? { image_url: imageURLs } : {})
+      })
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+        signal: controller.signal
+      })
       const { approvalPending } = await consumeEventStream(response)
       await refresh(); setStatus(approvalPending ? 'Approval required' : 'Done')
     } catch (err) {
