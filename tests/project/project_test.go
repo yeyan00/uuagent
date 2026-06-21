@@ -90,3 +90,46 @@ func TestListFiltersStaleWorkspaceEntries(t *testing.T) {
 		t.Fatalf("expected only live project, got %+v", list)
 	}
 }
+
+func TestCreateProjectWithFileAsWorkspacePath(t *testing.T) {
+	root := t.TempDir()
+	store := project.NewStore(root)
+
+	// Create a temporary file
+	tempFile := filepath.Join(root, "not-a-dir.txt")
+	if err := os.WriteFile(tempFile, []byte("content"), 0644); err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+
+	// Attempt to create project with file path as workspace
+	_, err := store.Create("Test Project", tempFile)
+	if err == nil {
+		t.Fatal("expected error when workspace path is a file, got nil")
+	}
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "workspace_path") && !strings.Contains(errMsg, "workspace path") {
+		t.Fatalf("error message should mention 'workspace_path' or 'workspace path', got: %s", errMsg)
+	}
+	if !strings.Contains(errMsg, "not a directory") && !strings.Contains(errMsg, "not a dir") {
+		t.Fatalf("error message should mention 'not a directory', got: %s", errMsg)
+	}
+}
+
+func TestCreateProjectWithUnicodeWorkspacePath(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, "项目 workspace")
+	store := project.NewStore(filepath.Join(root, "uuagent"))
+	p, err := store.Create("Unicode Project", workspace)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if p.Temporary {
+		t.Fatal("did not expect temporary project")
+	}
+	if p.WorkspacePath != filepath.Clean(workspace) {
+		t.Fatalf("unexpected workspace: %s", p.WorkspacePath)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, ".uuagent")); err != nil {
+		t.Fatalf("project config dir not created: %v", err)
+	}
+}

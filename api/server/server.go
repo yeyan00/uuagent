@@ -2,6 +2,7 @@ package server
 
 import (
 	"archive/zip"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,6 +32,8 @@ func RegisterRoutes(r *gin.RouterGroup, agt *agent.Agent) {
 	r.POST("/projects/:id/sessions", handleCreateProjectSession(agt))
 	r.GET("/projects/:id/sessions/:session_id", handleGetProjectSession(agt))
 	r.GET("/projects/:id/sessions/:session_id/context", handleGetProjectSessionContext(agt))
+	r.POST("/projects/:id/sessions/:session_id/compact", handleCompactProjectSession(agt))
+	r.POST("/projects/:id/sessions/:session_id/archives/:archive_id/restore", handleRestoreProjectSessionArchive(agt))
 	r.PATCH("/projects/:id/sessions/:session_id", handlePatchProjectSession(agt))
 	r.DELETE("/projects/:id/sessions/:session_id", handleDeleteProjectSession(agt))
 	r.POST("/projects/:id/sessions/:session_id/fork", handleForkProjectSession(agt))
@@ -52,7 +55,11 @@ func RegisterRoutes(r *gin.RouterGroup, agt *agent.Agent) {
 	r.DELETE("/skills/:name", handleDeleteSkill(agt))
 	r.GET("/mcp/servers", handleListMCPServers(agt))
 	r.GET("/tools", handleListTools(agt))
+	r.GET("/models/settings", handleGetModelsSettings(agt))
+	r.PUT("/models/settings", handlePutModelsSettings(agt))
+	r.POST("/models/test", handleTestModels())
 	r.GET("/chat", handleChatSSE(agt))
+	r.POST("/chat", handleChatSSE(agt))
 	r.GET("/route", handleRouteInfo(agt))
 	r.GET("/sessions", handleListSessions(agt))
 	r.GET("/sessions/:id", handleGetSession(agt))
@@ -199,6 +206,90 @@ func handleGetProjectSessionContext(agt *agent.Agent) gin.HandlerFunc {
 			"context":   sess.ContextStats(agt.Config().Agent.Context.MaxTokens),
 			"usage":     snap.Usage,
 			"summaries": snap.Summaries,
+			"archives":  snap.Archives,
+		})
+	}
+}
+
+type compactSessionRequest struct {
+	KeepLastMessages int     `json:"keep_last_messages"`
+	Threshold        float64 `json:"threshold"`
+}
+
+func handleCompactProjectSession(agt *agent.Agent) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		store, _, ok := agt.ProjectSessions(c.Param("id"))
+		if !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "project not found"})
+			return
+		}
+		sess, ok := store.Get(c.Param("session_id"))
+		if !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+			return
+		}
+		var req compactSessionRequest
+		if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		cfg := agt.Config().Agent.Context
+		keepLast := cfg.KeepLastMessages
+		if req.KeepLastMessages > 0 {
+			keepLast = req.KeepLastMessages
+		}
+		threshold := cfg.CompressThreshold
+		if req.Threshold > 0 {
+			threshold = req.Threshold
+		}
+		if _, ok := sess.CompactArchive(cfg.MaxTokens, threshold, keepLast); !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "session context is below compact threshold"})
+			return
+		}
+		snap := sess.Snapshot()
+		c.JSON(http.StatusOK, gin.H{
+			"context":   sess.ContextStats(cfg.MaxTokens),
+			"usage":     snap.Usage,
+			"summaries": snap.Summaries,
+			"archives":  snap.Archives,
+		})
+	}
+}
+
+func handleRestoreProjectSessionArchive(agt *agent.Agent) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		store, _, ok := agt.ProjectSessions(c.Param("id"))
+		if !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "project not found"})
+			return
+		}
+		sess, ok := store.Get(c.Param("session_id"))
+		if !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+			return
+		}
+		archiveID := c.Param("archive_id")
+		restored, err := sess.RestoreCompactArchive(archiveID)
+		if err != nil {
+			if strings.Contains(err.Error(), "not found") {
+				c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+				return
+			}
+			if strings.Contains(err.Error(), "conflict") {
+				c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		snap := sess.Snapshot()
+		c.JSON(http.StatusOK, gin.H{
+			"session":   snap,
+			"context":   sess.ContextStats(agt.Config().Agent.Context.MaxTokens),
+			"usage":     snap.Usage,
+			"summaries": snap.Summaries,
+			"archives":  snap.Archives,
+			"restored":  len(restored),
 		})
 	}
 }
@@ -396,28 +487,73 @@ func handleListSubagentTasks(agt *agent.Agent) gin.HandlerFunc {
 	}
 }
 
+type chatRequest struct {
+	Prompt    string   `json:"prompt"`
+	SessionID string   `json:"session_id"`
+	AgentID   string   `json:"agent_id"`
+	ProjectID string   `json:"project_id"`
+	ImageURL  []string `json:"image_url"`
+}
+
+const (
+	maxImagesPerRequest = 4
+	maxImageSizeBytes   = 4 * 1024 * 1024 // 4MB
+)
+
 // handleChatSSE streams chat events over SSE.
 func handleChatSSE(agt *agent.Agent) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		prompt := c.Query("prompt")
-		if prompt == "" {
+		var req chatRequest
+		if c.Request.Method == http.MethodPost {
+			if err := c.ShouldBindJSON(&req); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+		} else {
+			req.Prompt = c.Query("prompt")
+			req.SessionID = c.Query("session_id")
+			req.AgentID = c.Query("agent_id")
+			req.ProjectID = c.Query("project_id")
+			req.ImageURL = c.QueryArray("image_url")
+		}
+
+		if req.Prompt == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "prompt is required"})
 			return
 		}
-		sessionID := c.Query("session_id")
-		if sessionID == "" {
-			sessionID = "default"
+		if req.SessionID == "" {
+			req.SessionID = "default"
 		}
 
-		agentID := c.Query("agent_id")
-		parts := []types.ContentPart{{Type: "text", Text: prompt}}
-		for _, imageURL := range c.QueryArray("image_url") {
+		// Image attachment guard: max 4 images, ~4MB each
+		if len(req.ImageURL) > maxImagesPerRequest {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("maximum %d images allowed per request", maxImagesPerRequest)})
+			return
+		}
+		for _, imageURL := range req.ImageURL {
+			if imageURL != "" {
+				// Check image size for data URLs
+				if strings.HasPrefix(imageURL, "data:") {
+					// Extract base64 data
+					parts := strings.SplitN(imageURL, ",", 2)
+					if len(parts) == 2 {
+						decoded, err := base64.StdEncoding.DecodeString(parts[1])
+						if err == nil && len(decoded) > maxImageSizeBytes {
+							c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("image exceeds maximum size of %dMB", maxImageSizeBytes/(1024*1024))})
+							return
+						}
+					}
+				}
+			}
+		}
+
+		parts := []types.ContentPart{{Type: "text", Text: req.Prompt}}
+		for _, imageURL := range req.ImageURL {
 			if imageURL != "" {
 				parts = append(parts, types.ContentPart{Type: "image_url", ImageURL: &types.ImageURL{URL: imageURL}})
 			}
 		}
-		projectID := c.Query("project_id")
-		events, err := agt.RunWithAgentProjectParts(c.Request.Context(), sessionID, agentID, projectID, parts)
+		events, err := agt.RunWithAgentProjectParts(c.Request.Context(), req.SessionID, req.AgentID, req.ProjectID, parts)
 		if err != nil {
 			if errors.Is(err, agent.ErrSessionProjectConflict) {
 				c.JSON(http.StatusConflict, gin.H{"error": err.Error()})

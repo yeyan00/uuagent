@@ -3,6 +3,7 @@ package session_test
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -188,6 +189,175 @@ func TestProjectSessionContextAPIReportsCurrentContextAndUsage(t *testing.T) {
 	}
 }
 
+func TestProjectSessionContextAPIReportsArchivesFromSessionSnapshot(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	t.Setenv("UUAGENT_HOME", home)
+	if err := os.MkdirAll(workspace, 0755); err != nil {
+		t.Fatal(err)
+	}
+	gin.SetMode(gin.TestMode)
+	a := agent.New(config.Default())
+	r := gin.New()
+	server.RegisterRoutes(r.Group("/api"), a)
+	projectID := createProjectForSessionTest(t, r, workspace)
+
+	// Create session and add messages
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/sessions", strings.NewReader(`{"id":"s-context-archives"}`)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("create session status=%d body=%s", w.Code, w.Body.String())
+	}
+	store, _, ok := a.ProjectSessions(projectID)
+	if !ok {
+		t.Fatal("project session store missing")
+	}
+	sess, ok := store.Get("s-context-archives")
+	if !ok {
+		t.Fatal("project session missing")
+	}
+	for i := 0; i < 8; i++ {
+		sess.Append("user", strings.Repeat("archive candidate message ", 120)+fmt.Sprintf("%d", i))
+	}
+
+	// Compact the session
+	w = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/sessions/s-context-archives/compact", strings.NewReader(`{"keep_last_messages":1,"threshold":0.01}`))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("compact status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	// Now fetch context and verify archives are present
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/sessions/s-context-archives/context", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("context status=%d body=%s", w.Code, w.Body.String())
+	}
+	var got struct {
+		Archives []struct {
+			ID string `json:"id"`
+		} `json:"archives"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Archives) == 0 {
+		t.Fatalf("expected archives in context response, got: %s", w.Body.String())
+	}
+}
+
+func TestProjectSessionCompactAPIArchivesContext(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	t.Setenv("UUAGENT_HOME", home)
+	if err := os.MkdirAll(workspace, 0755); err != nil {
+		t.Fatal(err)
+	}
+	gin.SetMode(gin.TestMode)
+	a := agent.New(config.Default())
+	r := gin.New()
+	server.RegisterRoutes(r.Group("/api"), a)
+	projectID := createProjectForSessionTest(t, r, workspace)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/sessions", strings.NewReader(`{"id":"s-compact"}`)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("create session status=%d body=%s", w.Code, w.Body.String())
+	}
+	store, _, ok := a.ProjectSessions(projectID)
+	if !ok {
+		t.Fatal("project session store missing")
+	}
+	sess, ok := store.Get("s-compact")
+	if !ok {
+		t.Fatal("project session missing")
+	}
+	for i := range 8 {
+		sess.Append("user", strings.Repeat("archive candidate message ", 120)+fmt.Sprintf("%d", i))
+	}
+
+	w = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/sessions/s-compact/compact", strings.NewReader(`{"keep_last_messages":1,"threshold":0.01}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("compact status=%d body=%s", w.Code, w.Body.String())
+	}
+	var got struct {
+		Context struct {
+			EstimatedTokens int     `json:"estimated_tokens"`
+			MaxTokens       int     `json:"max_tokens"`
+			Percent         float64 `json:"percent"`
+		} `json:"context"`
+		Usage     map[string]any `json:"usage"`
+		Summaries []any          `json:"summaries"`
+		Archives  []any          `json:"archives"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Context.MaxTokens != 32000 || got.Context.EstimatedTokens == 0 || got.Context.Percent <= 0 {
+		t.Fatalf("unexpected context stats: %+v", got.Context)
+	}
+	if got.Usage == nil {
+		t.Fatalf("usage missing from compact response: %s", w.Body.String())
+	}
+	if len(got.Summaries) == 0 {
+		t.Fatalf("summaries missing from compact response: %s", w.Body.String())
+	}
+	if len(got.Archives) == 0 {
+		t.Fatalf("archives missing from compact response: %s", w.Body.String())
+	}
+}
+
+func TestProjectSessionCompactMalformedJSON(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	t.Setenv("UUAGENT_HOME", home)
+	if err := os.MkdirAll(workspace, 0755); err != nil {
+		t.Fatal(err)
+	}
+	gin.SetMode(gin.TestMode)
+	cfg := config.Default()
+	cfg.Agent.Context.CompressThreshold = 0.01
+	a := agent.New(cfg)
+	r := gin.New()
+	server.RegisterRoutes(r.Group("/api"), a)
+	projectID := createProjectForSessionTest(t, r, workspace)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/sessions", strings.NewReader(`{"id":"s-malformed"}`)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("create session status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	store, _, ok := a.ProjectSessions(projectID)
+	if !ok {
+		t.Fatal("project session store missing")
+	}
+	sess, ok := store.Get("s-malformed")
+	if !ok {
+		t.Fatal("project session missing")
+	}
+	for i := range 20 {
+		sess.Append("user", strings.Repeat("archive candidate message ", 120)+fmt.Sprintf("%d", i))
+	}
+
+	w = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/sessions/s-malformed/compact", strings.NewReader(`{"keep_last_messages":`))
+	req.Header.Set("Content-Type", "application/json")
+
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected malformed compact JSON to return 400, status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
 func TestChatRejectsSessionProjectSwitch(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "home")
 	workspaceA := filepath.Join(t.TempDir(), "workspace-a")
@@ -224,6 +394,184 @@ func TestChatRejectsSessionProjectSwitch(t *testing.T) {
 	}
 }
 
+func TestProjectSessionRestoreArchiveAPIRestoresMessagesAndRemovesArchive(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	t.Setenv("UUAGENT_HOME", home)
+	if err := os.MkdirAll(workspace, 0755); err != nil {
+		t.Fatal(err)
+	}
+	gin.SetMode(gin.TestMode)
+	a := agent.New(config.Default())
+	r := gin.New()
+	server.RegisterRoutes(r.Group("/api"), a)
+	projectID := createProjectForSessionTest(t, r, workspace)
+
+	// Create session and add messages
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/sessions", strings.NewReader(`{"id":"s-restore"}`)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("create session status=%d body=%s", w.Code, w.Body.String())
+	}
+	store, _, ok := a.ProjectSessions(projectID)
+	if !ok {
+		t.Fatal("project session store missing")
+	}
+	sess, ok := store.Get("s-restore")
+	if !ok {
+		t.Fatal("project session missing")
+	}
+	for i := 0; i < 8; i++ {
+		sess.Append("user", strings.Repeat("archive candidate message ", 120)+fmt.Sprintf("%d", i))
+	}
+
+	// Compact the session
+	w = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/sessions/s-restore/compact", strings.NewReader(`{"keep_last_messages":1,"threshold":0.01}`))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("compact status=%d body=%s", w.Code, w.Body.String())
+	}
+	var compactRes struct {
+		Archives []struct {
+			ID string `json:"id"`
+		} `json:"archives"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &compactRes); err != nil {
+		t.Fatal(err)
+	}
+	if len(compactRes.Archives) == 0 {
+		t.Fatal("expected archive in compact response")
+	}
+	archiveID := compactRes.Archives[0].ID
+
+	// Restore the archive via API
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/sessions/s-restore/archives/"+archiveID+"/restore", nil)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("restore status=%d body=%s", w.Code, w.Body.String())
+	}
+	var restoreRes struct {
+		Session   map[string]interface{} `json:"session"`
+		Context   map[string]interface{} `json:"context"`
+		Usage     map[string]interface{} `json:"usage"`
+		Summaries []interface{}          `json:"summaries"`
+		Archives  []interface{}          `json:"archives"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &restoreRes); err != nil {
+		t.Fatal(err)
+	}
+	if restoreRes.Session == nil {
+		t.Fatal("expected session in restore response")
+	}
+	if len(restoreRes.Archives) != 0 {
+		t.Fatalf("expected 0 archives after restore, got %d", len(restoreRes.Archives))
+	}
+	if len(restoreRes.Summaries) != 0 {
+		t.Fatalf("expected 0 summaries after restore, got %d", len(restoreRes.Summaries))
+	}
+
+	// Verify session messages were restored
+	snap := sess.Snapshot()
+	if len(snap.Messages) == 0 {
+		t.Fatal("expected messages after restore")
+	}
+}
+
+func TestProjectSessionRestoreArchiveAPIReturns404ForMissingArchive(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	t.Setenv("UUAGENT_HOME", home)
+	if err := os.MkdirAll(workspace, 0755); err != nil {
+		t.Fatal(err)
+	}
+	gin.SetMode(gin.TestMode)
+	a := agent.New(config.Default())
+	r := gin.New()
+	server.RegisterRoutes(r.Group("/api"), a)
+	projectID := createProjectForSessionTest(t, r, workspace)
+
+	// Create session
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/sessions", strings.NewReader(`{"id":"s-restore-404"}`)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("create session status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	// Try to restore non-existent archive
+	w = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/sessions/s-restore-404/archives/non-existent-archive/restore", nil)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for missing archive, got status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestProjectSessionRestoreArchiveAPIReturns409OnMismatch(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	t.Setenv("UUAGENT_HOME", home)
+	if err := os.MkdirAll(workspace, 0755); err != nil {
+		t.Fatal(err)
+	}
+	gin.SetMode(gin.TestMode)
+	a := agent.New(config.Default())
+	r := gin.New()
+	server.RegisterRoutes(r.Group("/api"), a)
+	projectID := createProjectForSessionTest(t, r, workspace)
+
+	// Create session and add messages
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/sessions", strings.NewReader(`{"id":"s-restore-409"}`)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("create session status=%d body=%s", w.Code, w.Body.String())
+	}
+	store, _, ok := a.ProjectSessions(projectID)
+	if !ok {
+		t.Fatal("project session store missing")
+	}
+	sess, ok := store.Get("s-restore-409")
+	if !ok {
+		t.Fatal("project session missing")
+	}
+	for i := 0; i < 8; i++ {
+		sess.Append("user", strings.Repeat("archive candidate message ", 120)+fmt.Sprintf("%d", i))
+	}
+
+	w = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/sessions/s-restore-409/compact", strings.NewReader(`{"keep_last_messages":2,"threshold":0.01}`))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("compact status=%d body=%s", w.Code, w.Body.String())
+	}
+	var compactRes struct {
+		Archives []struct {
+			ID string `json:"id"`
+		} `json:"archives"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &compactRes); err != nil {
+		t.Fatal(err)
+	}
+	if len(compactRes.Archives) == 0 {
+		t.Fatal("expected archive in compact response")
+	}
+	archiveID := compactRes.Archives[0].ID
+
+	// Add a new message to break the match
+	sess.Append("user", "new message after compact")
+
+	// Try to restore with mismatched state
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/sessions/s-restore-409/archives/"+archiveID+"/restore", nil)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409 for mismatch, got status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
 func createProjectForSessionTest(t *testing.T, r http.Handler, workspace string) string {
 	t.Helper()
 	w := httptest.NewRecorder()
@@ -238,4 +586,123 @@ func createProjectForSessionTest(t *testing.T, r http.Handler, workspace string)
 		t.Fatal(err)
 	}
 	return p.ID
+}
+
+func TestChatPostWithImageBodyAcceptsImagesInJSONBody(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	t.Setenv("UUAGENT_HOME", home)
+	if err := os.MkdirAll(workspace, 0755); err != nil {
+		t.Fatal(err)
+	}
+	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"I see the image"}}]}`))
+	}))
+	defer llm.Close()
+	cfg := config.Default()
+	cfg.Agent.ProxyURL = llm.URL + "/v1"
+	gin.SetMode(gin.TestMode)
+	a := agent.New(cfg)
+	r := gin.New()
+	server.RegisterRoutes(r.Group("/api"), a)
+	projectID := createProjectForSessionTest(t, r, workspace)
+
+	body := `{"prompt":"What is in this image?","session_id":"s-post-img","project_id":"` + projectID + `","image_url":["data:image/png;base64,test123"]}`
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("post chat status=%d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "I see the image") {
+		t.Fatalf("expected response to contain assistant message, got: %s", w.Body.String())
+	}
+}
+
+func TestChatPostWithMultipleImagesInBody(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	t.Setenv("UUAGENT_HOME", home)
+	if err := os.MkdirAll(workspace, 0755); err != nil {
+		t.Fatal(err)
+	}
+	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"I see multiple images"}}]}`))
+	}))
+	defer llm.Close()
+	cfg := config.Default()
+	cfg.Agent.ProxyURL = llm.URL + "/v1"
+	gin.SetMode(gin.TestMode)
+	a := agent.New(cfg)
+	r := gin.New()
+	server.RegisterRoutes(r.Group("/api"), a)
+	projectID := createProjectForSessionTest(t, r, workspace)
+
+	body := `{"prompt":"Compare these images","session_id":"s-post-multi","project_id":"` + projectID + `","image_url":["data:image/png;base64,img1","data:image/png;base64,img2","data:image/png;base64,img3"]}`
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("post chat with multiple images status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestChatImageAttachmentGuardRejectsTooManyImages(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	t.Setenv("UUAGENT_HOME", home)
+	if err := os.MkdirAll(workspace, 0755); err != nil {
+		t.Fatal(err)
+	}
+	gin.SetMode(gin.TestMode)
+	a := agent.New(config.Default())
+	r := gin.New()
+	server.RegisterRoutes(r.Group("/api"), a)
+	projectID := createProjectForSessionTest(t, r, workspace)
+
+	// Try to send 5 images (exceeds max of 4)
+	body := `{"prompt":"Too many images","session_id":"s-guard-1","project_id":"` + projectID + `","image_url":["data:image/png;base64,img1","data:image/png;base64,img2","data:image/png;base64,img3","data:image/png;base64,img4","data:image/png;base64,img5"]}`
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400 for too many images, got %d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "maximum 4 images") {
+		t.Fatalf("expected error message about max 4 images, got: %s", w.Body.String())
+	}
+}
+
+func TestChatImageAttachmentGuardRejectsOversizedImage(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	t.Setenv("UUAGENT_HOME", home)
+	if err := os.MkdirAll(workspace, 0755); err != nil {
+		t.Fatal(err)
+	}
+	gin.SetMode(gin.TestMode)
+	a := agent.New(config.Default())
+	r := gin.New()
+	server.RegisterRoutes(r.Group("/api"), a)
+	projectID := createProjectForSessionTest(t, r, workspace)
+
+	// Create a base64 string larger than 4MB (4MB = 4 * 1024 * 1024 bytes, base64 adds ~33% overhead)
+	// We need ~5.5MB of base64 to exceed 4MB decoded
+	largeData := strings.Repeat("A", 6*1024*1024) // ~6MB of base64
+	body := `{"prompt":"Oversized image","session_id":"s-guard-2","project_id":"` + projectID + `","image_url":["data:image/png;base64,` + largeData + `"]}`
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400 for oversized image, got %d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "4MB") {
+		t.Fatalf("expected error message about 4MB limit, got: %s", w.Body.String())
+	}
 }

@@ -54,6 +54,19 @@ type ContextStats struct {
 	Percent         float64 `json:"percent"`
 }
 
+type CompactArchive struct {
+	ID                 string             `json:"id"`
+	SessionID          string             `json:"session_id"`
+	Summary            contextmgr.Summary `json:"summary"`
+	Messages           []types.Message    `json:"messages"`
+	FromIndex          int                `json:"from_index"`
+	ToIndex            int                `json:"to_index"`
+	TokenBefore        int                `json:"token_before"`
+	TokenAfter         int                `json:"token_after"`
+	ExpectedMsgCount   int                `json:"expected_msg_count"`
+	CreatedAt          time.Time          `json:"created_at"`
+}
+
 // Session is one conversation thread.
 type Session struct {
 	ID          string               `json:"id"`
@@ -65,6 +78,7 @@ type Session struct {
 	Runs        []RunInfo            `json:"runs,omitempty"`
 	Usage       TokenUsage           `json:"usage,omitempty"`
 	Summaries   []contextmgr.Summary `json:"summaries,omitempty"`
+	Archives    []CompactArchive     `json:"archives,omitempty"`
 	Memory      string               `json:"memory_snapshot,omitempty"`
 	CreatedAt   int64                `json:"created_at"`
 	UpdatedAt   int64                `json:"updated_at"`
@@ -315,6 +329,101 @@ func (s *Session) ListSummaries() []contextmgr.Summary {
 	return append([]contextmgr.Summary(nil), s.Summaries...)
 }
 
+// CompactArchive compacts active context and persists archived messages.
+func (s *Session) CompactArchive(maxTokens int, threshold float64, keepLast int) (CompactArchive, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !contextmgr.ShouldCompress(s.Messages, maxTokens, threshold) {
+		return CompactArchive{}, false
+	}
+	result := contextmgr.CompactOldMessages(s.ID, s.Messages, keepLast)
+	if !result.Compacted {
+		return CompactArchive{}, false
+	}
+	archive := CompactArchive{
+		ID:               fmt.Sprintf("archive-%d", time.Now().UnixNano()),
+		SessionID:        s.ID,
+		Summary:          result.Summary,
+		Messages:         append([]types.Message(nil), result.ArchivedMessages...),
+		FromIndex:        result.Summary.FromIndex,
+		ToIndex:          result.Summary.ToIndex,
+		TokenBefore:      result.Summary.TokenBefore,
+		TokenAfter:       result.Summary.TokenAfter,
+		ExpectedMsgCount: len(result.Messages),
+		CreatedAt:        time.Unix(result.Summary.CreatedAt, 0),
+	}
+	s.Messages = result.Messages
+	s.Summaries = append(s.Summaries, result.Summary)
+	s.Archives = append(s.Archives, archive)
+	s.UpdatedAt = time.Now().Unix()
+	_ = s.saveLocked()
+	return archive, true
+}
+
+// ListArchives returns a copy of compact archives.
+func (s *Session) ListArchives() []CompactArchive {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return cloneArchives(s.Archives)
+}
+
+func (s *Session) RestoreCompactArchive(archiveID string) ([]types.Message, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	archiveIdx := -1
+	var archive CompactArchive
+	for i, a := range s.Archives {
+		if a.ID == archiveID {
+			archiveIdx = i
+			archive = a
+			break
+		}
+	}
+	if archiveIdx == -1 {
+		return nil, fmt.Errorf("archive %s not found", archiveID)
+	}
+
+	if len(s.Messages) == 0 {
+		return nil, fmt.Errorf("conflict: session has no messages to restore against")
+	}
+	firstMsg := s.Messages[0]
+	if firstMsg.Role != "system" || firstMsg.Content != archive.Summary.Summary {
+		return nil, fmt.Errorf("conflict: session state mismatch, cannot restore archive")
+	}
+	if len(s.Messages) != archive.ExpectedMsgCount {
+		return nil, fmt.Errorf("conflict: session state mismatch, cannot restore archive")
+	}
+
+	restored := make([]types.Message, 0, len(archive.Messages)+len(s.Messages)-1)
+	restored = append(restored, archive.Messages...)
+	if len(s.Messages) > 1 {
+		restored = append(restored, s.Messages[1:]...)
+	}
+
+	newSummaries := make([]contextmgr.Summary, 0, len(s.Summaries))
+	for _, summary := range s.Summaries {
+		if summary.ID != archive.Summary.ID {
+			newSummaries = append(newSummaries, summary)
+		}
+	}
+	s.Summaries = newSummaries
+
+	newArchives := make([]CompactArchive, 0, len(s.Archives))
+	for i, a := range s.Archives {
+		if i != archiveIdx {
+			newArchives = append(newArchives, a)
+		}
+	}
+	s.Archives = newArchives
+
+	s.Messages = restored
+	s.UpdatedAt = time.Now().Unix()
+	_ = s.saveLocked()
+
+	return restored, nil
+}
+
 // Snapshot returns a copy safe for JSON responses.
 func (s *Session) Snapshot() Session {
 	s.mu.Lock()
@@ -323,6 +432,7 @@ func (s *Session) Snapshot() Session {
 	cp.Messages = append([]types.Message(nil), s.Messages...)
 	cp.Runs = append([]RunInfo(nil), s.Runs...)
 	cp.Summaries = append([]contextmgr.Summary(nil), s.Summaries...)
+	cp.Archives = cloneArchives(s.Archives)
 	return cp
 }
 
@@ -388,8 +498,9 @@ func (s *Store) Fork(parentID, newID string, upto int) (*Session, error) {
 
 	now := time.Now().Unix()
 	summaries := append([]contextmgr.Summary(nil), parent.Summaries...)
+	archives := cloneArchives(parent.Archives)
 	runs := append([]RunInfo(nil), parent.Runs...)
-	child := &Session{ID: newID, Title: newID, ParentID: parentID, Messages: messages, Runs: runs, Summaries: summaries, CreatedAt: now, UpdatedAt: now, path: s.pathFor(newID)}
+	child := &Session{ID: newID, Title: newID, ParentID: parentID, Messages: messages, Runs: runs, Summaries: summaries, Archives: archives, CreatedAt: now, UpdatedAt: now, path: s.pathFor(newID)}
 	s.sessions[newID] = child
 	if err := child.saveLocked(); err != nil {
 		return nil, err
@@ -426,6 +537,15 @@ func (s *Store) List() []Session {
 
 func (s *Store) pathFor(id string) string {
 	return filepath.Join(s.root, safeFileName(id)+".json")
+}
+
+func cloneArchives(archives []CompactArchive) []CompactArchive {
+	out := make([]CompactArchive, len(archives))
+	for i, archive := range archives {
+		out[i] = archive
+		out[i].Messages = append([]types.Message(nil), archive.Messages...)
+	}
+	return out
 }
 
 func (s *Session) saveLocked() error {
