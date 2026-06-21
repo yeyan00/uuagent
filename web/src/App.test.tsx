@@ -884,7 +884,7 @@ describe('App', () => {
     await waitFor(() => expect(calls.some(c => c.url === '/api/chat')).toBe(true))
     const chatCall = calls.find(c => c.url === '/api/chat')
     expect(chatCall?.init?.method).toBe('POST')
-    expect(chatCall?.init?.headers?.['Content-Type']).toBe('application/json')
+    expect((chatCall?.init?.headers as Record<string, string>)?.['Content-Type']).toBe('application/json')
     const body = JSON.parse(chatCall?.init?.body as string)
     expect(body.image_url).toBeDefined()
     expect(body.image_url.length).toBeGreaterThan(0)

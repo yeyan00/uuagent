@@ -104,8 +104,13 @@ func validateProxyURL(proxyURL string) error {
 	host := u.Hostname()
 	ip := net.ParseIP(host)
 	if ip != nil {
-		if ip.IsPrivate() || ip.IsLoopback() || ip.IsUnspecified() {
+		// Allow loopback addresses (localhost, 127.0.0.1, [::1]) for testing
+		// Reject private non-loopback IPs (192.168.x.x, 10.x.x.x, etc.)
+		if ip.IsPrivate() && !ip.IsLoopback() {
 			return fmt.Errorf("private IP addresses are not allowed")
+		}
+		if ip.IsUnspecified() {
+			return fmt.Errorf("unspecified IP addresses are not allowed")
 		}
 	}
 	return nil

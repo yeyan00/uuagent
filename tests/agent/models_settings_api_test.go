@@ -2,7 +2,6 @@ package agent_test
 
 import (
 	"encoding/json"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -228,24 +227,16 @@ func TestModelsTestAPI_rejects_private_ip_proxy_url(t *testing.T) {
 }
 
 func TestModelsTestAPI_redacts_upstream_response_body_in_error(t *testing.T) {
-	// Use a custom listener on localhost to bypass private IP check in tests
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	upstream := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// Loopback addresses should be allowed, and error responses should be redacted
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
 		w.Write([]byte(`{"error":"invalid_api_key_12345","message":"Authentication failed with key sk-abc123"}`))
 	}))
-	upstream.Listener = listener
-	upstream.Start()
 	defer upstream.Close()
 
 	t.Setenv("UUAGENT_HOME", filepath.Join(t.TempDir(), "home"))
 	cfg := config.Default()
-	// Disable private IP check for this test by using a custom HTTP client that validates URLs
-	// We'll test the redaction logic separately
 	r := newModelsSettingsRouter(cfg)
 
 	body := `{"proxy_url":"` + upstream.URL + `/v1"}`
@@ -254,17 +245,19 @@ func TestModelsTestAPI_redacts_upstream_response_body_in_error(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
 
-	// The request will be rejected due to private IP check, which is expected behavior
-	// The important thing is that if it did reach the upstream, the error would be redacted
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected status 400 (private IP rejected), got %d body=%s", w.Code, w.Body.String())
+	// Loopback should be allowed, so request reaches upstream and returns 401
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status 401 from upstream, got %d body=%s", w.Code, w.Body.String())
 	}
 	var resp modelsTestResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
-	// Verify private IP is rejected
-	if !strings.Contains(resp.Error, "private IP") {
-		t.Fatalf("expected private IP error, got: %s", resp.Error)
+	// Verify sensitive data is redacted
+	if strings.Contains(resp.Error, "invalid_api_key_12345") || strings.Contains(resp.Error, "sk-abc123") {
+		t.Fatalf("error should not contain sensitive upstream data, got: %s", resp.Error)
+	}
+	if !strings.Contains(resp.Error, "[upstream error redacted]") {
+		t.Fatalf("expected redacted error message, got: %s", resp.Error)
 	}
 }
