@@ -4,7 +4,7 @@ import { AgentsSettings } from './components/AgentsSettings'
 import { SubagentsSettings } from './components/SubagentsSettings'
 import { ExtensionsPanel } from './components/ExtensionsPanel'
 import type { ExtensionStatus } from './types'
-import { Folder, Puzzle, Clock, Settings } from 'lucide-react'
+import { Folder, MessageSquare, Puzzle, Clock, Settings } from 'lucide-react'
 
 interface ToolCallRecord { id?: string; function?: { name?: string; arguments?: string }; name?: string; args?: string }
 interface ChatEvent { type: string; run_id?: string; model?: string; tier?: string; text?: string; tool_name?: string; tool_id?: string; args?: string }
@@ -32,11 +32,12 @@ interface GoalActivity { id: string; type: string; text: string; subagent_id?: s
 interface Goal { id: string; project_id: string; session_id?: string; agent_id?: string; goal: string; status: string; plan?: GoalStep[]; todos?: GoalTodo[]; activities?: GoalActivity[] }
 
 
-type MainPage = 'projects' | 'extensions' | 'schedules' | 'settings'
+type MainPage = 'projects' | 'chat' | 'extensions' | 'schedules' | 'settings'
 type ProjectSettingsTab = 'memory' | 'context' | 'config'
 
 const navItems: Array<{ id: MainPage; label: string; icon: ReactNode }> = [
   { id: 'projects', label: 'Projects', icon: <Folder size={20} /> },
+  { id: 'chat', label: 'Chat', icon: <MessageSquare size={20} /> },
   { id: 'extensions', label: 'Extensions', icon: <Puzzle size={20} /> },
   { id: 'schedules', label: 'Schedules', icon: <Clock size={20} /> },
   { id: 'settings', label: 'Settings', icon: <Settings size={20} /> },
@@ -1021,49 +1022,47 @@ function App({ initialWorkspaceTab }: AppProps = {}) {
     )}
   </div>
 
+  const renderProjectDrawerList = () => <div className="projectDrawerList">
+    {projects.length === 0 && <div className="emptyPanel">No projects yet.</div>}
+    {projects.map(p => {
+      const list = projectSessions[p.id] || []
+      const expanded = p.id === projectId || list.length > 0
+      return <section key={p.id} className="projectDrawer">
+        <div className={p.id === projectId ? 'projectDrawerHead active' : 'projectDrawerHead'}>
+          <button className="projectToggle" onClick={() => openProject(p.id).catch(err=>setStatus(String(err)))}><span>{expanded ? '▾' : '▸'}</span><strong>{p.name}</strong><small>{p.workspace_path}</small></button>
+          <button className="miniButton" title="New session" onClick={() => createSession(p.id).catch(err=>setStatus(String(err)))}>＋</button>
+          <button className="miniButton" title="Project settings" onClick={() => { setProjectId(p.id); setSettingsProjectId(p.id); setProjectSettingsTab('memory') }}>⚙</button>
+        </div>
+        {expanded && <div className="sessionList">
+          {list.length === 0 && <div className="emptyMini">No sessions</div>}
+          {list.map(s => <div key={s.id} className={s.id === sessionId ? 'sessionRow active' : 'sessionRow'}>
+            <button className="sessionTitle" onClick={() => loadSession(s.id, p.id).catch(err=>setStatus(String(err)))}><span>{s.title || s.id}</span><small>{s.messages?.length || 0} messages</small></button>
+            <button className="miniButton" title="Fork" onClick={() => forkSession(s.id, p.id).catch(err=>setStatus(String(err)))}>⎇</button>
+            <button className="miniButton" title="Rename" onClick={() => renameSession(s.id, p.id).catch(err=>setStatus(String(err)))}>✎</button>
+            <button className="miniButton" title="Delete" onClick={() => deleteSession(s.id, p.id).catch(err=>setStatus(String(err)))}>×</button>
+          </div>)}
+        </div>}
+      </section>
+    })}
+  </div>
+
   const renderSidebarBody = () => {
-    if (mainPage !== 'projects') {
-      if (mainPage === 'settings') return renderSettingsSideMenu()
-      if (mainPage === 'extensions') {
-        return (
-          <ExtensionsPanel
-            extensions={extensions}
-            selectedExtensionId={selectedExtensionId}
-            onSelectExtension={setSelectedExtensionId}
-            onStartExtension={startExtension}
-            onStopExtension={stopExtension}
-            onRestartExtension={restartExtension}
-          />
-        )
-      }
-      const text = 'Create recurring project scans, tests, reports and knowledge refresh jobs.'
-      return <div className="sidePlaceholder"><h3>{navItems.find(n => n.id === mainPage)?.label}</h3><p>{text}</p><button className="softButton">Coming soon</button></div>
+    if (mainPage === 'projects' || mainPage === 'chat') return renderProjectDrawerList()
+    if (mainPage === 'settings') return renderSettingsSideMenu()
+    if (mainPage === 'extensions') {
+      return (
+        <ExtensionsPanel
+          extensions={extensions}
+          selectedExtensionId={selectedExtensionId}
+          onSelectExtension={setSelectedExtensionId}
+          onStartExtension={startExtension}
+          onStopExtension={stopExtension}
+          onRestartExtension={restartExtension}
+        />
+      )
     }
-
-    return <div className="projectDrawerList">
-      {projects.length === 0 && <div className="emptyPanel">No projects yet.</div>}
-      {projects.map(p => {
-        const list = projectSessions[p.id] || []
-        const expanded = p.id === projectId || list.length > 0
-        return <section key={p.id} className="projectDrawer">
-          <div className={p.id === projectId ? 'projectDrawerHead active' : 'projectDrawerHead'}>
-            <button className="projectToggle" onClick={() => openProject(p.id).catch(err=>setStatus(String(err)))}><span>{expanded ? '▾' : '▸'}</span><strong>{p.name}</strong><small>{p.workspace_path}</small></button>
-            <button className="miniButton" title="New session" onClick={() => createSession(p.id).catch(err=>setStatus(String(err)))}>＋</button>
-            <button className="miniButton" title="Project settings" onClick={() => { setProjectId(p.id); setSettingsProjectId(p.id); setProjectSettingsTab('memory') }}>⚙</button>
-          </div>
-          {expanded && <div className="sessionList">
-            {list.length === 0 && <div className="emptyMini">No sessions</div>}
-            {list.map(s => <div key={s.id} className={s.id === sessionId ? 'sessionRow active' : 'sessionRow'}>
-              <button className="sessionTitle" onClick={() => loadSession(s.id, p.id).catch(err=>setStatus(String(err)))}><span>{s.title || s.id}</span><small>{s.messages?.length || 0} messages</small></button>
-              <button className="miniButton" title="Fork" onClick={() => forkSession(s.id, p.id).catch(err=>setStatus(String(err)))}>⎇</button>
-              <button className="miniButton" title="Rename" onClick={() => renameSession(s.id, p.id).catch(err=>setStatus(String(err)))}>✎</button>
-              <button className="miniButton" title="Delete" onClick={() => deleteSession(s.id, p.id).catch(err=>setStatus(String(err)))}>×</button>
-            </div>)}
-          </div>}
-        </section>
-      })}
-    </div>
-
+    const text = 'Create recurring project scans, tests, reports and knowledge refresh jobs.'
+    return <div className="sidePlaceholder"><h3>{navItems.find(n => n.id === mainPage)?.label}</h3><p>{text}</p><button className="softButton">Coming soon</button></div>
   }
 
   return <div className="appDesktop">
@@ -1071,7 +1070,7 @@ function App({ initialWorkspaceTab }: AppProps = {}) {
       <aside className="navRail">
         <div className="brandBlock"><div className="brandMark">U</div><div className="brandMini">UA</div></div>
         <nav className="navList">
-          {navItems.map(item => <button key={item.id} className={mainPage === item.id ? 'navItem active' : 'navItem'} onClick={() => { setMainPage(item.id); if (item.id === 'settings') setWorkspaceMode('settings') }} title={item.label} aria-label={item.label}><span className="navIcon">{item.icon}</span><span>{item.label}</span></button>)}
+          {navItems.map(item => <button key={item.id} className={mainPage === item.id ? 'navItem active' : 'navItem'} onClick={() => { setMainPage(item.id); setWorkspaceMode(item.id === 'settings' ? 'settings' : 'chat') }} title={item.label} aria-label={item.label}><span className="navIcon">{item.icon}</span><span>{item.label}</span></button>)}
         </nav>
       </aside>
 
@@ -1104,7 +1103,11 @@ function App({ initialWorkspaceTab }: AppProps = {}) {
           </div>
         </header>
 
-        {workspaceMode === 'settings' ? <section className="settingsWorkspace">{renderSettingsBody()}</section> : <>
+        {workspaceMode === 'settings' ? <section className="settingsWorkspace">{renderSettingsBody()}</section> : mainPage === 'chat' && !projectId && messages.length === 0 && !isStreaming ? (
+          <section className="messagesPane">
+            <div className="emptyState chatEmptyState"><div>Chat</div><h2>Choose or create a project</h2><p>Select a project from Projects before starting Chat.</p><button className="primaryButton" onClick={() => setMainPage('projects')}>Open Projects</button></div>
+          </section>
+        ) : <>
           {workspaceTab === 'goal' ? (
             <section className="goalWorkspace">
               <div className="goalPanel">

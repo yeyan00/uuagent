@@ -1,6 +1,6 @@
 import React from 'react'
 import { describe, expect, it, vi, afterEach } from 'vitest'
-import { fireEvent, render, screen, waitFor, cleanup } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, cleanup, within } from '@testing-library/react'
 import App from './App'
 
 afterEach(() => {
@@ -101,10 +101,13 @@ describe('App', () => {
     fireEvent.click(screen.getByText('Send'))
     expect(await screen.findByText('partial answer')).toBeTruthy()
     fireEvent.click(await screen.findByTitle('Settings'))
-    expect(await screen.findByText('Chat')).toBeTruthy()
+    const navRail = document.querySelector('.navRail')
+    expect(navRail).toBeTruthy()
+    const chatNav = within(navRail as HTMLElement).getByRole('button', { name: 'Chat' })
+    expect(chatNav).toBeTruthy()
     expect(await screen.findByText('Stop')).toBeTruthy()
     controller.enqueue(encoder.encode('data: {"type":"content","text":" after settings"}\n\n'))
-    fireEvent.click(await screen.findByText('Chat'))
+    fireEvent.click(chatNav)
     expect(await screen.findByText('partial answer after settings')).toBeTruthy()
     fireEvent.click(await screen.findByText('Stop'))
     await waitFor(() => expect(calls).toContain('POST /api/runs/run-overlay/stop'))
@@ -1572,7 +1575,7 @@ describe('App', () => {
     })
   })
 
-  it('navigation icon buttons keep accessible names for Projects Extensions Schedules Settings', async () => {
+  it('navigation icon buttons keep accessible names for Projects Chat Extensions Schedules Settings', async () => {
     Element.prototype.scrollIntoView = vi.fn()
     globalThis.fetch = vi.fn(async (url: string) => {
       if (url === '/api/projects') return Response.json({ projects: [] })
@@ -1586,9 +1589,29 @@ describe('App', () => {
     render(<App />)
 
     expect(await screen.findByRole('button', { name: 'Projects' })).toBeTruthy()
+    expect(await screen.findByRole('button', { name: 'Chat' })).toBeTruthy()
     expect(await screen.findByRole('button', { name: 'Extensions' })).toBeTruthy()
     expect(await screen.findByRole('button', { name: 'Schedules' })).toBeTruthy()
     expect(await screen.findByRole('button', { name: 'Settings' })).toBeTruthy()
+  })
+
+  it('shows a project selection empty state when Chat opens without an active project', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    globalThis.fetch = vi.fn(async (url: string) => {
+      if (url === '/api/projects') return Response.json({ projects: [] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/sessions') return Response.json({ sessions: [] })
+      if (url === '/api/memory') return Response.json({ memories: [] })
+      if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
+      return Response.json({})
+    }) as any
+
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Chat' }))
+
+    expect(await screen.findByText('Choose or create a project')).toBeTruthy()
+    expect(await screen.findByText('Select a project from Projects before starting Chat.')).toBeTruthy()
+    expect(await screen.findByRole('button', { name: 'Open Projects' })).toBeTruthy()
   })
 
 })
