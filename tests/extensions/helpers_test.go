@@ -101,6 +101,7 @@ func main() {
 	fmt.Println("fake log line 1")
 	fmt.Println("fake log line 2")
 	fmt.Println("fake log line 3")
+	fmt.Println("MANAGEMENT_STATIC_PATH=" + os.Getenv("MANAGEMENT_STATIC_PATH"))
 	done := make(chan struct{})
 	server := &http.Server{Addr: fmt.Sprintf("127.0.0.1:%d", port)}
 	http.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })

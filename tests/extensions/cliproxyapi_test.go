@@ -145,9 +145,20 @@ func Test_CLIProxyAPI_Start_generates_config_reaches_running_and_captures_bounde
 	if !strings.Contains(configText, "remote-management:") || !strings.Contains(configText, "secret-key:") {
 		t.Fatalf("generated config should enable CLIProxyAPI management routes, got:\n%s", configText)
 	}
+	if !strings.Contains(configText, "disable-auto-update-panel: true") {
+		t.Fatalf("generated config should disable runtime management panel downloads, got:\n%s", configText)
+	}
+	wantManagementPath := filepath.Join(filepath.Dir(binaryPath), "management.html")
+	if status.ManagementPath != wantManagementPath {
+		t.Fatalf("management path = %q, want %q", status.ManagementPath, wantManagementPath)
+	}
+	if status.ManagementInstalled {
+		t.Fatalf("management panel should report missing when management.html is absent")
+	}
 	if status.ManagementURL != "" {
 		t.Fatalf("management URL should be hidden when panel endpoint is unavailable, got %q", status.ManagementURL)
 	}
+	waitForLogLine(t, manager, "MANAGEMENT_STATIC_PATH="+filepath.Dir(binaryPath))
 	waitForLogLine(t, manager, "fake log line 3")
 	logs := manager.Logs()
 	if len(logs) != 2 || !strings.Contains(strings.Join(logs, "\n"), "fake log line 3") {
@@ -163,6 +174,38 @@ func Test_CLIProxyAPI_Start_generates_config_reaches_running_and_captures_bounde
 	}
 	if stopped.Status != extensions.StatusStopped {
 		t.Fatalf("expected stopped status after stop, got %+v", stopped)
+	}
+}
+
+func Test_CLIProxyAPI_Status_reports_packaged_management_panel_when_file_exists(t *testing.T) {
+	// Given
+	root := t.TempDir()
+	binaryPath := buildFakeCLIProxyAPI(t, filepath.Join(root, "plugins"))
+	panelPath := filepath.Join(filepath.Dir(binaryPath), "management.html")
+	if err := os.WriteFile(panelPath, []byte("<html>panel</html>"), 0644); err != nil {
+		t.Fatalf("write packaged management panel: %v", err)
+	}
+	manager := extensions.NewCLIProxyAPIManager(extensions.CLIProxyAPIOptions{
+		PluginRoot: filepath.Join(root, "plugins"),
+		DataRoot:   filepath.Join(root, "data"),
+		Port:       freeTestPort(t),
+	})
+
+	// When
+	status, err := manager.Start(t.Context())
+
+	// Then
+	if err != nil {
+		t.Fatalf("start fake CLIProxyAPI: %v", err)
+	}
+	if !status.ManagementInstalled {
+		t.Fatalf("packaged management panel should report installed")
+	}
+	if status.ManagementPath != panelPath {
+		t.Fatalf("management path = %q, want %q", status.ManagementPath, panelPath)
+	}
+	if _, err := manager.Stop(t.Context()); err != nil {
+		t.Fatalf("stop fake CLIProxyAPI: %v", err)
 	}
 }
 

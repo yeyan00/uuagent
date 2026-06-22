@@ -136,6 +136,7 @@ func (m *CLIProxyAPIManager) startLocked(ctx context.Context) (Status, error) {
 	}
 	cmd := exec.CommandContext(ctx, m.binaryPathLocked(), "--config", m.configPathLocked())
 	cmd.Dir = filepath.Dir(m.binaryPathLocked())
+	cmd.Env = append(os.Environ(), "MANAGEMENT_STATIC_PATH="+m.managementDirLocked())
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return m.setErrorLocked(StatusError, err), fmt.Errorf("create stdout pipe: %w", err)
@@ -170,11 +171,13 @@ func (m *CLIProxyAPIManager) stateLocked() string {
 }
 
 func (m *CLIProxyAPIManager) statusLocked(state string) Status {
+	managementPath := m.managementPathLocked()
+	managementInstalled := fileExists(managementPath)
 	managementURL := ""
-	if state == StatusRunning && m.managementPanelAvailableLocked() {
+	if state == StatusRunning && managementInstalled && m.managementPanelAvailableLocked() {
 		managementURL = fmt.Sprintf("http://127.0.0.1:%d/management.html", m.port)
 	}
-	return Status{ID: cliProxyAPIID, Name: "CLIProxyAPI", Description: "OpenAI-compatible model proxy and management panel", BuiltIn: true, Installed: fileExists(m.binaryPathLocked()), Enabled: true, Status: state, BinaryPath: m.binaryPathLocked(), ConfigPath: m.configPathLocked(), Port: m.port, ProxyURL: fmt.Sprintf("http://127.0.0.1:%d/v1", m.port), ManagementURL: managementURL, LastError: m.lastError}
+	return Status{ID: cliProxyAPIID, Name: "CLIProxyAPI", Description: "OpenAI-compatible model proxy and management panel", BuiltIn: true, Installed: fileExists(m.binaryPathLocked()), Enabled: true, Status: state, BinaryPath: m.binaryPathLocked(), ConfigPath: m.configPathLocked(), Port: m.port, ProxyURL: fmt.Sprintf("http://127.0.0.1:%d/v1", m.port), ManagementURL: managementURL, ManagementPath: managementPath, ManagementInstalled: managementInstalled, LastError: m.lastError}
 }
 
 func (m *CLIProxyAPIManager) setErrorLocked(state string, err error) Status {
@@ -210,6 +213,14 @@ func (m *CLIProxyAPIManager) binaryPathLocked() string {
 	return filepath.Join(m.opts.PluginRoot, cliProxyAPIID, name)
 }
 
+func (m *CLIProxyAPIManager) managementDirLocked() string {
+	return filepath.Dir(m.binaryPathLocked())
+}
+
+func (m *CLIProxyAPIManager) managementPathLocked() string {
+	return filepath.Join(m.managementDirLocked(), "management.html")
+}
+
 func (m *CLIProxyAPIManager) configPathLocked() string {
 	return filepath.Join(m.opts.DataRoot, cliProxyAPIID, "config.yaml")
 }
@@ -234,7 +245,7 @@ func (m *CLIProxyAPIManager) writeConfigLocked() error {
 		return fmt.Errorf("read management secret: %w", err)
 	}
 	secret := strings.TrimSpace(string(secretData))
-	body := strings.Join([]string{"host: 127.0.0.1", fmt.Sprintf("port: %d", m.port), "data_dir: " + dataDir, "auth_dir: " + authDir, "log_dir: " + filepath.Join(dataDir, "logs"), "remote-management:", "  secret-key: " + secret, ""}, "\n")
+	body := strings.Join([]string{"host: 127.0.0.1", fmt.Sprintf("port: %d", m.port), "data_dir: " + dataDir, "auth_dir: " + authDir, "log_dir: " + filepath.Join(dataDir, "logs"), "remote-management:", "  secret-key: " + secret, "  disable-auto-update-panel: true", ""}, "\n")
 	if err := os.WriteFile(m.configPathLocked(), []byte(body), 0600); err != nil {
 		return fmt.Errorf("write config file: %w", err)
 	}
