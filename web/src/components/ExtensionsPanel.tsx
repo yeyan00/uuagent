@@ -72,9 +72,13 @@ export function ExtensionsPanel({
     }
   }
 
-  const canStart = selectedExtension?.status === 'stopped' || selectedExtension?.status === 'error'
-  const canStop = selectedExtension?.status === 'running' || selectedExtension?.status === 'starting'
-  const canRestart = selectedExtension?.status === 'running'
+  const isMissing = selectedExtension?.status === 'missing' || selectedExtension?.installed === false
+  const isRunning = selectedExtension?.status === 'running'
+  const isStarting = selectedExtension?.status === 'starting'
+  const isStoppedLike = selectedExtension?.status === 'stopped' || selectedExtension?.status === 'error'
+  const canStart = Boolean(selectedExtension && isStoppedLike && !isMissing)
+  const canStop = Boolean(selectedExtension && (isRunning || isStarting))
+  const canRestart = Boolean(selectedExtension && isRunning)
 
   return (
     <div className="extensionsPanel">
@@ -112,11 +116,9 @@ export function ExtensionsPanel({
               )}
             </div>
             <div className="extensionActions">
-              {canStart && (
-                <button className="btn-primary" onClick={handleStart}>
-                  Start
-                </button>
-              )}
+              <button className="btn-primary" onClick={handleStart} disabled={!canStart}>
+                Start
+              </button>
               {canStop && (
                 <button className="btn-secondary" onClick={handleStop}>
                   Stop
@@ -203,8 +205,8 @@ export function ExtensionsPanel({
             <div className="extensionGuidance">
               <h4>Missing Binary</h4>
               <p>
-                The CLIProxyAPI binary was not found at the expected path. Please ensure the
-                binary is installed at:
+                CLIProxyAPI is managed by UUAgent, but the executable is not present yet.
+                Copy the Windows test binary to this path, then refresh Extensions and click Start.
               </p>
               <code>{selectedExtension.binary_path}</code>
             </div>
