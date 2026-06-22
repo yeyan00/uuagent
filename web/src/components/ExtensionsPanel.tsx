@@ -132,85 +132,96 @@ export function ExtensionsPanel({
             </div>
           </div>
 
-          <div className="extensionStatusCard">
-            <div className="statusRow">
-              <span className="statusLabel">Status</span>
-              <span className={statusBadgeClass(selectedExtension.status)}>
-                {statusLabel(selectedExtension.status)}
-              </span>
-            </div>
-
-            {selectedExtension.binary_path && (
+          <div className="extensionCards">
+            <section className="extensionStatusCard extensionSummaryCard">
+              <h4>Service Status</h4>
               <div className="statusRow">
-                <span className="statusLabel">Binary Path</span>
-                <code className="statusValue">{selectedExtension.binary_path}</code>
+                <span className="statusLabel">Status</span>
+                <span className={statusBadgeClass(selectedExtension.status)}>
+                  {statusLabel(selectedExtension.status)}
+                </span>
               </div>
-            )}
-
-            {selectedExtension.config_path && (
-              <div className="statusRow">
-                <span className="statusLabel">Config Path</span>
-                <code className="statusValue">{selectedExtension.config_path}</code>
-              </div>
-            )}
-
-            {selectedExtension.port && (
-              <div className="statusRow">
-                <span className="statusLabel">Port</span>
-                <span className="statusValue">{selectedExtension.port}</span>
-              </div>
-            )}
-
-            {selectedExtension.proxy_url && (
-              <div className="statusRow">
-                <span className="statusLabel">Proxy URL</span>
-                <div className="statusValueWithAction">
-                  <code className="statusValue">{selectedExtension.proxy_url}</code>
-                  <button
-                    className="copyButton"
-                    onClick={() => navigator.clipboard.writeText(selectedExtension.proxy_url || '')}
-                    title="Copy to clipboard"
-                  >
-                    Copy
-                  </button>
+              {selectedExtension.last_error && (
+                <div className="statusRow errorRow">
+                  <span className="statusLabel">Last Error</span>
+                  <pre className="errorValue">{selectedExtension.last_error}</pre>
                 </div>
-              </div>
-            )}
+              )}
+            </section>
 
-            {selectedExtension.management_url && selectedExtension.status === 'running' && (
-              <div className="statusRow">
-                <span className="statusLabel">Management</span>
-                <div className="statusValueWithAction">
-                  <a
-                    href={selectedExtension.management_url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="managementLink"
-                  >
-                    Open Management Panel
-                  </a>
+            <section className="extensionStatusCard">
+              <h4>Connection</h4>
+              {selectedExtension.port && (
+                <div className="statusRow">
+                  <span className="statusLabel">Port</span>
+                  <span className="statusValue">{selectedExtension.port}</span>
                 </div>
-              </div>
-            )}
+              )}
+              {selectedExtension.proxy_url && (
+                <div className="statusRow">
+                  <span className="statusLabel">Proxy URL</span>
+                  <div className="statusValueWithAction">
+                    <code className="statusValue">{selectedExtension.proxy_url}</code>
+                    <button
+                      className="copyButton"
+                      onClick={() => navigator.clipboard.writeText(selectedExtension.proxy_url || '')}
+                      title="Copy to clipboard"
+                    >
+                      Copy
+                    </button>
+                  </div>
+                </div>
+              )}
+              {selectedExtension.status === 'running' && selectedExtension.management_url && (
+                <div className="statusRow">
+                  <span className="statusLabel">Management</span>
+                  <div className="statusValueWithAction">
+                    <a
+                      href={selectedExtension.management_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="managementLink"
+                    >
+                      Open Management Panel
+                    </a>
+                  </div>
+                </div>
+              )}
+              {selectedExtension.status === 'running' && !selectedExtension.management_url && (
+                <div className="extensionGuidance compactGuidance">
+                  <h4>Management Panel Unavailable</h4>
+                  <p>CLIProxyAPI is running, but its management panel endpoint is not reachable. Use the Proxy URL above for model routing.</p>
+                </div>
+              )}
+            </section>
 
-            {selectedExtension.last_error && (
-              <div className="statusRow errorRow">
-                <span className="statusLabel">Last Error</span>
-                <pre className="errorValue">{selectedExtension.last_error}</pre>
-              </div>
+            <section className="extensionStatusCard">
+              <h4>Files</h4>
+              {selectedExtension.binary_path && (
+                <div className="statusRow">
+                  <span className="statusLabel">Binary Path</span>
+                  <code className="statusValue">{selectedExtension.binary_path}</code>
+                </div>
+              )}
+              {selectedExtension.config_path && (
+                <div className="statusRow">
+                  <span className="statusLabel">Config Path</span>
+                  <code className="statusValue">{selectedExtension.config_path}</code>
+                </div>
+              )}
+            </section>
+
+            {selectedExtension.status === 'missing' && selectedExtension.binary_path && (
+              <section className="extensionGuidance">
+                <h4>Missing Binary</h4>
+                <p>
+                  CLIProxyAPI is managed by UUAgent, but the executable is not present yet.
+                  Copy the Windows test binary to this path, then refresh Extensions and click Start.
+                </p>
+                <code>{selectedExtension.binary_path}</code>
+              </section>
             )}
           </div>
-
-          {selectedExtension.status === 'missing' && selectedExtension.binary_path && (
-            <div className="extensionGuidance">
-              <h4>Missing Binary</h4>
-              <p>
-                CLIProxyAPI is managed by UUAgent, but the executable is not present yet.
-                Copy the Windows test binary to this path, then refresh Extensions and click Start.
-              </p>
-              <code>{selectedExtension.binary_path}</code>
-            </div>
-          )}
         </div>
       )}
     </div>
