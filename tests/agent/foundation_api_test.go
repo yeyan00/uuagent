@@ -88,6 +88,33 @@ DO NOT LOAD THIS BODY UNTIL THE SKILL IS INVOKED.
 	}
 }
 
+func TestConfigAPIRedactsProxyAPIKey(t *testing.T) {
+	// Given
+	home := filepath.Join(t.TempDir(), "home")
+	t.Setenv("UUAGENT_HOME", home)
+	cfg := config.Default()
+	cfg.Agent.ProxyAPIKey = "sk-uuagent-safe-config-secret"
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	server.RegisterRoutes(r.Group("/api"), agent.New(cfg))
+
+	// When
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/config", nil))
+
+	// Then
+	if w.Code != http.StatusOK {
+		t.Fatalf("config status=%d body=%s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if strings.Contains(body, "sk-uuagent-safe-config-secret") {
+		t.Fatalf("safe config must not expose proxy API key: %s", body)
+	}
+	if !strings.Contains(body, "proxy_api_key") || !strings.Contains(body, "[REDACTED]") {
+		t.Fatalf("safe config should show redacted proxy API key field: %s", body)
+	}
+}
+
 func TestFoundationRegistryAPIsExposeSkillsMCPAndTools(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "home")
 	t.Setenv("UUAGENT_HOME", home)

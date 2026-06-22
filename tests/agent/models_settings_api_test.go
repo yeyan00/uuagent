@@ -17,6 +17,7 @@ import (
 
 type modelsSettingsResponse struct {
 	ProxyURL     string              `json:"proxy_url"`
+	ProxyAPIKey  string              `json:"proxy_api_key"`
 	RoutingTiers map[string][]string `json:"routing_tiers"`
 	FallbackTier string              `json:"fallback_tier"`
 	ModelIDs     []string            `json:"model_ids"`
@@ -33,6 +34,7 @@ func TestModelsSettingsAPI_gets_current_settings_and_flattened_model_ids(t *test
 	t.Setenv("UUAGENT_HOME", filepath.Join(t.TempDir(), "home"))
 	cfg := config.Default()
 	cfg.Agent.ProxyURL = "http://proxy.local/v1"
+	cfg.Agent.ProxyAPIKey = "sk-uuagent-existing"
 	cfg.Agent.Routing.Fallback = "strong"
 	cfg.Agent.Routing.Tiers = map[string][]string{
 		"fast":   {"fast-a", "shared-model"},
@@ -52,11 +54,11 @@ func TestModelsSettingsAPI_gets_current_settings_and_flattened_model_ids(t *test
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.ProxyURL != "http://proxy.local/v1" || got.FallbackTier != "strong" {
+	if got.ProxyURL != "http://proxy.local/v1" || got.ProxyAPIKey != "sk-uuagent-existing" || got.FallbackTier != "strong" {
 		t.Fatalf("unexpected settings: %+v", got)
 	}
-	if strings.Contains(w.Body.String(), "api_key") || strings.Contains(w.Body.String(), "secret") {
-		t.Fatalf("settings response must not expose secrets: %s", w.Body.String())
+	if strings.Contains(w.Body.String(), "secret") {
+		t.Fatalf("settings response must not expose generic secrets: %s", w.Body.String())
 	}
 	wantModels := map[string]bool{"fast-a": true, "strong-a": true, "shared-model": true}
 	if len(got.ModelIDs) != len(wantModels) {
@@ -74,7 +76,7 @@ func TestModelsSettingsAPI_put_persists_settings_and_reloads_router(t *testing.T
 	home := filepath.Join(t.TempDir(), "home")
 	t.Setenv("UUAGENT_HOME", home)
 	r := newModelsSettingsRouter(config.Default())
-	body := `{"proxy_url":"https://updated.example.com/v1","routing_tiers":{"fast":["fast-new"],"strong":["strong-new"]},"fallback_tier":"fast","api_key":"must-not-save"}`
+	body := `{"proxy_url":"https://updated.example.com/v1","proxy_api_key":"sk-uuagent-updated","routing_tiers":{"fast":["fast-new"],"strong":["strong-new"]},"fallback_tier":"fast","api_key":"must-not-save"}`
 
 	// When
 	w := httptest.NewRecorder()
@@ -92,7 +94,7 @@ func TestModelsSettingsAPI_put_persists_settings_and_reloads_router(t *testing.T
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.ProxyURL != "https://updated.example.com/v1" || got.FallbackTier != "fast" || got.RoutingTiers["fast"][0] != "fast-new" {
+	if got.ProxyURL != "https://updated.example.com/v1" || got.ProxyAPIKey != "sk-uuagent-updated" || got.FallbackTier != "fast" || got.RoutingTiers["fast"][0] != "fast-new" {
 		t.Fatalf("runtime settings were not reloaded: %+v", got)
 	}
 	w = httptest.NewRecorder()
@@ -104,11 +106,38 @@ func TestModelsSettingsAPI_put_persists_settings_and_reloads_router(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(saved), "https://updated.example.com/v1") || !strings.Contains(string(saved), "fast-new") {
+	if !strings.Contains(string(saved), "https://updated.example.com/v1") || !strings.Contains(string(saved), "sk-uuagent-updated") || !strings.Contains(string(saved), "fast-new") {
 		t.Fatalf("config.yaml missing saved settings: %s", string(saved))
 	}
 	if strings.Contains(string(saved), "must-not-save") {
-		t.Fatalf("config.yaml must not persist API keys/secrets: %s", string(saved))
+		t.Fatalf("config.yaml must not persist generic provider API keys/secrets: %s", string(saved))
+	}
+}
+
+func TestModelsTestAPI_sends_proxy_api_key_to_models_endpoint(t *testing.T) {
+	// Given
+	t.Setenv("UUAGENT_HOME", filepath.Join(t.TempDir(), "home"))
+	seenAuthorization := ""
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenAuthorization = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"model-a"}]}`))
+	}))
+	defer upstream.Close()
+	r := newModelsSettingsRouter(config.Default())
+
+	// When
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/models/test", strings.NewReader(`{"proxy_url":"`+upstream.URL+`/v1","proxy_api_key":"sk-uuagent-models-test"}`))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	// Then
+	if w.Code != http.StatusOK {
+		t.Fatalf("test models status=%d body=%s", w.Code, w.Body.String())
+	}
+	if seenAuthorization != "Bearer sk-uuagent-models-test" {
+		t.Fatalf("expected Authorization header from proxy_api_key, got %q", seenAuthorization)
 	}
 }
 

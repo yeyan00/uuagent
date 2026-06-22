@@ -91,6 +91,37 @@ func TestChatRequestHonorsModelOverride_whenConcreteModelProvided(t *testing.T) 
 	}
 }
 
+func TestChatRequestUsesConfiguredProxyAPIKey_whenCallingLLM(t *testing.T) {
+	// Given
+	t.Setenv("UUAGENT_HOME", filepath.Join(t.TempDir(), "home"))
+	seenAuthorization := ""
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenAuthorization = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer upstream.Close()
+	cfg := config.Default()
+	cfg.Agent.ProxyURL = upstream.URL + "/v1"
+	cfg.Agent.ProxyAPIKey = "sk-uuagent-runtime"
+	cfg.Agent.Routing.Tiers = map[string][]string{"fast": {"fast-model"}, "strong": {"strong-model"}}
+	r := newModelsSettingsRouter(cfg)
+
+	// When
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(`{"prompt":"format this","session_id":"proxy-key-session"}`))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	// Then
+	if w.Code != http.StatusOK {
+		t.Fatalf("chat status=%d body=%s", w.Code, w.Body.String())
+	}
+	if seenAuthorization != "Bearer sk-uuagent-runtime" {
+		t.Fatalf("expected configured proxy API key Authorization header, got %q", seenAuthorization)
+	}
+}
+
 func TestChatRequestUsesAutomaticRouting_whenModelOverrideAutoOrEmpty(t *testing.T) {
 	tests := []struct {
 		name string

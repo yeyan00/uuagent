@@ -7,8 +7,9 @@ import (
 )
 
 // UpdateModelSettingsPersistent updates global model routing settings and writes user config.
-func (a *Agent) UpdateModelSettingsPersistent(proxyURL string, tiers map[string][]string, fallback string) error {
+func (a *Agent) UpdateModelSettingsPersistent(proxyURL string, proxyAPIKey string, tiers map[string][]string, fallback string) error {
 	a.cfg.Agent.ProxyURL = strings.TrimRight(strings.TrimSpace(proxyURL), "/")
+	a.cfg.Agent.ProxyAPIKey = strings.TrimSpace(proxyAPIKey)
 	a.cfg.Agent.Routing.Tiers = cloneRoutingTiers(tiers)
 	a.cfg.Agent.Routing.Fallback = strings.TrimSpace(fallback)
 	if err := config.SaveUser(a.cfg); err != nil {

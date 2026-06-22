@@ -1018,7 +1018,10 @@ func (a *Agent) callLLM(ctx context.Context, model string, messages []Message, p
 	if baseURL == "" {
 		return "", nil, tokenUsage{}, fmt.Errorf("agent proxy-url is empty")
 	}
-	apiKey := strings.TrimSpace(os.Getenv("UUAGENT_API_KEY"))
+	apiKey := strings.TrimSpace(a.cfg.Agent.ProxyAPIKey)
+	if apiKey == "" {
+		apiKey = strings.TrimSpace(os.Getenv("UUAGENT_API_KEY"))
+	}
 	if apiKey == "" {
 		apiKey = strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
 	}

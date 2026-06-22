@@ -19,13 +19,15 @@ import (
 
 type modelsSettingsPayload struct {
 	ProxyURL     string              `json:"proxy_url"`
+	ProxyAPIKey  string              `json:"proxy_api_key"`
 	RoutingTiers map[string][]string `json:"routing_tiers"`
 	FallbackTier string              `json:"fallback_tier"`
 	ModelIDs     []string            `json:"model_ids,omitempty"`
 }
 
 type modelsTestRequest struct {
-	ProxyURL string `json:"proxy_url"`
+	ProxyURL    string `json:"proxy_url"`
+	ProxyAPIKey string `json:"proxy_api_key"`
 }
 
 type modelsTestResponse struct {
@@ -45,6 +47,7 @@ func handleGetModelsSettings(agt *agent.Agent) gin.HandlerFunc {
 		cfg := agt.Config().Agent
 		c.JSON(http.StatusOK, modelsSettingsPayload{
 			ProxyURL:     cfg.ProxyURL,
+			ProxyAPIKey:  cfg.ProxyAPIKey,
 			RoutingTiers: cloneTiers(cfg.Routing.Tiers),
 			FallbackTier: cfg.Routing.Fallback,
 			ModelIDs:     flattenModelIDs(cfg.Routing.Tiers),
@@ -63,13 +66,14 @@ func handlePutModelsSettings(agt *agent.Agent) gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		if err := agt.UpdateModelSettingsPersistent(req.ProxyURL, req.RoutingTiers, req.FallbackTier); err != nil {
+		if err := agt.UpdateModelSettingsPersistent(req.ProxyURL, req.ProxyAPIKey, req.RoutingTiers, req.FallbackTier); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
 		cfg := agt.Config().Agent
 		c.JSON(http.StatusOK, modelsSettingsPayload{
 			ProxyURL:     cfg.ProxyURL,
+			ProxyAPIKey:  cfg.ProxyAPIKey,
 			RoutingTiers: cloneTiers(cfg.Routing.Tiers),
 			FallbackTier: cfg.Routing.Fallback,
 			ModelIDs:     flattenModelIDs(cfg.Routing.Tiers),
@@ -85,7 +89,7 @@ func handleTestModels() gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, modelsTestResponse{Success: false, Error: err.Error()})
 			return
 		}
-		modelIDs, status, err := fetchModels(c.Request.Context(), client, req.ProxyURL)
+		modelIDs, status, err := fetchModels(c.Request.Context(), client, req.ProxyURL, req.ProxyAPIKey)
 		if err != nil {
 			c.JSON(status, modelsTestResponse{Success: false, Error: err.Error()})
 			return
@@ -151,7 +155,7 @@ func redactSensitiveData(body string) string {
 	return result
 }
 
-func fetchModels(ctx context.Context, client *http.Client, proxyURL string) ([]string, int, error) {
+func fetchModels(ctx context.Context, client *http.Client, proxyURL string, proxyAPIKey string) ([]string, int, error) {
 	baseURL := strings.TrimRight(strings.TrimSpace(proxyURL), "/")
 	if baseURL == "" {
 		return nil, http.StatusBadRequest, fmt.Errorf("proxy_url is required")
@@ -164,17 +168,15 @@ func fetchModels(ctx context.Context, client *http.Client, proxyURL string) ([]s
 		return nil, http.StatusBadRequest, fmt.Errorf("create models request: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
+	if token := strings.TrimSpace(proxyAPIKey); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, http.StatusBadGateway, fmt.Errorf("models request failed: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		data, readErr := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
-		if readErr != nil {
-			return nil, http.StatusBadGateway, fmt.Errorf("models request failed: status=%d read body: %w", resp.StatusCode, readErr)
-		}
-		_ = redactSensitiveData(string(data))
 		return nil, resp.StatusCode, fmt.Errorf("models request failed: status=%d [upstream error redacted]", resp.StatusCode)
 	}
 	modelIDs, err := parseModelsResponse(io.LimitReader(resp.Body, 4*1024*1024))

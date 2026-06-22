@@ -25,6 +25,7 @@ type Config struct {
 // AgentConfig controls global agent behavior.
 type AgentConfig struct {
 	ProxyURL          string         `yaml:"proxy-url" json:"proxy_url"`
+	ProxyAPIKey       string         `yaml:"proxy-api-key" json:"proxy_api_key"`
 	Routing           RoutingConfig  `yaml:"routing" json:"routing"`
 	Memory            MemoryConfig   `yaml:"memory" json:"memory"`
 	Context           ContextConfig  `yaml:"context" json:"context"`
@@ -231,11 +232,13 @@ func EnsureUserLayout() (string, error) {
 	return root, nil
 }
 
-// ApplyEnv overlays non-secret runtime settings. API keys are intentionally not
-// stored in Config; LLM callers read them directly from environment variables.
+// ApplyEnv overlays runtime model proxy settings.
 func ApplyEnv(cfg *Config) {
 	if v := strings.TrimSpace(os.Getenv("UUAGENT_PROXY_URL")); v != "" {
 		cfg.Agent.ProxyURL = strings.TrimRight(v, "/")
+	}
+	if v := strings.TrimSpace(os.Getenv("UUAGENT_PROXY_API_KEY")); v != "" {
+		cfg.Agent.ProxyAPIKey = v
 	}
 	if v := strings.TrimSpace(os.Getenv("UUAGENT_MODEL")); v != "" {
 		if cfg.Agent.Routing.Tiers == nil {
@@ -250,7 +253,8 @@ func ApplyEnv(cfg *Config) {
 	}
 }
 
-// Save writes cfg to YAML. API keys are not part of Config and are not written.
+// Save writes cfg to YAML. Provider API keys should still be supplied by env vars.
+// ProxyAPIKey may be persisted for local CLIProxyAPI sidecar authentication.
 func Save(path string, cfg *Config) error {
 	if cfg == nil {
 		cfg = Default()
@@ -273,12 +277,16 @@ func SaveUser(cfg *Config) error {
 	return Save(UserConfigPath(), cfg)
 }
 
-// Safe returns a JSON-friendly copy with secrets redacted. Config currently
-// stores no API keys, but this method centralizes future redaction.
+// Safe returns a JSON-friendly copy with secrets redacted.
 func (c *Config) Safe() map[string]any {
 	data, _ := json.Marshal(c)
 	out := map[string]any{}
 	_ = json.Unmarshal(data, &out)
+	if agentConfig, ok := out["agent"].(map[string]any); ok {
+		if _, exists := agentConfig["proxy_api_key"]; exists {
+			agentConfig["proxy_api_key"] = "[REDACTED]"
+		}
+	}
 	out["secrets"] = "redacted"
 	return out
 }
