@@ -16,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/yeyan00/uuagent/internal/agent"
 	"github.com/yeyan00/uuagent/internal/config"
+	"github.com/yeyan00/uuagent/internal/goal"
 	"github.com/yeyan00/uuagent/internal/memory"
 	"github.com/yeyan00/uuagent/internal/paths"
 	"github.com/yeyan00/uuagent/internal/subagent"
@@ -28,6 +29,10 @@ func RegisterRoutes(r *gin.RouterGroup, agt *agent.Agent) {
 	r.POST("/projects", handleCreateProject(agt))
 	r.GET("/projects/:id", handleGetProject(agt))
 	r.POST("/projects/:id/open", handleOpenProject(agt))
+	r.POST("/projects/:id/goals", handleCreateGoal(agt))
+	r.GET("/projects/:id/goals", handleListGoals(agt))
+	r.GET("/projects/:id/goals/:goal_id", handleGetGoal(agt))
+	r.POST("/projects/:id/goals/:goal_id/stop", handleStopGoal(agt))
 	r.GET("/projects/:id/sessions", handleListProjectSessions(agt))
 	r.POST("/projects/:id/sessions", handleCreateProjectSession(agt))
 	r.GET("/projects/:id/sessions/:session_id", handleGetProjectSession(agt))
@@ -135,6 +140,88 @@ func handleOpenProject(agt *agent.Agent) gin.HandlerFunc {
 		agt.ReloadProjectSkills(p.WorkspacePath)
 		c.JSON(http.StatusOK, gin.H{"project": p, "config_sources": sources, "config": cfg.Safe()})
 	}
+}
+
+type goalCreateRequest struct {
+	Prompt string `json:"prompt"`
+}
+
+func handleCreateGoal(agt *agent.Agent) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		_, p, ok := agt.ProjectSessions(c.Param("id"))
+		if !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "project not found"})
+			return
+		}
+		var req goalCreateRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		store := goal.NewStore(filepath.Join(paths.ProjectsDir(), p.ID, "goals"))
+		created, err := store.Create(c.Request.Context(), goal.CreateRequest{ProjectID: p.ID, ProjectPath: p.WorkspacePath, Prompt: req.Prompt, Plan: defaultGoalPlan(req.Prompt, agt.Config().Agent.Subagent.Profiles)})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, created)
+	}
+}
+
+func handleListGoals(agt *agent.Agent) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		_, p, ok := agt.ProjectSessions(c.Param("id"))
+		if !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "project not found"})
+			return
+		}
+		goals, err := goal.NewStore(filepath.Join(paths.ProjectsDir(), p.ID, "goals")).List(c.Request.Context(), p.ID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"goals": goals})
+	}
+}
+
+func handleGetGoal(agt *agent.Agent) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		_, p, ok := agt.ProjectSessions(c.Param("id"))
+		if !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "project not found"})
+			return
+		}
+		got, err := goal.NewStore(filepath.Join(paths.ProjectsDir(), p.ID, "goals")).Get(c.Request.Context(), c.Param("goal_id"))
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, got)
+	}
+}
+
+func handleStopGoal(agt *agent.Agent) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		_, p, ok := agt.ProjectSessions(c.Param("id"))
+		if !ok {
+			c.JSON(http.StatusNotFound, gin.H{"error": "project not found"})
+			return
+		}
+		stopped, err := goal.NewStore(filepath.Join(paths.ProjectsDir(), p.ID, "goals")).Stop(c.Request.Context(), c.Param("goal_id"))
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, stopped)
+	}
+}
+
+func defaultGoalPlan(prompt string, profiles []config.SubagentProfile) goal.Plan {
+	todos := make([]goal.Todo, 0, len(profiles))
+	for _, profile := range profiles {
+		todos = append(todos, goal.Todo{ID: "todo-" + profile.ID, Content: prompt + " [" + profile.ID + "]", Status: goal.TodoPending})
+	}
+	return goal.Plan{Summary: prompt, Todos: todos}
 }
 
 type projectSessionRequest struct {

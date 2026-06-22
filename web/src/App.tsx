@@ -21,6 +21,11 @@ interface ApprovalPayload { approval_required?: boolean; tool?: string; path?: s
 interface ToolEventPayload { kind?: 'tool_start' | 'tool_result'; tool?: string; tool_id?: string; args?: string; text?: string }
 interface ModelsSettings { proxy_url: string; fallback_tier: string; routing_tiers: Record<string, string[]>; model_ids: string[] }
 interface ModelsTestResult { success: boolean; model_ids?: string[]; error?: string }
+interface GoalStep { id: string; description: string; subagent: string }
+interface GoalTodo { id: string; step_id: string; description: string; status: string; result: string }
+interface GoalActivity { id: string; type: string; text: string; subagent_id?: string; result?: string }
+interface Goal { id: string; project_id: string; session_id?: string; agent_id?: string; goal: string; status: string; plan?: GoalStep[]; todos?: GoalTodo[]; activities?: GoalActivity[] }
+
 
 type MainPage = 'projects' | 'extensions' | 'schedules' | 'settings'
 type ProjectSettingsTab = 'memory' | 'context' | 'config'
@@ -199,7 +204,11 @@ const toolEventFromMessage = (message: Message, toolArgs: Record<string, string>
   return { kind: 'tool_result', tool: message.tool_name || message.tool_call_id || 'tool', tool_id: message.tool_call_id, args: message.tool_call_id ? toolArgs[message.tool_call_id] : undefined, text: String(message.content || '') }
 }
 
-function App() {
+interface AppProps {
+  initialWorkspaceTab?: 'chat' | 'goal'
+}
+
+function App({ initialWorkspaceTab }: AppProps = {}) {
   const [mainPage, setMainPage] = useState<MainPage>('projects')
   const [workspaceMode, setWorkspaceMode] = useState<'chat' | 'settings'>('chat')
   const [messages, setMessages] = useState<Message[]>([])
@@ -247,6 +256,21 @@ function App() {
   const [projectSettingsTab, setProjectSettingsTab] = useState<ProjectSettingsTab>('memory')
   const [attachmentNotice, setAttachmentNotice] = useState('')
   const [attachments, setAttachments] = useState<ChatAttachment[]>([])
+  const [workspaceTab, setWorkspaceTab] = useState<'chat' | 'goal'>(initialWorkspaceTab ?? 'chat')
+  const [goals, setGoals] = useState<Goal[]>([])
+
+  useEffect(() => {
+    if (initialWorkspaceTab) {
+      setWorkspaceTab(initialWorkspaceTab)
+      setSelectedGoalId('')
+      setGoalInput('')
+      setIsCreatingGoal(false)
+      setGoals([])
+    }
+  }, [initialWorkspaceTab])
+  const [selectedGoalId, setSelectedGoalId] = useState('')
+  const [goalInput, setGoalInput] = useState('')
+  const [isCreatingGoal, setIsCreatingGoal] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const abortRef = useRef<AbortController | null>(null)
@@ -257,6 +281,7 @@ function App() {
   const activeProjectSessions = projectId ? (projectSessions[projectId] || []) : []
   const activeSession = activeProjectSessions.find(s => s.id === sessionId)
   const activeSessionLocked = !!activeSession && ((activeSession.messages?.length || 0) > 0 || !!activeSession.project_id)
+  const activeGoal = goals.find(g => g.id === selectedGoalId)
   const availableModels = useMemo(() => {
     const agentModels = agents.map(a => a.model).filter((model): model is string => Boolean(model))
     const configuredModels = modelsSettings?.model_ids || []
@@ -391,6 +416,56 @@ function App() {
     setStatus('Restored archive')
     await refresh()
   }
+
+  const fetchGoals = async () => {
+    if (!projectId) return
+    const r = await api<{goals: Goal[]}>(`/api/projects/${encodeURIComponent(projectId)}/goals`).catch(() => ({ goals: [] }))
+    setGoals(r.goals || [])
+  }
+
+  const createGoal = async () => {
+    if (!projectId || !goalInput.trim()) return
+    setIsCreatingGoal(true)
+    try {
+      const g = await api<Goal>(`/api/projects/${encodeURIComponent(projectId)}/goals`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ goal: goalInput.trim(), agent_id: agentId })
+      })
+      setGoals(prev => [...prev, g])
+      setSelectedGoalId(g.id)
+      setGoalInput('')
+      setStatus(`Goal created: ${g.goal}`)
+    } catch (err) {
+      setStatus(String(err))
+    } finally {
+      setIsCreatingGoal(false)
+    }
+  }
+
+  const loadGoal = async (id: string) => {
+    if (!projectId) return
+    const g = await api<Goal>(`/api/projects/${encodeURIComponent(projectId)}/goals/${encodeURIComponent(id)}`)
+    setGoals(prev => prev.map(goal => goal.id === id ? g : goal))
+    setSelectedGoalId(id)
+  }
+
+  const stopGoal = async () => {
+    if (!projectId || !selectedGoalId) return
+    try {
+      const r = await api<{status: string}>(`/api/projects/${encodeURIComponent(projectId)}/goals/${encodeURIComponent(selectedGoalId)}/stop`, { method: 'POST' })
+      setGoals(prev => prev.map(g => g.id === selectedGoalId ? { ...g, status: r.status } : g))
+      setStatus(`Goal ${r.status}`)
+    } catch (err) {
+      setStatus(String(err))
+    }
+  }
+
+  useEffect(() => {
+    if (projectId && workspaceTab === 'goal') {
+      fetchGoals()
+    }
+  }, [projectId, workspaceTab])
 
   const selectAgent = (id: string) => {
     setAgentId(id)
@@ -889,30 +964,124 @@ function App() {
         </header>
 
         {workspaceMode === 'settings' ? <section className="settingsWorkspace">{renderSettingsBody()}</section> : <>
-          <section className="messagesPane">
-            {messages.length === 0 && <div className="emptyState"><div>✨</div><h2>Start a coding session</h2><p>Open a project, choose an agent and ask UUAgent to inspect, explain or modify your code.</p></div>}
-            {groupMessagesIntoTurns(messages).map((turn, i) => renderTurn(turn, i))}
-            <div ref={messagesEndRef}/>
-          </section>
+          {workspaceTab === 'goal' ? (
+            <section className="goalWorkspace">
+              <div className="goalPanel">
+                <div className="goalHeader">
+                  <h2>Goal mode</h2>
+                  <button className="softButton" onClick={() => setWorkspaceTab('chat')}>Chat</button>
+                </div>
+                {!selectedGoalId ? (
+                  <div className="goalCreate">
+                    <h3>Create New Goal</h3>
+                    <textarea
+                      value={goalInput}
+                      onChange={e => setGoalInput(e.target.value)}
+                      placeholder="Enter your goal..."
+                      disabled={isCreatingGoal || !projectId}
+                    />
+                    <button
+                      className="sendButton"
+                      onClick={createGoal}
+                      disabled={!goalInput.trim() || isCreatingGoal || !projectId}
+                    >
+                      {isCreatingGoal ? 'Creating...' : 'Start Goal'}
+                    </button>
+                    {goals.length > 0 && (
+                      <div className="goalList">
+                        <h4>Existing Goals</h4>
+                        {goals.map(g => (
+                          <div key={g.id} className="goalItem" onClick={() => loadGoal(g.id)}>
+                            <span>{g.goal}</span>
+                            <span className={`goalStatus ${g.status}`}>{g.status}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="goalActivity">
+                    <div className="goalActivityHeader">
+                      <h3>{activeGoal?.goal}</h3>
+                      {activeGoal?.status === 'running' && (
+                        <button className="sendButton" onClick={stopGoal}>Stop goal</button>
+                      )}
+                    </div>
+                    <div className="goalStatusDisplay">{activeGoal?.status}</div>
+                    {activeGoal?.plan && activeGoal.plan.length > 0 && (
+                      <div className="goalSection">
+                        <h4>Plan</h4>
+                        <div className="planSteps">
+                          {activeGoal.plan.map((step, idx) => (
+                            <div key={step.id} className="planStep">
+                              <span className="stepNumber">{idx + 1}</span>
+                              <span className="stepDescription">{step.description}</span>
+                              <span className="stepSubagent">{step.subagent}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {activeGoal?.todos && activeGoal.todos.length > 0 && (
+                      <div className="goalSection">
+                        <h4>Todos</h4>
+                        <div className="todoList">
+                          {activeGoal.todos.map(todo => (
+                            <div key={todo.id} className={`todoItem ${todo.status}`}>
+                              <span className="todoStatus">{todo.status}</span>
+                              <span className="todoDescription">{todo.description}</span>
+                              {todo.result && <span className="todoResult">{todo.result}</span>}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {activeGoal?.activities && activeGoal.activities.length > 0 && (
+                      <div className="goalSection">
+                        <h4>Activity</h4>
+                        <div className="activityList">
+                          {activeGoal.activities.map(act => (
+                            <div key={act.id} className="activityItem">
+                              <span className="activityText">{act.text}</span>
+                              {act.subagent_id && <span className="activitySubagent">{act.subagent_id}</span>}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </section>
+          ) : (
+            <>
+              <section className="messagesPane">
+                {messages.length === 0 && <div className="emptyState"><div>✨</div><h2>Start a coding session</h2><p>Open a project, choose an agent and ask UUAgent to inspect, explain or modify your code.</p></div>}
+                {groupMessagesIntoTurns(messages).map((turn, i) => renderTurn(turn, i))}
+                <div ref={messagesEndRef}/>
+              </section>
 
-          <footer className="composerShell">
-            {attachmentNotice && <div className="attachmentNotice">{attachmentNotice}</div>}
-            {attachments.length > 0 && <div className="attachmentPreviewGrid composerAttachments">
-              {attachments.map(item => <div key={item.id} className="attachmentPreview"><img src={item.dataURL} alt="Attachment preview" /><span>{item.name}</span><button type="button" aria-label="Remove attachment" onClick={() => removeAttachment(item.id)}>×</button></div>)}
-            </div>}
-            <div className="composerBox">
-              <textarea value={input} onChange={e=>setInput(e.target.value)} onPaste={onComposerPaste} onKeyDown={e=>{ if(e.key==='Enter' && (e.ctrlKey || e.metaKey)){ e.preventDefault(); sendMessage() } }} placeholder="Ask UUAgent to inspect, edit or explain code... Ctrl+Enter to send" />
-              <button className="attachButton" onClick={onAttachClick} title="Attach image or file">＋</button>
-              {isStreaming ? <button className="sendButton" onClick={stopRun}>Stop</button> : <button className="sendButton" onClick={sendMessage} disabled={!input.trim() && attachments.length === 0}>Send</button>}
-              <input ref={fileInputRef} aria-label="Attach image or file" type="file" multiple accept="image/*,.txt,.md,.json,.yaml,.yml,.go,.ts,.tsx" hidden onChange={e=>{ onFilesSelected(e.target.files); e.currentTarget.value = '' }} />
-            </div>
-            <div className="composerMeta">
-              <label>Project<select value={projectId} onChange={e=>openProject(e.target.value)} disabled={activeSessionLocked}><option value="">None</option>{projects.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select>{activeSessionLocked && <span>locked</span>}</label>
-              <label>Agent<select value={agentId} onChange={e=>selectAgent(e.target.value)}>{agents.map(a=><option key={a.id} value={a.id}>{a.name || a.id}</option>)}</select></label>
-              <label>Skill<select aria-label="Skill" value={forcedSkill} onChange={e=>setForcedSkill(e.target.value)}><option value="">Auto</option>{skills.map(skill => <option key={skill.name} value={skill.name}>{skill.name}</option>)}</select></label>
-              <label>Model<select value={modelOverride} onChange={e=>setModelOverride(e.target.value)}>{availableModels.map(m=><option key={m} value={m}>{m === 'auto' ? 'Auto' : m}</option>)}</select></label>
-            </div>
-          </footer>
+              <footer className="composerShell">
+                {attachmentNotice && <div className="attachmentNotice">{attachmentNotice}</div>}
+                {attachments.length > 0 && <div className="attachmentPreviewGrid composerAttachments">
+                  {attachments.map(item => <div key={item.id} className="attachmentPreview"><img src={item.dataURL} alt="Attachment preview" /><span>{item.name}</span><button type="button" aria-label="Remove attachment" onClick={() => removeAttachment(item.id)}>×</button></div>)}
+                </div>}
+                <div className="composerBox">
+                  <textarea value={input} onChange={e=>setInput(e.target.value)} onPaste={onComposerPaste} onKeyDown={e=>{ if(e.key==='Enter' && (e.ctrlKey || e.metaKey)){ e.preventDefault(); sendMessage() } }} placeholder="Ask UUAgent to inspect, edit or explain code... Ctrl+Enter to send" />
+                  <button className="attachButton" onClick={onAttachClick} title="Attach image or file">＋</button>
+                  {isStreaming ? <button className="sendButton" onClick={stopRun}>Stop</button> : <button className="sendButton" onClick={sendMessage} disabled={!input.trim() && attachments.length === 0}>Send</button>}
+                  <input ref={fileInputRef} aria-label="Attach image or file" type="file" multiple accept="image/*,.txt,.md,.json,.yaml,.yml,.go,.ts,.tsx" hidden onChange={e=>{ onFilesSelected(e.target.files); e.currentTarget.value = '' }} />
+                </div>
+                <div className="composerMeta">
+                  <label>Project<select value={projectId} onChange={e=>openProject(e.target.value)} disabled={activeSessionLocked}><option value="">None</option>{projects.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select>{activeSessionLocked && <span>locked</span>}</label>
+                  <label>Agent<select value={agentId} onChange={e=>selectAgent(e.target.value)}>{agents.map(a=><option key={a.id} value={a.id}>{a.name || a.id}</option>)}</select></label>
+                  <label>Skill<select aria-label="Skill" value={forcedSkill} onChange={e=>setForcedSkill(e.target.value)}><option value="">Auto</option>{skills.map(skill => <option key={skill.name} value={skill.name}>{skill.name}</option>)}</select></label>
+                  <label>Model<select value={modelOverride} onChange={e=>setModelOverride(e.target.value)}>{availableModels.map(m=><option key={m} value={m}>{m === 'auto' ? 'Auto' : m}</option>)}</select></label>
+                  <button className="softButton" onClick={() => setWorkspaceTab('goal')}>Goal mode</button>
+                </div>
+              </footer>
+            </>
+          )}
         </>}
       </main>
     </div>

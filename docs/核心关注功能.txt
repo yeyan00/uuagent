@@ -16,7 +16,7 @@
 | 6 | 统一探索/活动面板 | not implemented | 工具调用和思考过程分散显示，无统一面板 | 设计探索面板 UI；将 tool_start/tool_result/thinking 统一归入可展开面板 | 面板展开/收起交互测试；大量工具调用时性能测试 |
 | 7 | Token 用量显示位置 | implemented | active session workspace header 已显示 Session Tokens(Input/Output/Total)；Project Settings Context 保留详细 token usage | 可选增强：增加历史 token 趋势 | session 级 token 显示测试已覆盖；后续补 token 趋势测试 |
 | 8 | 项目本地目录选择 | implemented | 后端支持注册本地项目路径，临时目录自动创建已支持；Web 创建项目会 trim name/path、显示路径错误并保留输入；existing-file workspace path 会返回明确错误 | 可选增强：原生目录选择器/文件系统 picker、目录权限预检查 | 项目创建路径 trim 测试已覆盖；existing-file path 错误测试已覆盖；中文/空格路径测试已覆盖 |
-| 9 | Goal 模式与子 Agent 记账 | not implemented | subagent 独立 session 与 task tree 已实现；Goal 模式自动决策与 delegate tool 未实现 | 实现 goal 模式自动决策逻辑；完善 subagent token 累计统计 | goal 模式决策测试；subagent token 累计准确性测试；嵌套 subagent 记账测试 |
+| 9 | Goal 模式与子 Agent 记账 | partial | GoalRun store/API/runner 已实现；内置 planner/explorer/builder/tester/reviewer profiles 已加入；delegate_task 工具已接入；Web Goal mode 可显示 plan/todos/activity 并支持 stop；subagent 独立 session 与 task tree 已实现 | 完善长跑 goal 的上下文压缩、subagent token 累计统计与嵌套记账 | Goal Store/API/Runner 测试、delegate_task 测试、Web Goal Mode 测试已覆盖；后续补 subagent token 累计与嵌套 subagent 记账测试 |
 | 10 | CLIProxyAPI / Models Settings | partial | Models Settings API/UI 已支持 proxy URL、/models 连接测试、模型列表、routing tiers/fallback；cliproxyapi 仍未嵌入/托管 | 评估是否托管 cliproxyapi 子进程；补 Providers 管理与更完整路由决策可视化 | proxy-url 配置生效测试已覆盖；/v1/models mock 测试已覆盖；Settings Models UI 测试已覆盖；后续补嵌入代理生命周期测试 |
 | 11 | 取消功能 | implemented | Agent Stop API 已实现；可取消上游 LLM request；subagent context cancel 已支持 | 无需进一步开发 | Stop API 测试；取消后资源清理测试；subagent 取消传播测试 |
 | 12 | 模型自动切换 | partial | 模型路由框架已存在(fast/strong/large_ctx tier)；自动切换策略待完善 | 完善基于任务类型/上下文长度的自动路由策略；增加路由决策可视化 | 路由规则匹配测试；fallback 策略测试；路由决策事件测试 |

@@ -350,8 +350,8 @@
 | Compact Archive | 已实现 | 手动 Compact 会归档被压缩消息并显示 Compact Archives；支持 restore/回滚并刷新当前 session/context |
 | Project Path UX | 已实现 | 创建项目时路径 trim、错误提示、existing-file path 校验、中文/空格路径测试已覆盖 |
 | Attachments | 已实现 | 后端支持 image_url；Web 支持图片选择/粘贴、预览/删除、附件-only 发送与消息渲染 |
-| Goal/Delegate Mode | 未实现 | 复杂任务自动决策 subagent 未实现 |
-| Activity Panel | 未实现 | 工具调用/思考过程未统一展示 |
+| Goal/Delegate Mode | 已实现 MVP | 已新增 GoalRun JSON store、Goal API、顺序 runner、内置 planner/explorer/builder/tester/reviewer profiles、delegate_task 工具、Web Goal mode 与 plan/todo/activity 展示；验证：go test ./...、cd web && npm test 通过 |
+| Activity Panel | 部分实现 | Goal Activity Panel 已展示 Goal plan/todos/subagent delegate activities；通用工具调用/思考过程统一面板仍待完善 |
 | Real MCP | 未实现 | 仅 mock，无真实 stdio/http/sse client |
 | Knowledge Base | 未实现 | 无文档索引与检索 |
 

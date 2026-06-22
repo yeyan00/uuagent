@@ -66,3 +66,45 @@ func TestLoadAutoLayersUserCwdExplicitAndEnv(t *testing.T) {
 		t.Fatalf("expected env model override, got %s", got)
 	}
 }
+
+func Test_DefaultConfig_includes_goal_mode_subagent_profiles(t *testing.T) {
+	// Given
+	cfg := Default()
+	wantProfiles := []string{"planner", "explorer", "builder", "tester", "reviewer"}
+
+	// When
+	profiles := map[string]SubagentProfile{}
+	for _, profile := range cfg.Agent.Subagent.Profiles {
+		profiles[profile.ID] = profile
+	}
+
+	// Then
+	for _, id := range wantProfiles {
+		profile, ok := profiles[id]
+		if !ok {
+			t.Fatalf("default config missing goal mode subagent profile %q; got %+v", id, cfg.Agent.Subagent.Profiles)
+		}
+		if profile.Name == "" || profile.SystemPrompt == "" {
+			t.Fatalf("goal mode profile %q should include name and prompt: %+v", id, profile)
+		}
+		if profile.MaxTurns != 0 {
+			t.Fatalf("goal mode profile %q should inherit subagent max turns with zero override, got %+v", id, profile)
+		}
+	}
+}
+
+func Test_DefaultConfig_uses_hermes_like_turn_budgets(t *testing.T) {
+	// Given
+	cfg := Default()
+
+	// Then
+	if cfg.Agent.MaxTurns != 90 {
+		t.Fatalf("agent max_turns should default to 90, got %d", cfg.Agent.MaxTurns)
+	}
+	if cfg.Agent.Subagent.MaxTurns != 45 {
+		t.Fatalf("subagent max_turns should default to 45, got %d", cfg.Agent.Subagent.MaxTurns)
+	}
+	if cfg.Goal.MaxTurns != 20 {
+		t.Fatalf("goal max_turns should default to 20, got %d", cfg.Goal.MaxTurns)
+	}
+}

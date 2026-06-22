@@ -224,6 +224,47 @@ input:focus, textarea:focus, select:focus { border-color: #5d87ff; box-shadow: 0
 .skillPicker input[type="checkbox"] { width: auto; }
 .skillCheckboxGrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px; padding: 10px; border: 1px solid #e2eaf6; border-radius: 12px; background: #f8fbff; }
 
+/* Goal Mode Styles */
+.goalWorkspace { flex: 1; display: flex; flex-direction: column; overflow: auto; padding: 20px; }
+.goalPanel { display: flex; flex-direction: column; gap: 16px; max-width: 800px; margin: 0 auto; width: 100%; }
+.goalHeader { display: flex; justify-content: space-between; align-items: center; padding-bottom: 12px; border-bottom: 1px solid #e5ebf4; }
+.goalHeader h2 { margin: 0; font-size: 18px; }
+.goalCreate { display: flex; flex-direction: column; gap: 12px; }
+.goalCreate h3 { margin: 0; font-size: 16px; color: #344054; }
+.goalCreate textarea { min-height: 80px; resize: vertical; }
+.goalList { margin-top: 20px; }
+.goalList h4 { margin: 0 0 12px 0; font-size: 14px; color: #62738f; }
+.goalItem { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; border: 1px solid #d6dfed; border-radius: 12px; cursor: pointer; transition: all 0.15s ease; }
+.goalItem:hover { background: #f7faff; border-color: #5d87ff; }
+.goalStatus { padding: 4px 10px; border-radius: 999px; font-size: 11px; font-weight: 600; text-transform: uppercase; }
+.goalStatus.running { background: #e0f2fe; color: #0369a1; }
+.goalStatus.completed { background: #dcfce7; color: #15803d; }
+.goalStatus.stopping { background: #fef3c7; color: #b45309; }
+.goalActivity { display: flex; flex-direction: column; gap: 16px; }
+.goalActivityHeader { display: flex; justify-content: space-between; align-items: center; }
+.goalActivityHeader h3 { margin: 0; font-size: 16px; color: #162033; }
+.goalStatusDisplay { padding: 8px 14px; border-radius: 8px; background: #f1f5f9; color: #62738f; font-size: 13px; font-weight: 500; text-transform: lowercase; }
+.goalSection { display: flex; flex-direction: column; gap: 10px; }
+.goalSection h4 { margin: 0; font-size: 14px; color: #344054; font-weight: 700; padding-bottom: 6px; border-bottom: 1px solid #e5ebf4; }
+.planSteps { display: flex; flex-direction: column; gap: 8px; }
+.planStep { display: flex; align-items: center; gap: 12px; padding: 10px 12px; background: #f8fbff; border: 1px solid #e2eaf6; border-radius: 10px; }
+.stepNumber { width: 24px; height: 24px; display: grid; place-items: center; background: #5d87ff; color: white; border-radius: 999px; font-size: 12px; font-weight: 700; }
+.stepDescription { flex: 1; font-size: 13px; color: #162033; }
+.stepSubagent { padding: 4px 10px; background: #e0e7ff; color: #4c78ff; border-radius: 6px; font-size: 11px; font-weight: 600; }
+.todoList { display: flex; flex-direction: column; gap: 8px; }
+.todoItem { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: #f8fbff; border: 1px solid #e2eaf6; border-radius: 10px; }
+.todoItem.completed { border-color: #86efac; background: #f0fdf4; }
+.todoItem.in_progress { border-color: #5d87ff; background: #eff6ff; }
+.todoStatus { padding: 3px 8px; border-radius: 4px; font-size: 10px; font-weight: 600; text-transform: uppercase; background: #e2e8f0; color: #64748b; }
+.todoItem.completed .todoStatus { background: #dcfce7; color: #15803d; }
+.todoItem.in_progress .todoStatus { background: #dbeafe; color: #1d4ed8; }
+.todoDescription { flex: 1; font-size: 13px; color: #162033; }
+.todoResult { font-size: 12px; color: #62738f; font-style: italic; }
+.activityList { display: flex; flex-direction: column; gap: 6px; }
+.activityItem { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: #f8fafc; border-radius: 8px; font-size: 13px; }
+.activityText { flex: 1; color: #162033; }
+.activitySubagent { padding: 3px 8px; background: #e0e7ff; color: #4c78ff; border-radius: 4px; font-size: 11px; font-weight: 600; }
+
 @media (max-width: 1180px) {
   body { min-width: 920px; }
   .appWindow { grid-template-columns: 84px 280px minmax(420px, 1fr); }

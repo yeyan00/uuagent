@@ -1,7 +1,11 @@
 import React from 'react'
-import { describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { describe, expect, it, vi, afterEach } from 'vitest'
+import { fireEvent, render, screen, waitFor, cleanup } from '@testing-library/react'
 import App from './App'
+
+afterEach(() => {
+  cleanup()
+})
 
 describe('App', () => {
   it('renders rail navigation and opens agent settings from Settings page', async () => {
@@ -1129,6 +1133,239 @@ describe('App', () => {
     // Input fields should still have their values
     expect((nameInput as HTMLInputElement).value).toBe('Test Project')
     expect((pathInput as HTMLInputElement).value).toBe('C:/some/file.txt')
+  })
+
+  it('creates a goal run and displays plan todos and activity', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      calls.push({ url, init })
+      if (url === '/api/projects') return Response.json({ projects: [{ id: 'proj-1', name: 'Test Project', workspace_path: 'C:/test', temporary: false }] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/sessions') return Response.json({ sessions: [] })
+      if (url === '/api/memory') return Response.json({ memories: [] })
+      if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
+      if (url === '/api/projects/proj-1/goals' && init?.method === 'POST') {
+        return Response.json({
+          id: 'goal-1',
+          project_id: 'proj-1',
+          session_id: 's-1',
+          agent_id: 'default',
+          goal: 'Implement Goal Mode',
+          status: 'running',
+          plan: [
+            { id: 'step-1', description: 'Understand goal and inspect context', subagent: 'planner' },
+            { id: 'step-2', description: 'Explore relevant code', subagent: 'explorer' },
+            { id: 'step-3', description: 'Implement focused changes', subagent: 'builder' },
+            { id: 'step-4', description: 'Test and verify', subagent: 'tester' },
+            { id: 'step-5', description: 'Review completion', subagent: 'reviewer' }
+          ],
+          todos: [
+            { id: 'todo-1', step_id: 'step-1', description: 'Understand goal and inspect context', status: 'completed', result: 'Goal understood' },
+            { id: 'todo-2', step_id: 'step-2', description: 'Explore relevant code', status: 'in_progress', result: '' }
+          ],
+          activities: [
+            { id: 'act-1', type: 'goal_created', text: 'Goal created: Implement Goal Mode' },
+            { id: 'act-2', type: 'plan_created', text: 'Plan created with 5 steps' },
+            { id: 'act-3', type: 'todo_started', text: 'Started: Understand goal and inspect context' },
+            { id: 'act-4', type: 'todo_completed', text: 'Completed: Understand goal and inspect context' }
+          ]
+        })
+      }
+      if (url === '/api/projects/proj-1/goals') return Response.json({ goals: [] })
+      if (url === '/api/projects/proj-1/goals/goal-1') {
+        return Response.json({
+          id: 'goal-1',
+          project_id: 'proj-1',
+          session_id: 's-1',
+          agent_id: 'default',
+          goal: 'Implement Goal Mode',
+          status: 'running',
+          plan: [
+            { id: 'step-1', description: 'Understand goal and inspect context', subagent: 'planner' },
+            { id: 'step-2', description: 'Explore relevant code', subagent: 'explorer' },
+            { id: 'step-3', description: 'Implement focused changes', subagent: 'builder' },
+            { id: 'step-4', description: 'Test and verify', subagent: 'tester' },
+            { id: 'step-5', description: 'Review completion', subagent: 'reviewer' }
+          ],
+          todos: [
+            { id: 'todo-1', step_id: 'step-1', description: 'Understand goal and inspect context', status: 'completed', result: 'Goal understood' },
+            { id: 'todo-2', step_id: 'step-2', description: 'Explore relevant code', status: 'in_progress', result: '' }
+          ],
+          activities: [
+            { id: 'act-1', type: 'goal_created', text: 'Goal created: Implement Goal Mode' },
+            { id: 'act-2', type: 'plan_created', text: 'Plan created with 5 steps' },
+            { id: 'act-3', type: 'todo_started', text: 'Started: Understand goal and inspect context' },
+            { id: 'act-4', type: 'todo_completed', text: 'Completed: Understand goal and inspect context' }
+          ]
+        })
+      }
+      return Response.json({})
+    }) as any
+
+    render(<App initialWorkspaceTab="chat" />)
+    await waitFor(() => expect(screen.getAllByText('Test Project').length).toBeGreaterThan(0))
+
+    const projectSelect = screen.queryByDisplayValue('None')
+    if (projectSelect) {
+      fireEvent.change(projectSelect, { target: { value: 'proj-1' } })
+    }
+
+    const goalModeButton = screen.queryByText('Goal mode')
+    if (goalModeButton) {
+      fireEvent.click(goalModeButton)
+    }
+
+    const goalInput = await screen.findByPlaceholderText('Enter your goal...')
+    fireEvent.change(goalInput, { target: { value: 'Implement Goal Mode' } })
+    fireEvent.click(await screen.findByText('Start Goal'))
+
+    await waitFor(() => {
+      const post = calls.find(c => c.url === '/api/projects/proj-1/goals' && c.init?.method === 'POST')
+      expect(post).toBeTruthy()
+      expect(JSON.parse(String(post?.init?.body))).toMatchObject({ goal: 'Implement Goal Mode', agent_id: 'default' })
+    })
+
+    expect(await screen.findByText('Plan')).toBeTruthy()
+    expect(await screen.findByText('Todos')).toBeTruthy()
+    expect(await screen.findByText('Activity')).toBeTruthy()
+
+    expect(await screen.findByText('planner')).toBeTruthy()
+    expect((await screen.findAllByText('explorer')).length).toBeGreaterThanOrEqual(1)
+    expect(await screen.findByText('builder')).toBeTruthy()
+    expect(await screen.findByText('tester')).toBeTruthy()
+    expect(await screen.findByText('reviewer')).toBeTruthy()
+
+    expect((await screen.findAllByText('Goal created: Implement Goal Mode')).length).toBeGreaterThanOrEqual(1)
+    expect(await screen.findByText('Plan created with 5 steps')).toBeTruthy()
+  })
+
+  it('shows subagent delegate activities in the goal activity panel', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/projects') return Response.json({ projects: [{ id: 'proj-1', name: 'Test Project', workspace_path: 'C:/test', temporary: false }] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/sessions') return Response.json({ sessions: [] })
+      if (url === '/api/memory') return Response.json({ memories: [] })
+      if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
+      if (url === '/api/projects/proj-1/goals') return Response.json({
+        goals: [{
+          id: 'goal-1',
+          project_id: 'proj-1',
+          goal: 'Implement feature',
+          status: 'running'
+        }]
+      })
+      if (url === '/api/projects/proj-1/goals/goal-1') {
+        return Response.json({
+          id: 'goal-1',
+          project_id: 'proj-1',
+          session_id: 's-1',
+          agent_id: 'default',
+          goal: 'Implement feature',
+          status: 'running',
+          plan: [
+            { id: 'step-1', description: 'Explore codebase', subagent: 'explorer' }
+          ],
+          todos: [
+            { id: 'todo-1', step_id: 'step-1', description: 'Explore codebase', status: 'completed', result: 'Found 5 relevant files' }
+          ],
+          activities: [
+            { id: 'act-1', type: 'delegate_started', text: 'explorer started: Explore codebase', subagent_id: 'explorer' },
+            { id: 'act-2', type: 'delegate_completed', text: 'explorer completed: Found 5 relevant files', subagent_id: 'explorer', result: 'Found 5 relevant files' },
+            { id: 'act-3', type: 'todo_completed', text: 'Completed: Explore codebase' }
+          ]
+        })
+      }
+      return Response.json({})
+    }) as any
+
+    render(<App initialWorkspaceTab="chat" />)
+    await waitFor(() => expect(screen.getAllByText('Test Project').length).toBeGreaterThan(0))
+
+    const projectSelect2 = screen.queryByDisplayValue('None')
+    if (projectSelect2) {
+      fireEvent.change(projectSelect2, { target: { value: 'proj-1' } })
+    }
+
+    const goalModeButton2 = screen.queryByText('Goal mode')
+    if (goalModeButton2) {
+      fireEvent.click(goalModeButton2)
+    }
+
+    fireEvent.click(await screen.findByText('Implement feature'))
+
+    expect(await screen.findByText('Activity')).toBeTruthy()
+    expect(await screen.findByText('explorer started: Explore codebase')).toBeTruthy()
+    expect(await screen.findByText('explorer completed: Found 5 relevant files')).toBeTruthy()
+    expect((await screen.findAllByText('explorer')).length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('stops a running goal from the goal panel', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      calls.push({ url, init })
+      if (url === '/api/projects') return Response.json({ projects: [{ id: 'proj-1', name: 'Test Project', workspace_path: 'C:/test', temporary: false }] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/sessions') return Response.json({ sessions: [] })
+      if (url === '/api/memory') return Response.json({ memories: [] })
+      if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
+      if (url === '/api/projects/proj-1/goals') return Response.json({
+        goals: [{
+          id: 'goal-1',
+          project_id: 'proj-1',
+          goal: 'Long running task',
+          status: 'running'
+        }]
+      })
+      if (url === '/api/projects/proj-1/goals/goal-1') {
+        return Response.json({
+          id: 'goal-1',
+          project_id: 'proj-1',
+          session_id: 's-1',
+          agent_id: 'default',
+          goal: 'Long running task',
+          status: 'running',
+          plan: [{ id: 'step-1', description: 'Do work', subagent: 'builder' }],
+          todos: [{ id: 'todo-1', step_id: 'step-1', description: 'Do work', status: 'in_progress', result: '' }],
+          activities: [{ id: 'act-1', type: 'todo_started', text: 'Started: Do work' }]
+        })
+      }
+      if (url === '/api/projects/proj-1/goals/goal-1/stop' && init?.method === 'POST') {
+        return Response.json({ status: 'stopping' })
+      }
+      return Response.json({})
+    }) as any
+
+    render(<App initialWorkspaceTab="chat" />)
+    await waitFor(() => expect(screen.getAllByText('Test Project').length).toBeGreaterThan(0))
+
+    const projectSelect3 = screen.queryByDisplayValue('None')
+    if (projectSelect3) {
+      fireEvent.change(projectSelect3, { target: { value: 'proj-1' } })
+    }
+
+    const goalModeButton3 = screen.queryByText('Goal mode')
+    if (goalModeButton3) {
+      fireEvent.click(goalModeButton3)
+    }
+
+    fireEvent.click(await screen.findByText('Long running task'))
+
+    expect(await screen.findByText('Stop goal')).toBeTruthy()
+
+    fireEvent.click(await screen.findByText('Stop goal'))
+
+    await waitFor(() => {
+      const post = calls.find(c => c.url === '/api/projects/proj-1/goals/goal-1/stop' && c.init?.method === 'POST')
+      expect(post).toBeTruthy()
+    })
+
+    expect(await screen.findByText('stopping')).toBeTruthy()
   })
 
 })

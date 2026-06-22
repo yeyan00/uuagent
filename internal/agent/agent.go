@@ -23,6 +23,7 @@ import (
 	"github.com/yeyan00/uuagent/internal/router"
 	"github.com/yeyan00/uuagent/internal/session"
 	"github.com/yeyan00/uuagent/internal/skills"
+	"github.com/yeyan00/uuagent/internal/subagent"
 	"github.com/yeyan00/uuagent/internal/tools"
 	"github.com/yeyan00/uuagent/internal/types"
 )
@@ -115,6 +116,10 @@ func (a *Agent) NewChildWithSession(model string, blockedTools map[string]bool, 
 		child.session = store
 	}
 	return child
+}
+
+func (a *Agent) NewSubagentChildWithSession(model string, blockedTools map[string]bool, store *session.Store) subagent.ChildAgent {
+	return a.NewChildWithSession(model, blockedTools, store)
 }
 
 // RunOnce runs a single isolated prompt and returns the final text response.
@@ -389,6 +394,9 @@ func (a *Agent) SubagentProfiles() []config.SubagentProfile {
 // UpsertSubagentProfile creates or updates a subagent profile and persists user config.
 func (a *Agent) UpsertSubagentProfile(profile config.SubagentProfile) (config.SubagentProfile, error) {
 	profile = normalizeSubagentProfile(profile)
+	if hasOnlyDefaultGoalSubagents(a.cfg.Agent.Subagent.Profiles) {
+		a.cfg.Agent.Subagent.Profiles = nil
+	}
 	for i := range a.cfg.Agent.Subagent.Profiles {
 		if a.cfg.Agent.Subagent.Profiles[i].ID == profile.ID {
 			a.cfg.Agent.Subagent.Profiles[i] = profile
@@ -408,6 +416,22 @@ func (a *Agent) DeleteSubagentProfile(id string) error {
 		}
 	}
 	return fmt.Errorf("subagent profile not found")
+}
+
+func hasOnlyDefaultGoalSubagents(profiles []config.SubagentProfile) bool {
+	if len(profiles) != 5 {
+		return false
+	}
+	seen := map[string]bool{}
+	for _, profile := range profiles {
+		seen[profile.ID] = true
+	}
+	for _, id := range []string{"planner", "explorer", "builder", "tester", "reviewer"} {
+		if !seen[id] {
+			return false
+		}
+	}
+	return true
 }
 
 func normalizeSubagentProfile(profile config.SubagentProfile) config.SubagentProfile {
@@ -520,8 +544,8 @@ func (a *Agent) runWithResolvedProfile(ctx context.Context, sessionID, projectID
 		if maxTurns <= 0 {
 			maxTurns = a.cfg.Agent.MaxTurns
 		}
-		if maxTurns <= 0 || maxTurns > 20 {
-			maxTurns = 20
+		if maxTurns <= 0 {
+			maxTurns = 90
 		}
 
 		toolWorkspace := a.toolWorkspace(projectPath)
@@ -941,6 +965,9 @@ func (a *Agent) callLLM(ctx context.Context, model string, messages []Message, p
 	if len(policy.AllowedTools) == 0 || policy.AllowedTools["memory"] {
 		toolDefs = append(toolDefs, memoryToolDefinition())
 	}
+	if len(policy.AllowedTools) == 0 || policy.AllowedTools["delegate_task"] {
+		toolDefs = append(toolDefs, delegateTaskToolDefinition())
+	}
 	if a.isMCPServerEnabled("mock") && (len(policy.AllowedMCPServers) == 0 || policy.AllowedMCPServers["mock"]) {
 		toolDefs = append(toolDefs, map[string]any{"type": "function", "function": map[string]any{"name": "mcp_echo", "description": "Echo arguments through the mock MCP client."}})
 	}
@@ -1129,6 +1156,9 @@ func (a *Agent) executeTool(ctx context.Context, tc ToolCall, policy runtimePoli
 	if name == "memory" {
 		return a.executeMemoryTool(args)
 	}
+	if name == "delegate_task" {
+		return a.executeDelegateTaskTool(ctx, args)
+	}
 	if tool, ok := a.tools.Get(name); ok {
 		if policy.PermissionMode != "" {
 			toolRegistry := tools.NewRegistryWithOptions(workspace, tools.Options{PermissionMode: toolPermissionMode(policy.PermissionMode), ApprovedPaths: approvedPaths})
@@ -1152,6 +1182,24 @@ func (a *Agent) executeTool(ctx context.Context, tc ToolCall, policy runtimePoli
 	return fmt.Sprintf("tool %s not found", name)
 }
 
+func delegateTaskToolDefinition() map[string]any {
+	return map[string]any{
+		"type": "function",
+		"function": map[string]any{
+			"name":        "delegate_task",
+			"description": "Delegate one isolated task to a configured subagent profile and return its result.",
+			"parameters": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"profile_id": map[string]any{"type": "string"},
+					"task":       map[string]any{"type": "string"},
+				},
+				"required": []string{"profile_id", "task"},
+			},
+		},
+	}
+}
+
 func memoryToolDefinition() map[string]any {
 	return map[string]any{
 		"type": "function",
@@ -1172,6 +1220,24 @@ func memoryToolDefinition() map[string]any {
 			},
 		},
 	}
+}
+
+func (a *Agent) executeDelegateTaskTool(ctx context.Context, args map[string]any) string {
+	profileID, _ := args["profile_id"].(string)
+	task, _ := args["task"].(string)
+	if strings.TrimSpace(profileID) == "" || strings.TrimSpace(task) == "" {
+		return mustJSON(map[string]any{"success": false, "error": "profile_id and task are required"})
+	}
+	manager := subagent.NewManager(a.cfg.Agent.Subagent, a.router)
+	results := manager.DelegateProfile(ctx, a, "delegate_task", profileID, []string{task})
+	if len(results) != 1 {
+		return mustJSON(map[string]any{"success": false, "profile_id": profileID, "task": task, "error": "delegate_task returned no result"})
+	}
+	result := results[0]
+	if result.Error != "" {
+		return mustJSON(map[string]any{"success": false, "profile_id": profileID, "task": task, "task_id": result.ID, "session_id": result.SessionID, "error": result.Error})
+	}
+	return mustJSON(map[string]any{"success": true, "profile_id": profileID, "task": task, "task_id": result.ID, "session_id": result.SessionID, "output": result.Output})
 }
 
 func (a *Agent) executeMemoryTool(args map[string]any) string {

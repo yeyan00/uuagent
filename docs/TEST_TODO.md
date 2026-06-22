@@ -441,7 +441,7 @@
 - [x] models settings API+UI 测试（proxy URL、/models 连接测试、routing tiers）
 - [x] compact archive/history 归档与展示测试
 - [ ] compact restore/回滚归档消息测试
-- [ ] goal/delegate mode 自动路由测试
+- [x] goal/delegate mode 自动路由测试（Goal Store/API/Runner、delegate_task、Web Goal Mode 已覆盖）
 - [ ] deny approval 后继续对话不中断
 
 ### P2 - 体验优化
