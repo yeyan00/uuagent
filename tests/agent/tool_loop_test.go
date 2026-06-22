@@ -75,6 +75,66 @@ func TestAgentToolLoopSendsToolResultBackToModel(t *testing.T) {
 	}
 }
 
+func TestAgentMaxTurnsDisablesToolsOnFinalProviderTurn(t *testing.T) {
+	// Given
+	t.Setenv("UUAGENT_HOME", t.TempDir())
+	calls := 0
+	secondToolsLen := -1
+	secondToolChoice := ""
+	executedForbiddenTool := false
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		if calls == 1 {
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"Need listing.","tool_calls":[{"id":"tc-list","type":"function","function":{"name":"ls","arguments":"{\"path\":\"internal\"}"}}]}}]}`))
+			return
+		}
+		var req struct {
+			Tools      []map[string]any `json:"tools"`
+			ToolChoice any              `json:"tool_choice"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode second request: %v", err)
+		}
+		secondToolsLen = len(req.Tools)
+		if text, ok := req.ToolChoice.(string); ok {
+			secondToolChoice = text
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"I should not call tools.","tool_calls":[{"id":"tc-forbidden","type":"function","function":{"name":"ls","arguments":"{\"path\":\".\"}"}}]}}]}`))
+	}))
+	defer ts.Close()
+
+	cfg := config.Default()
+	cfg.Agent.ProxyURL = ts.URL + "/v1"
+	cfg.Agent.MaxTurns = 2
+	a := agent.New(cfg)
+
+	// When
+	events, err := a.RunWithAgent(context.Background(), "max-turn-no-tools", "", "list once then summarize")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for evt := range events {
+		if evt.Type == "tool_start" && evt.ToolID == "tc-forbidden" {
+			executedForbiddenTool = true
+		}
+	}
+
+	// Then
+	if calls != 2 {
+		t.Fatalf("expected 2 provider turns, got %d", calls)
+	}
+	if secondToolsLen != 0 {
+		t.Fatalf("final provider turn should not advertise tools, got %d tools", secondToolsLen)
+	}
+	if secondToolChoice != "none" {
+		t.Fatalf("final provider turn should force tool_choice none, got %q", secondToolChoice)
+	}
+	if executedForbiddenTool {
+		t.Fatalf("tool emitted on final provider turn must not execute")
+	}
+}
+
 func TestProjectRunExecutesToolsInProjectWorkspace(t *testing.T) {
 	t.Setenv("UUAGENT_HOME", t.TempDir())
 	workspace := filepath.Join(t.TempDir(), "workspace")

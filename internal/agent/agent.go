@@ -576,13 +576,14 @@ func (a *Agent) runWithResolvedProfile(ctx context.Context, sessionID, projectID
 
 		toolWorkspace := a.toolWorkspace(projectPath)
 		for turn := 0; turn < maxTurns; turn++ {
+			finalTurn := turn == maxTurns-1
 			if ctx.Err() != nil {
 				events <- Event{Type: "error", RunID: runID, Text: ctx.Err().Error()}
 				return
 			}
 			memorySnapshot := sess.EnsureMemorySnapshot(a.memory.BuildScopedSystemPrompt(memoryProject, profile.ID, sessionID))
 			messages := a.withSystemPrompt(sess.Snapshot().Messages, profile, memorySnapshot, prompt)
-			response, toolCalls, usage, err := a.callLLMStream(ctx, model, messages, policy, streamCallbacks{
+			response, toolCalls, usage, err := a.callLLMStreamWithOptions(ctx, model, messages, policy, streamCallbacks{
 				Content: func(delta string) {
 					if delta != "" {
 						events <- Event{Type: "content", RunID: runID, Text: delta}
@@ -593,12 +594,16 @@ func (a *Agent) runWithResolvedProfile(ctx context.Context, sessionID, projectID
 						events <- Event{Type: "reasoning", RunID: runID, Text: delta}
 					}
 				},
-			})
+			}, llmOptions{DisableTools: finalTurn})
 			if err != nil {
 				events <- Event{Type: "error", RunID: runID, Text: err.Error()}
 				return
 			}
 
+			if finalTurn && len(toolCalls) > 0 {
+				events <- Event{Type: "status", RunID: runID, Text: "tools disabled after max agent turns; finalizing"}
+				toolCalls = nil
+			}
 			sess.AppendMessage(Message{Role: "assistant", Content: response, ToolCalls: toolCalls})
 			sess.AddRunUsage(runID, usage.withFallback(messages, response))
 			if len(toolCalls) == 0 {
@@ -723,6 +728,7 @@ func (a *Agent) ApproveRunEvents(ctx context.Context, runID string) (<-chan Even
 			maxTurns = 20
 		}
 		for turn := 0; turn < maxTurns; turn++ {
+			finalTurn := turn == maxTurns-1
 			memorySnapshot := p.Session.EnsureMemorySnapshot(a.memory.BuildScopedSystemPrompt(p.Session.Snapshot().ProjectPath, p.Profile.ID, p.Session.Snapshot().ID))
 			messages := a.withSystemPrompt(p.Session.Snapshot().Messages, p.Profile, memorySnapshot, p.Prompt)
 			response, toolCalls, usage, err := a.callLLM(ctx, p.Model, messages, p.Policy, false, streamCallbacks{
@@ -736,11 +742,15 @@ func (a *Agent) ApproveRunEvents(ctx context.Context, runID string) (<-chan Even
 						events <- Event{Type: "reasoning", RunID: runID, Text: delta}
 					}
 				},
-			})
+			}, llmOptions{DisableTools: finalTurn})
 			if err != nil {
 				p.Session.UpdateRunStatus(runID, "failed")
 				events <- Event{Type: "error", RunID: runID, Text: err.Error()}
 				return
+			}
+			if finalTurn && len(toolCalls) > 0 {
+				events <- Event{Type: "status", RunID: runID, Text: "tools disabled after max agent turns; finalizing"}
+				toolCalls = nil
 			}
 			p.Session.AppendMessage(Message{Role: "assistant", Content: response, ToolCalls: toolCalls})
 			p.Session.AddRunUsage(runID, usage.withFallback(messages, response))
@@ -881,6 +891,7 @@ type chatCompletionRequest struct {
 	Stream           bool             `json:"stream,omitempty"`
 	ReasoningEffort  string           `json:"reasoning_effort,omitempty"`
 	IncludeReasoning bool             `json:"include_reasoning,omitempty"`
+	ToolChoice       any              `json:"tool_choice,omitempty"`
 }
 
 type chatCompletionResponse struct {
@@ -990,11 +1001,19 @@ type streamCallbacks struct {
 	Reasoning func(string)
 }
 
-func (a *Agent) callLLMStream(ctx context.Context, model string, messages []Message, policy runtimePolicy, callbacks streamCallbacks) (string, []ToolCall, tokenUsage, error) {
-	return a.callLLM(ctx, model, messages, policy, true, callbacks)
+type llmOptions struct {
+	DisableTools bool
 }
 
-func (a *Agent) callLLM(ctx context.Context, model string, messages []Message, policy runtimePolicy, stream bool, callbacks streamCallbacks) (string, []ToolCall, tokenUsage, error) {
+func (a *Agent) callLLMStream(ctx context.Context, model string, messages []Message, policy runtimePolicy, callbacks streamCallbacks) (string, []ToolCall, tokenUsage, error) {
+	return a.callLLM(ctx, model, messages, policy, true, callbacks, llmOptions{})
+}
+
+func (a *Agent) callLLMStreamWithOptions(ctx context.Context, model string, messages []Message, policy runtimePolicy, callbacks streamCallbacks, opts llmOptions) (string, []ToolCall, tokenUsage, error) {
+	return a.callLLM(ctx, model, messages, policy, true, callbacks, opts)
+}
+
+func (a *Agent) callLLM(ctx context.Context, model string, messages []Message, policy runtimePolicy, stream bool, callbacks streamCallbacks, opts llmOptions) (string, []ToolCall, tokenUsage, error) {
 	baseURL := strings.TrimRight(a.cfg.Agent.ProxyURL, "/")
 	if baseURL == "" {
 		return "", nil, tokenUsage{}, fmt.Errorf("agent proxy-url is empty")
@@ -1004,17 +1023,23 @@ func (a *Agent) callLLM(ctx context.Context, model string, messages []Message, p
 		apiKey = strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
 	}
 
-	toolDefs := tools.NewRegistryWithOptions(".", tools.Options{PermissionMode: toolPermissionMode(policy.PermissionMode)}).DefinitionsFor(policy.AllowedTools)
-	if len(policy.AllowedTools) == 0 || policy.AllowedTools["memory"] {
-		toolDefs = append(toolDefs, memoryToolDefinition())
-	}
-	if len(policy.AllowedTools) == 0 || policy.AllowedTools["delegate_task"] {
-		toolDefs = append(toolDefs, delegateTaskToolDefinition())
-	}
-	if a.isMCPServerEnabled("mock") && (len(policy.AllowedMCPServers) == 0 || policy.AllowedMCPServers["mock"]) {
-		toolDefs = append(toolDefs, map[string]any{"type": "function", "function": map[string]any{"name": "mcp_echo", "description": "Echo arguments through the mock MCP client."}})
+	toolDefs := []map[string]any{}
+	if !opts.DisableTools {
+		toolDefs = tools.NewRegistryWithOptions(".", tools.Options{PermissionMode: toolPermissionMode(policy.PermissionMode)}).DefinitionsFor(policy.AllowedTools)
+		if len(policy.AllowedTools) == 0 || policy.AllowedTools["memory"] {
+			toolDefs = append(toolDefs, memoryToolDefinition())
+		}
+		if len(policy.AllowedTools) == 0 || policy.AllowedTools["delegate_task"] {
+			toolDefs = append(toolDefs, delegateTaskToolDefinition())
+		}
+		if a.isMCPServerEnabled("mock") && (len(policy.AllowedMCPServers) == 0 || policy.AllowedMCPServers["mock"]) {
+			toolDefs = append(toolDefs, map[string]any{"type": "function", "function": map[string]any{"name": "mcp_echo", "description": "Echo arguments through the mock MCP client."}})
+		}
 	}
 	payload := chatCompletionRequest{Model: model, Messages: messages, Tools: toolDefs, Stream: stream}
+	if opts.DisableTools {
+		payload.ToolChoice = "none"
+	}
 	if a.cfg.Agent.ReasoningEnabled {
 		payload.IncludeReasoning = true
 		if effort := strings.TrimSpace(a.cfg.Agent.ReasoningEffort); effort != "" {
