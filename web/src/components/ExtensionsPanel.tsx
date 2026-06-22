@@ -187,7 +187,14 @@ export function ExtensionsPanel({
                   </div>
                 </div>
               )}
-              {selectedExtension.status === 'running' && !selectedExtension.management_url && (
+              {selectedExtension.status === 'running' && !selectedExtension.management_url && selectedExtension.management_path && selectedExtension.management_installed === false && (
+                <div className="extensionGuidance compactGuidance">
+                  <h4>Packaged Management Panel Missing</h4>
+                  <p>Place management.html beside cli-proxy-api.exe to enable the offline management panel. UUAgent disables CLIProxyAPI runtime panel downloads.</p>
+                  <code>{selectedExtension.management_path}</code>
+                </div>
+              )}
+              {selectedExtension.status === 'running' && !selectedExtension.management_url && (!selectedExtension.management_path || selectedExtension.management_installed !== false) && (
                 <div className="extensionGuidance compactGuidance">
                   <h4>Management Panel Unavailable</h4>
                   <p>CLIProxyAPI is running, but its management panel endpoint is not reachable. Use the Proxy URL above for model routing.</p>
@@ -207,6 +214,12 @@ export function ExtensionsPanel({
                 <div className="statusRow">
                   <span className="statusLabel">Config Path</span>
                   <code className="statusValue">{selectedExtension.config_path}</code>
+                </div>
+              )}
+              {selectedExtension.management_path && (
+                <div className="statusRow">
+                  <span className="statusLabel">Management Panel Path</span>
+                  <code className="statusValue">{selectedExtension.management_path}</code>
                 </div>
               )}
             </section>

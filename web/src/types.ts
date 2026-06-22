@@ -13,6 +13,8 @@ export interface ExtensionStatus {
   port?: number;
   proxy_url?: string;
   management_url?: string;
+  management_path?: string;
+  management_installed?: boolean;
   last_error?: string;
 }
 

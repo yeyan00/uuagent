@@ -1446,7 +1446,7 @@ describe('App', () => {
   it('shows CLIProxyAPI management unavailable when running panel URL is absent', async () => {
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
-      if (url === '/api/extensions') return Response.json({ extensions: [{ id: 'cliproxyapi', name: 'CLIProxyAPI', built_in: true, installed: true, status: 'running', binary_path: 'C:\\Users\\15171\\.uuagent\\plugins\\cliproxyapi\\cli-proxy-api.exe', proxy_url: 'http://127.0.0.1:8317/v1', port: 8317 }] })
+      if (url === '/api/extensions') return Response.json({ extensions: [{ id: 'cliproxyapi', name: 'CLIProxyAPI', built_in: true, installed: true, status: 'running', binary_path: 'C:\\Users\\15171\\.uuagent\\plugins\\cliproxyapi\\cli-proxy-api.exe', management_path: 'C:\\Users\\15171\\.uuagent\\plugins\\cliproxyapi\\management.html', management_installed: false, proxy_url: 'http://127.0.0.1:8317/v1', port: 8317 }] })
       if (url === '/api/projects') return Response.json({ projects: [] })
       if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
       if (url === '/api/sessions') return Response.json({ sessions: [] })
@@ -1458,7 +1458,9 @@ describe('App', () => {
     fireEvent.click(await screen.findByText('Extensions'))
     fireEvent.click(await screen.findByText('CLIProxyAPI'))
 
-    expect(await screen.findByText('Management Panel Unavailable')).toBeTruthy()
+    expect(await screen.findByText('Packaged Management Panel Missing')).toBeTruthy()
+    const managementPaths = await screen.findAllByText('C:\\Users\\15171\\.uuagent\\plugins\\cliproxyapi\\management.html')
+    expect(managementPaths.length).toBeGreaterThan(0)
     expect(screen.queryByText('Open Management Panel')).toBeNull()
   })
 
