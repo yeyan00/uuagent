@@ -142,6 +142,12 @@ func Test_CLIProxyAPI_Start_generates_config_reaches_running_and_captures_bounde
 			t.Fatalf("generated config missing %q in:\n%s", want, configText)
 		}
 	}
+	if !strings.Contains(configText, "remote-management:") || !strings.Contains(configText, "secret-key:") {
+		t.Fatalf("generated config should enable CLIProxyAPI management routes, got:\n%s", configText)
+	}
+	if status.ManagementURL != "" {
+		t.Fatalf("management URL should be hidden when panel endpoint is unavailable, got %q", status.ManagementURL)
+	}
 	waitForLogLine(t, manager, "fake log line 3")
 	logs := manager.Logs()
 	if len(logs) != 2 || !strings.Contains(strings.Join(logs, "\n"), "fake log line 3") {

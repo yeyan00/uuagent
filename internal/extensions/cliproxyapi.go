@@ -170,13 +170,36 @@ func (m *CLIProxyAPIManager) stateLocked() string {
 }
 
 func (m *CLIProxyAPIManager) statusLocked(state string) Status {
-	return Status{ID: cliProxyAPIID, Name: "CLIProxyAPI", Description: "OpenAI-compatible model proxy and management panel", BuiltIn: true, Installed: fileExists(m.binaryPathLocked()), Enabled: true, Status: state, BinaryPath: m.binaryPathLocked(), ConfigPath: m.configPathLocked(), Port: m.port, ProxyURL: fmt.Sprintf("http://127.0.0.1:%d/v1", m.port), ManagementURL: "/extensions/cliproxyapi/management.html", LastError: m.lastError}
+	managementURL := ""
+	if state == StatusRunning && m.managementPanelAvailableLocked() {
+		managementURL = fmt.Sprintf("http://127.0.0.1:%d/management.html", m.port)
+	}
+	return Status{ID: cliProxyAPIID, Name: "CLIProxyAPI", Description: "OpenAI-compatible model proxy and management panel", BuiltIn: true, Installed: fileExists(m.binaryPathLocked()), Enabled: true, Status: state, BinaryPath: m.binaryPathLocked(), ConfigPath: m.configPathLocked(), Port: m.port, ProxyURL: fmt.Sprintf("http://127.0.0.1:%d/v1", m.port), ManagementURL: managementURL, LastError: m.lastError}
 }
 
 func (m *CLIProxyAPIManager) setErrorLocked(state string, err error) Status {
 	m.lastError = err.Error()
 	m.logs.Append(m.lastError)
 	return m.statusLocked(state)
+}
+
+func (m *CLIProxyAPIManager) managementPanelAvailableLocked() bool {
+	client := http.Client{Timeout: 500 * time.Millisecond}
+	for _, method := range []string{http.MethodHead, http.MethodGet} {
+		req, err := http.NewRequest(method, fmt.Sprintf("http://127.0.0.1:%d/management.html", m.port), nil)
+		if err != nil {
+			return false
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			continue
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *CLIProxyAPIManager) binaryPathLocked() string {
@@ -206,7 +229,12 @@ func (m *CLIProxyAPIManager) writeConfigLocked() error {
 			return fmt.Errorf("write management secret: %w", err)
 		}
 	}
-	body := strings.Join([]string{"host: 127.0.0.1", fmt.Sprintf("port: %d", m.port), "data_dir: " + dataDir, "auth_dir: " + authDir, "log_dir: " + filepath.Join(dataDir, "logs"), ""}, "\n")
+	secretData, err := os.ReadFile(secretPath)
+	if err != nil {
+		return fmt.Errorf("read management secret: %w", err)
+	}
+	secret := strings.TrimSpace(string(secretData))
+	body := strings.Join([]string{"host: 127.0.0.1", fmt.Sprintf("port: %d", m.port), "data_dir: " + dataDir, "auth_dir: " + authDir, "log_dir: " + filepath.Join(dataDir, "logs"), "remote-management:", "  secret-key: " + secret, ""}, "\n")
 	if err := os.WriteFile(m.configPathLocked(), []byte(body), 0600); err != nil {
 		return fmt.Errorf("write config file: %w", err)
 	}
