@@ -3,7 +3,8 @@ import './App.css'
 import { AgentsSettings } from './components/AgentsSettings'
 import { SubagentsSettings } from './components/SubagentsSettings'
 import { ExtensionsPanel } from './components/ExtensionsPanel'
-import type { ExtensionStatus } from './types'
+import { ModelsSettingsPanel } from './components/ModelsSettingsPanel'
+import type { ExtensionStatus, ModelsSettings, ModelsTestResult, RoutePreviewResult } from './types'
 import { Folder, MessageSquare, Puzzle, Clock, Settings } from 'lucide-react'
 
 interface ToolCallRecord { id?: string; function?: { name?: string; arguments?: string }; name?: string; args?: string }
@@ -24,8 +25,6 @@ interface TokenUsage { input_tokens?: number; output_tokens?: number; total_toke
 interface SessionContext { context?: ContextStats; usage?: TokenUsage; summaries?: Summary[]; archives?: CompactArchive[] }
 interface ApprovalPayload { approval_required?: boolean; tool?: string; path?: string; reason?: string; run_id?: string; status?: string }
 interface ToolEventPayload { kind?: 'tool_start' | 'tool_result'; tool?: string; tool_id?: string; args?: string; text?: string }
-interface ModelsSettings { proxy_url: string; fallback_tier: string; routing_tiers: Record<string, string[]>; model_ids: string[] }
-interface ModelsTestResult { success: boolean; model_ids?: string[]; error?: string }
 interface GoalStep { id: string; description: string; subagent: string }
 interface GoalTodo { id: string; step_id: string; description: string; status: string; result: string }
 interface GoalActivity { id: string; type: string; text: string; subagent_id?: string; result?: string }
@@ -258,7 +257,7 @@ function App({ initialWorkspaceTab }: AppProps = {}) {
   const [modelsDraft, setModelsDraft] = useState<ModelsSettings | null>(null)
   const [modelsTestResult, setModelsTestResult] = useState<ModelsTestResult | null>(null)
   const [routePreviewPrompt, setRoutePreviewPrompt] = useState('')
-  const [routePreviewResult, setRoutePreviewResult] = useState<{ selected_model?: string; selected_tier?: string; source?: string; rule_name?: string; reason?: string } | null>(null)
+  const [routePreviewResult, setRoutePreviewResult] = useState<RoutePreviewResult | null>(null)
   const [isAgentSettingsOpen, setAgentSettingsOpen] = useState(false)
   const [settingsProjectId, setSettingsProjectId] = useState('')
   const [projectSettingsTab, setProjectSettingsTab] = useState<ProjectSettingsTab>('memory')
@@ -315,7 +314,7 @@ function App({ initialWorkspaceTab }: AppProps = {}) {
       api<{memories: MemoryEntry[]}>(memoryURL),
       api<{subagents: SubagentProfile[]}>('/api/subagents').catch(() => ({ subagents: [] })),
       api<{skills: SkillInfo[]; diagnostics?: SkillDiagnostic[]}>('/api/skills').catch(() => ({ skills: [], diagnostics: [] })),
-      api<ModelsSettings>('/api/models/settings').catch(() => ({ proxy_url: '', fallback_tier: 'strong', routing_tiers: {}, model_ids: [] })),
+      api<ModelsSettings>('/api/models/settings').catch(() => ({ proxy_url: '', proxy_api_key: '', fallback_tier: 'strong', routing_tiers: {}, model_ids: [] })),
       api<{extensions: ExtensionStatus[]}>('/api/extensions').catch(() => ({ extensions: [] })),
     ])
     const projectList = p.projects || []
@@ -561,6 +560,7 @@ function App({ initialWorkspaceTab }: AppProps = {}) {
     if (!modelsDraft) return
     const payload = {
       proxy_url: modelsDraft.proxy_url,
+      proxy_api_key: modelsDraft.proxy_api_key || '',
       fallback_tier: modelsDraft.fallback_tier,
       routing_tiers: modelsDraft.routing_tiers
     }
@@ -569,12 +569,32 @@ function App({ initialWorkspaceTab }: AppProps = {}) {
     setStatus('Models settings saved')
   }
 
+  const useExtensionForModels = async (extension: ExtensionStatus) => {
+    if (!extension.proxy_url || !extension.proxy_api_token) return
+    const nextSettings: ModelsSettings = {
+      ...(modelsDraft || modelsSettings || { fallback_tier: 'strong', routing_tiers: {}, model_ids: [] }),
+      proxy_url: extension.proxy_url,
+      proxy_api_key: extension.proxy_api_token,
+    }
+    const payload = {
+      proxy_url: nextSettings.proxy_url,
+      proxy_api_key: nextSettings.proxy_api_key || '',
+      fallback_tier: nextSettings.fallback_tier,
+      routing_tiers: nextSettings.routing_tiers,
+    }
+    const saved = await api<ModelsSettings>('/api/models/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+    const mergedSettings = { ...nextSettings, ...saved }
+    setModelsSettings(mergedSettings)
+    setModelsDraft(mergedSettings)
+    setStatus('CLIProxyAPI applied to Models settings')
+  }
+
   const testModelsConnection = async () => {
     if (!modelsDraft) return
     setModelsTestResult(null)
     setStatus('Testing connection...')
     try {
-      const result = await api<ModelsTestResult>('/api/models/test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ proxy_url: modelsDraft.proxy_url }) })
+      const result = await api<ModelsTestResult>('/api/models/test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ proxy_url: modelsDraft.proxy_url, proxy_api_key: modelsDraft.proxy_api_key || '' }) })
       setModelsTestResult(result)
       setStatus(result.success ? 'Connection successful' : 'Connection failed')
     } catch (err) {
@@ -900,51 +920,27 @@ function App({ initialWorkspaceTab }: AppProps = {}) {
 
   const updateModelsDraft = (patch: Partial<ModelsSettings>) => setModelsDraft(prev => prev ? { ...prev, ...patch } : prev)
   const updateRoutingTier = (tier: string, value: string) => setModelsDraft(prev => prev ? { ...prev, routing_tiers: { ...prev.routing_tiers, [tier]: parseList(value) } } : prev)
-  const renderModelsSettings = () => <div className="settingsPanel">
-    <div className="settingsPageHeader"><div><strong>Models</strong><p>Configure proxy URL, fallback tier, and model routing.</p></div></div>
-    {modelsDraft && <div className="settingsGrid">
-      <label className="wide">Proxy URL<input value={modelsDraft.proxy_url} onChange={e=>updateModelsDraft({ proxy_url:e.target.value })} placeholder="http://localhost:8080/v1" /></label>
-      <label>Fallback Tier<input value={modelsDraft.fallback_tier} onChange={e=>updateModelsDraft({ fallback_tier:e.target.value })} placeholder="strong" /></label>
-      <div className="wide"><h4>Routing Tiers</h4></div>
-      {Object.entries(modelsDraft.routing_tiers || {}).map(([tier, models]) => (
-        <label key={tier} className="wide">{tier}<textarea value={joinList(models)} onChange={e=>updateRoutingTier(tier, e.target.value)} placeholder="model-1, model-2" /></label>
-      ))}
-      <div className="settingsActions">
-        <button className="primaryButton" onClick={saveModelsSettings}>Save Settings</button>
-        <button onClick={testModelsConnection}>Test Connection</button>
-      </div>
-      {modelsTestResult && <div className={`testResult ${modelsTestResult.success ? 'success' : 'error'}`}>
-        {modelsTestResult.success ? (
-          <><strong>Connection successful</strong><p>Available models: {joinList(modelsTestResult.model_ids)}</p></>
-        ) : (
-          <><strong>Connection failed</strong><p>{modelsTestResult.error || 'Unknown error'}</p></>
-        )}
-      </div>}
-      <div className="wide"><h4>Route Preview</h4></div>
-      <label className="wide">
-        <input value={routePreviewPrompt} onChange={e=>setRoutePreviewPrompt(e.target.value)} placeholder="Enter prompt to preview routing..." />
-      </label>
-      <div className="settingsActions">
-        <button onClick={async () => {
-          if (!routePreviewPrompt.trim()) return
-          try {
-            const result = await api<{ selected_model?: string; selected_tier?: string; source?: string; rule_name?: string; reason?: string }>(`/api/route?prompt=${encodeURIComponent(routePreviewPrompt)}`)
-            setRoutePreviewResult(result)
-          } catch (err) {
-            setRoutePreviewResult({ source: 'error', reason: String(err) })
-          }
-        }}>Preview Route</button>
-      </div>
-      {routePreviewResult && <div className="testResult">
-        <strong>Selected: {routePreviewResult.selected_model || 'N/A'}</strong>
-        <p>Tier: {routePreviewResult.selected_tier || 'N/A'}</p>
-        <p>Source: {routePreviewResult.source || 'N/A'}</p>
-        {routePreviewResult.rule_name && <p>Rule: {routePreviewResult.rule_name}</p>}
-        {routePreviewResult.reason && <p>Reason: {routePreviewResult.reason}</p>}
-      </div>}
-    </div>}
-    {!modelsDraft && <div className="emptyPanel">Loading models settings...</div>}
-  </div>
+  const previewRoute = async () => {
+    if (!routePreviewPrompt.trim()) return
+    try {
+      const result = await api<RoutePreviewResult>(`/api/route?prompt=${encodeURIComponent(routePreviewPrompt)}`)
+      setRoutePreviewResult(result)
+    } catch (err) {
+      setRoutePreviewResult({ source: 'error', reason: String(err) })
+    }
+  }
+  const renderModelsSettings = () => <ModelsSettingsPanel
+    modelsDraft={modelsDraft}
+    modelsTestResult={modelsTestResult}
+    routePreviewPrompt={routePreviewPrompt}
+    routePreviewResult={routePreviewResult}
+    onUpdateDraft={updateModelsDraft}
+    onUpdateRoutingTier={updateRoutingTier}
+    onSave={saveModelsSettings}
+    onTestConnection={testModelsConnection}
+    onRoutePreviewPromptChange={setRoutePreviewPrompt}
+    onPreviewRoute={previewRoute}
+  />
 
   const renderSettingsSideMenu = () => <div className="settingsSideMenu">
     {settingsTabs.map(tab => <button key={tab} aria-label={tab} className={tab === settingsTab ? 'listItem active' : 'listItem'} onClick={() => {
@@ -1054,6 +1050,7 @@ function App({ initialWorkspaceTab }: AppProps = {}) {
         <ExtensionsPanel
           extensions={extensions}
           selectedExtensionId={selectedExtensionId}
+          mode="list"
           onSelectExtension={setSelectedExtensionId}
           onStartExtension={startExtension}
           onStopExtension={stopExtension}
@@ -1103,7 +1100,20 @@ function App({ initialWorkspaceTab }: AppProps = {}) {
           </div>
         </header>
 
-        {workspaceMode === 'settings' ? <section className="settingsWorkspace">{renderSettingsBody()}</section> : mainPage === 'chat' && !projectId && messages.length === 0 && !isStreaming ? (
+        {workspaceMode === 'settings' ? <section className="settingsWorkspace">{renderSettingsBody()}</section> : mainPage === 'extensions' ? (
+          <section className="extensionsWorkspace">
+            <ExtensionsPanel
+              extensions={extensions}
+              selectedExtensionId={selectedExtensionId}
+              mode="detail"
+              onSelectExtension={setSelectedExtensionId}
+              onStartExtension={startExtension}
+              onStopExtension={stopExtension}
+              onRestartExtension={restartExtension}
+              onUseForModels={useExtensionForModels}
+            />
+          </section>
+        ) : mainPage === 'chat' && !projectId && messages.length === 0 && !isStreaming ? (
           <section className="messagesPane">
             <div className="emptyState chatEmptyState"><div>Chat</div><h2>Choose or create a project</h2><p>Select a project from Projects before starting Chat.</p><button className="primaryButton" onClick={() => setMainPage('projects')}>Open Projects</button></div>
           </section>

@@ -745,6 +745,7 @@ describe('App', () => {
       if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
       if (url === '/api/models/settings') return Response.json({
         proxy_url: 'http://localhost:8080/v1',
+        proxy_api_key: 'sk-uuagent-test-connection',
         fallback_tier: 'strong',
         routing_tiers: { fast: ['gpt-4o-mini'] },
         model_ids: ['gpt-4o-mini']
@@ -767,7 +768,10 @@ describe('App', () => {
     await waitFor(() => {
       const post = calls.find(c => c.url === '/api/models/test' && c.init?.method === 'POST')
       expect(post).toBeTruthy()
-      expect(JSON.parse(String(post?.init?.body))).toMatchObject({ proxy_url: 'http://localhost:8080/v1' })
+      expect(JSON.parse(String(post?.init?.body))).toMatchObject({
+        proxy_url: 'http://localhost:8080/v1',
+        proxy_api_key: 'sk-uuagent-test-connection',
+      })
     })
   })
 
@@ -1441,6 +1445,9 @@ describe('App', () => {
     fireEvent.click(await screen.findByText('CLIProxyAPI'))
 
     expect((await screen.findByRole('button', { name: 'Start' }) as HTMLButtonElement).disabled).toBe(false)
+    const workspace = document.querySelector('.workspace')
+    expect(workspace).toBeTruthy()
+    expect(workspace?.querySelector('.extensionDetail')).toBeTruthy()
   })
 
   it('shows CLIProxyAPI management unavailable when running panel URL is absent', async () => {
@@ -1464,10 +1471,48 @@ describe('App', () => {
     expect(screen.queryByText('Open Management Panel')).toBeNull()
   })
 
+  it('applies CLIProxyAPI proxy credentials to Models Settings', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      calls.push({ url, init })
+      if (url === '/api/extensions') return Response.json({ extensions: [{ id: 'cliproxyapi', name: 'CLIProxyAPI', built_in: true, installed: true, status: 'running', binary_path: 'C:\\Users\\15171\\.uuagent\\plugins\\cliproxyapi\\cli-proxy-api.exe', proxy_url: 'http://127.0.0.1:8317/v1', proxy_api_token: 'sk-uuagent-from-extension', port: 8317 }] })
+      if (url === '/api/models/settings' && init?.method === 'PUT') return Response.json({ proxy_url: 'http://127.0.0.1:8317/v1', proxy_api_key: 'sk-uuagent-from-extension', fallback_tier: 'strong', routing_tiers: { fast: ['fast-model'], strong: ['strong-model'] }, model_ids: ['fast-model', 'strong-model'] })
+      if (url === '/api/models/settings') return Response.json({ proxy_url: 'http://localhost:18463/v1', proxy_api_key: '', fallback_tier: 'strong', routing_tiers: { fast: ['fast-model'], strong: ['strong-model'] }, model_ids: ['fast-model', 'strong-model'] })
+      if (url === '/api/projects') return Response.json({ projects: [] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/sessions') return Response.json({ sessions: [] })
+      if (url === '/api/memory') return Response.json({ memories: [] })
+      if (url === '/api/skills') return Response.json({ skills: [] })
+      return Response.json({})
+    }) as any
+
+    render(<App />)
+    fireEvent.click(await screen.findByText('Extensions'))
+    fireEvent.click(await screen.findByText('CLIProxyAPI'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Use for Models' }))
+
+    await waitFor(() => {
+      const put = calls.find(c => c.url === '/api/models/settings' && c.init?.method === 'PUT')
+      expect(put).toBeTruthy()
+      expect(JSON.parse(String(put?.init?.body))).toMatchObject({
+        proxy_url: 'http://127.0.0.1:8317/v1',
+        proxy_api_key: 'sk-uuagent-from-extension',
+        fallback_tier: 'strong',
+        routing_tiers: { fast: ['fast-model'], strong: ['strong-model'] },
+      })
+    })
+  })
+
   it('opens CLIProxyAPI management panel through the service URL when available', async () => {
+    const copied: string[] = []
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: vi.fn(async (value: string) => { copied.push(value) }) },
+    })
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
-      if (url === '/api/extensions') return Response.json({ extensions: [{ id: 'cliproxyapi', name: 'CLIProxyAPI', built_in: true, installed: true, status: 'running', binary_path: 'C:\\Users\\15171\\.uuagent\\plugins\\cliproxyapi\\cli-proxy-api.exe', proxy_url: 'http://127.0.0.1:8317/v1', port: 8317, management_url: 'http://127.0.0.1:8317/management.html' }] })
+      if (url === '/api/extensions') return Response.json({ extensions: [{ id: 'cliproxyapi', name: 'CLIProxyAPI', built_in: true, installed: true, status: 'running', binary_path: 'C:\\Users\\15171\\.uuagent\\plugins\\cliproxyapi\\cli-proxy-api.exe', proxy_url: 'http://127.0.0.1:8317/v1', port: 8317, management_url: 'http://127.0.0.1:8317/management.html', management_secret: 'mgmt-1234567890abcdef', proxy_api_token: 'sk-uuagent-abcdef1234567890' }] })
       if (url === '/api/projects') return Response.json({ projects: [] })
       if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
       if (url === '/api/sessions') return Response.json({ sessions: [] })
@@ -1481,6 +1526,16 @@ describe('App', () => {
 
     const link = await screen.findByText('Open Management Panel') as HTMLAnchorElement
     expect(link.href).toBe('http://127.0.0.1:8317/management.html')
+    expect(await screen.findByText('Credentials')).toBeTruthy()
+    expect(await screen.findByText('Management Login Key')).toBeTruthy()
+    expect(await screen.findByText('Proxy API Token')).toBeTruthy()
+    expect(await screen.findByText('mgmt-1••••••cdef')).toBeTruthy()
+    expect(await screen.findByText('sk-uua••••••7890')).toBeTruthy()
+    expect(screen.queryByText('mgmt-1234567890abcdef')).toBeNull()
+    fireEvent.click(await screen.findByRole('button', { name: 'Copy Management Login Key' }))
+    await waitFor(() => expect(copied).toEqual(['mgmt-1234567890abcdef']))
+    fireEvent.click(await screen.findByRole('button', { name: 'Copy Proxy API Token' }))
+    await waitFor(() => expect(copied).toEqual(['mgmt-1234567890abcdef', 'sk-uuagent-abcdef1234567890']))
   })
 
   it('concrete selected model sends model_override in /api/chat body', async () => {

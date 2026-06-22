@@ -15,7 +15,31 @@ export interface ExtensionStatus {
   management_url?: string;
   management_path?: string;
   management_installed?: boolean;
+  management_secret?: string;
+  proxy_api_token?: string;
   last_error?: string;
+}
+
+export interface ModelsSettings {
+  proxy_url: string;
+  proxy_api_key?: string;
+  fallback_tier: string;
+  routing_tiers: Record<string, string[]>;
+  model_ids: string[];
+}
+
+export interface ModelsTestResult {
+  success: boolean;
+  model_ids?: string[];
+  error?: string;
+}
+
+export interface RoutePreviewResult {
+  selected_model?: string;
+  selected_tier?: string;
+  source?: string;
+  rule_name?: string;
+  reason?: string;
 }
 
 export interface AgentProfile {
