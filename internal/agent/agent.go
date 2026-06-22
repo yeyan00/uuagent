@@ -585,7 +585,7 @@ func (a *Agent) runWithResolvedProfile(ctx context.Context, sessionID, projectID
 			for i, tc := range toolCalls {
 				name := toolCallName(tc)
 				events <- Event{Type: "tool_start", RunID: runID, ToolName: name, ToolID: tc.ID, Args: toolCallArgs(tc)}
-				result := a.executeTool(ctx, tc, policy, toolWorkspace, nil)
+				result := a.executeTool(ctx, tc, policy, profile, toolWorkspace, nil)
 				events <- Event{Type: "tool_result", RunID: runID, ToolName: name, ToolID: tc.ID, Text: result}
 				if isApprovalRequiredResult(result) {
 					a.storePendingApproval(pendingApproval{Session: sess, RunID: runID, Model: model, Prompt: prompt, Profile: profile, Policy: policy, ToolCall: tc, ToolName: name, RemainingToolCalls: append([]ToolCall(nil), toolCalls[i+1:]...), ToolWorkspace: toolWorkspace})
@@ -652,7 +652,7 @@ func (a *Agent) ApproveRunEvents(ctx context.Context, runID string) (<-chan Even
 		args["approved"] = true
 		p.ToolCall.Function.Arguments = mustJSON(args)
 		events <- Event{Type: "tool_start", RunID: runID, ToolName: p.ToolName, ToolID: p.ToolCall.ID, Args: toolCallArgs(p.ToolCall)}
-		result := a.executeTool(ctx, p.ToolCall, p.Policy, p.ToolWorkspace, p.ApprovedPaths)
+		result := a.executeTool(ctx, p.ToolCall, p.Policy, p.Profile, p.ToolWorkspace, p.ApprovedPaths)
 		events <- Event{Type: "tool_result", RunID: runID, ToolName: p.ToolName, ToolID: p.ToolCall.ID, Text: result}
 		p.Session.AppendTool(p.ToolCall.ID, p.ToolName, result)
 		if approvedPath != "" && !isApprovalRequiredResult(result) {
@@ -661,7 +661,7 @@ func (a *Agent) ApproveRunEvents(ctx context.Context, runID string) (<-chan Even
 		for i, tc := range p.RemainingToolCalls {
 			name := toolCallName(tc)
 			events <- Event{Type: "tool_start", RunID: runID, ToolName: name, ToolID: tc.ID, Args: toolCallArgs(tc)}
-			result := a.executeTool(ctx, tc, p.Policy, p.ToolWorkspace, p.ApprovedPaths)
+			result := a.executeTool(ctx, tc, p.Policy, p.Profile, p.ToolWorkspace, p.ApprovedPaths)
 			events <- Event{Type: "tool_result", RunID: runID, ToolName: name, ToolID: tc.ID, Text: result}
 			if isApprovalRequiredResult(result) {
 				a.storePendingApproval(pendingApproval{Session: p.Session, RunID: runID, Model: p.Model, Prompt: p.Prompt, Profile: p.Profile, Policy: p.Policy, ToolCall: tc, ToolName: name, RemainingToolCalls: append([]ToolCall(nil), p.RemainingToolCalls[i+1:]...), ToolWorkspace: p.ToolWorkspace, ApprovedPaths: p.ApprovedPaths})
@@ -709,7 +709,7 @@ func (a *Agent) ApproveRunEvents(ctx context.Context, runID string) (<-chan Even
 			for i, tc := range toolCalls {
 				name := toolCallName(tc)
 				events <- Event{Type: "tool_start", RunID: runID, ToolName: name, ToolID: tc.ID, Args: toolCallArgs(tc)}
-				result := a.executeTool(ctx, tc, p.Policy, p.ToolWorkspace, p.ApprovedPaths)
+				result := a.executeTool(ctx, tc, p.Policy, p.Profile, p.ToolWorkspace, p.ApprovedPaths)
 				events <- Event{Type: "tool_result", RunID: runID, ToolName: name, ToolID: tc.ID, Text: result}
 				if isApprovalRequiredResult(result) {
 					a.storePendingApproval(pendingApproval{Session: p.Session, RunID: runID, Model: p.Model, Prompt: p.Prompt, Profile: p.Profile, Policy: p.Policy, ToolCall: tc, ToolName: name, RemainingToolCalls: append([]ToolCall(nil), toolCalls[i+1:]...), ToolWorkspace: p.ToolWorkspace, ApprovedPaths: p.ApprovedPaths})
@@ -1132,7 +1132,7 @@ func streamResult(content string, toolsByIndex map[int]*streamToolCall) (string,
 	return content, calls
 }
 
-func (a *Agent) executeTool(ctx context.Context, tc ToolCall, policy runtimePolicy, workspace string, approvedPaths []string) string {
+func (a *Agent) executeTool(ctx context.Context, tc ToolCall, policy runtimePolicy, profile config.AgentProfile, workspace string, approvedPaths []string) string {
 	name := toolCallName(tc)
 	argText := toolCallArgs(tc)
 	if a.blockedTools != nil && a.blockedTools[name] {
@@ -1157,7 +1157,7 @@ func (a *Agent) executeTool(ctx context.Context, tc ToolCall, policy runtimePoli
 		return a.executeMemoryTool(args)
 	}
 	if name == "delegate_task" {
-		return a.executeDelegateTaskTool(ctx, args)
+		return a.executeDelegateTaskTool(ctx, profile, args)
 	}
 	if tool, ok := a.tools.Get(name); ok {
 		if policy.PermissionMode != "" {
@@ -1222,11 +1222,14 @@ func memoryToolDefinition() map[string]any {
 	}
 }
 
-func (a *Agent) executeDelegateTaskTool(ctx context.Context, args map[string]any) string {
+func (a *Agent) executeDelegateTaskTool(ctx context.Context, profile config.AgentProfile, args map[string]any) string {
 	profileID, _ := args["profile_id"].(string)
 	task, _ := args["task"].(string)
 	if strings.TrimSpace(profileID) == "" || strings.TrimSpace(task) == "" {
 		return mustJSON(map[string]any{"success": false, "error": "profile_id and task are required"})
+	}
+	if !subagentAllowed(profile, profileID) {
+		return mustJSON(map[string]any{"success": false, "profile_id": profileID, "task": task, "error": "subagent profile is not enabled for this agent"})
 	}
 	manager := subagent.NewManager(a.cfg.Agent.Subagent, a.router)
 	results := manager.DelegateProfile(ctx, a, "delegate_task", profileID, []string{task})
@@ -1238,6 +1241,18 @@ func (a *Agent) executeDelegateTaskTool(ctx context.Context, args map[string]any
 		return mustJSON(map[string]any{"success": false, "profile_id": profileID, "task": task, "task_id": result.ID, "session_id": result.SessionID, "error": result.Error})
 	}
 	return mustJSON(map[string]any{"success": true, "profile_id": profileID, "task": task, "task_id": result.ID, "session_id": result.SessionID, "output": result.Output})
+}
+
+func subagentAllowed(profile config.AgentProfile, profileID string) bool {
+	if len(profile.EnabledSubagents) == 0 {
+		return true
+	}
+	for _, enabledID := range profile.EnabledSubagents {
+		if enabledID == profileID {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *Agent) executeMemoryTool(args map[string]any) string {

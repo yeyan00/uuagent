@@ -46,6 +46,7 @@ type AgentProfile struct {
 	EnabledTools      []string `yaml:"enabled_tools" json:"enabled_tools"`
 	EnabledSkills     []string `yaml:"enabled_skills" json:"enabled_skills"`
 	EnabledMCPServers []string `yaml:"enabled_mcp_servers" json:"enabled_mcp_servers"`
+	EnabledSubagents  []string `yaml:"enabled_subagents" json:"enabled_subagents"`
 	PermissionMode    string   `yaml:"permission_mode" json:"permission_mode"`
 	MaxTurns          int      `yaml:"max_turns" json:"max_turns"`
 }
