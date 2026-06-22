@@ -78,6 +78,10 @@ type CreateRequest struct {
 	Plan        Plan   `json:"plan"`
 }
 
+func (s Status) IsTerminal() bool {
+	return s == StatusDone || s == StatusCancelled || s == StatusFailed
+}
+
 func newActivity(kind ActivityKind) Activity {
 	return Activity{Kind: kind, CreatedAt: time.Now().Unix()}
 }

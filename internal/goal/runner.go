@@ -2,6 +2,7 @@ package goal
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -41,10 +42,17 @@ func NewRunner(store *Store, cfg RunnerConfig) *Runner {
 }
 
 func (r *Runner) Run(ctx context.Context, id string) (Goal, error) {
+	goal, err := r.store.Get(ctx, id)
+	if err != nil {
+		return Goal{}, err
+	}
+	if goal.Status.IsTerminal() {
+		return goal, nil
+	}
 	if err := r.store.MarkRunning(ctx, id); err != nil {
 		return Goal{}, err
 	}
-	goal, err := r.store.Get(ctx, id)
+	goal, err = r.store.Get(ctx, id)
 	if err != nil {
 		return Goal{}, err
 	}
@@ -66,9 +74,14 @@ func (r *Runner) Run(ctx context.Context, id string) (Goal, error) {
 		}
 		result, err := r.delegate(ctx, profileID, goal.Plan.Todos[i].Content)
 		if err != nil {
+			kind := ActivityGoalFailed
 			goal.Status = StatusFailed
-			goal.Activities = append(goal.Activities, activityForTodo(ActivityGoalFailed, goal.Plan.Todos[i], profileID, err.Error()))
-			if saveErr := r.store.Save(ctx, goal); saveErr != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				kind = ActivityGoalCancelled
+				goal.Status = StatusCancelled
+			}
+			goal.Activities = append(goal.Activities, activityForTodo(kind, goal.Plan.Todos[i], profileID, err.Error()))
+			if saveErr := r.store.Save(context.WithoutCancel(ctx), goal); saveErr != nil {
 				return Goal{}, saveErr
 			}
 			return Goal{}, fmt.Errorf("delegate %s: %w", profileID, err)
