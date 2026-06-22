@@ -20,7 +20,7 @@ func extensionManager() *extensions.CLIProxyAPIManager {
 	extensionsMu.Lock()
 	defer extensionsMu.Unlock()
 	if cliProxyAPIManager == nil {
-		cliProxyAPIManager = extensions.NewCLIProxyAPIManager(extensions.CLIProxyAPIOptions{PluginRoot: "plugins", DataRoot: filepath.Join(paths.UserDir(), "extensions")})
+		cliProxyAPIManager = extensions.NewCLIProxyAPIManager(extensions.CLIProxyAPIOptions{PluginRoot: filepath.Join(paths.UserDir(), "plugins"), DataRoot: filepath.Join(paths.UserDir(), "extensions")})
 	}
 	return cliProxyAPIManager
 }
