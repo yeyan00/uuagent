@@ -91,6 +91,50 @@ func Test_GoalAPI_Stop_cancels_running_goal(t *testing.T) {
 	}
 }
 
+func Test_GoalAPI_Run_missing_goal_returns_not_found(t *testing.T) {
+	// Given
+	r, projectID := newGoalAPIServer(t)
+
+	// When
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/goals/missing/run", nil))
+
+	// Then
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("run missing goal status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func Test_GoalAPI_Run_cancelled_goal_preserves_cancelled_status(t *testing.T) {
+	// Given
+	r, projectID := newGoalAPIServer(t)
+	created := createGoalViaAPI(t, r, projectID, "Cancelled API goal")
+	stopRec := httptest.NewRecorder()
+	r.ServeHTTP(stopRec, httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/goals/"+created.ID+"/stop", nil))
+	if stopRec.Code != http.StatusOK {
+		t.Fatalf("stop goal status=%d body=%s", stopRec.Code, stopRec.Body.String())
+	}
+
+	// When
+	runRec := httptest.NewRecorder()
+	r.ServeHTTP(runRec, httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/goals/"+created.ID+"/run", nil))
+
+	// Then
+	if runRec.Code != http.StatusOK {
+		t.Fatalf("run cancelled goal status=%d body=%s", runRec.Code, runRec.Body.String())
+	}
+	var got goalAPIResponse
+	if err := json.Unmarshal(runRec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode run response: %v", err)
+	}
+	if got.Status != "cancelled" {
+		t.Fatalf("expected cancelled goal to stay cancelled, got %+v", got)
+	}
+	if hasAPIActivityKind(got.Activities, "goal_started") {
+		t.Fatalf("cancelled run should not append start activity, got %+v", got.Activities)
+	}
+}
+
 func Test_GoalAPI_Run_creates_persisted_delegated_activity(t *testing.T) {
 	// Given
 	r, projectID := newGoalAPIServer(t)
