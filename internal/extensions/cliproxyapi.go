@@ -1,12 +1,9 @@
 package extensions
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -26,6 +23,7 @@ type CLIProxyAPIManager struct {
 	opts      CLIProxyAPIOptions
 	logs      *LogBuffer
 	cmd       *exec.Cmd
+	done      chan struct{}
 	port      int
 	lastError string
 }
@@ -75,20 +73,27 @@ func (m *CLIProxyAPIManager) Start(ctx context.Context) (Status, error) {
 func (m *CLIProxyAPIManager) Stop(ctx context.Context) (Status, error) {
 	m.mu.Lock()
 	cmd := m.cmd
-	if cmd == nil || cmd.Process == nil {
+	if cmd == nil || cmd.Process == nil || cmd.ProcessState != nil {
 		status := m.statusLocked(m.stateLocked())
 		m.mu.Unlock()
 		return status, nil
 	}
-	m.cmd = nil
+	done := m.done
 	m.mu.Unlock()
-	if err := cmd.Process.Kill(); err != nil {
+	if err := stopProcess(ctx, cmd, done); err != nil {
 		m.mu.Lock()
 		status := m.setErrorLocked(StatusError, fmt.Errorf("stop: %w", err))
 		m.mu.Unlock()
 		return status, fmt.Errorf("stop CLIProxyAPI: %w", err)
 	}
-	return m.Status(ctx), nil
+	m.mu.Lock()
+	if m.cmd == cmd {
+		m.cmd = nil
+		m.done = nil
+	}
+	status := m.statusLocked(m.stateLocked())
+	m.mu.Unlock()
+	return status, nil
 }
 
 func (m *CLIProxyAPIManager) Restart(ctx context.Context) (Status, error) {
@@ -118,6 +123,9 @@ func (m *CLIProxyAPIManager) Health(ctx context.Context) error {
 func (m *CLIProxyAPIManager) Logs() []string { return m.logs.Lines() }
 
 func (m *CLIProxyAPIManager) startLocked(ctx context.Context) (Status, error) {
+	if m.cmd != nil && m.cmd.ProcessState != nil {
+		m.cmd = nil
+	}
 	port, err := choosePort(m.port)
 	if err != nil {
 		return m.setErrorLocked(StatusError, fmt.Errorf("choose port: %w", err)), fmt.Errorf("choose CLIProxyAPI port: %w", err)
@@ -140,6 +148,7 @@ func (m *CLIProxyAPIManager) startLocked(ctx context.Context) (Status, error) {
 		return m.setErrorLocked(StatusError, err), fmt.Errorf("start CLIProxyAPI: %w", err)
 	}
 	m.cmd = cmd
+	m.done = make(chan struct{})
 	m.lastError = ""
 	go m.captureLogs("stdout", stdout)
 	go m.captureLogs("stderr", stderr)
@@ -154,8 +163,8 @@ func (m *CLIProxyAPIManager) stateLocked() string {
 	if m.runningLocked() {
 		return StatusRunning
 	}
-	if m.lastError != "" {
-		return StatusError
+	if m.cmd != nil && m.cmd.ProcessState != nil {
+		m.cmd = nil
 	}
 	return StatusStopped
 }
@@ -197,79 +206,19 @@ func (m *CLIProxyAPIManager) writeConfigLocked() error {
 			return fmt.Errorf("write management secret: %w", err)
 		}
 	}
-	body := strings.Join([]string{"host: 127.0.0.1", fmt.Sprintf("port: %d", m.port), fmt.Sprintf("data_dir: %q", dataDir), fmt.Sprintf("auth_dir: %q", authDir), fmt.Sprintf("log_dir: %q", filepath.Join(dataDir, "logs")), ""}, "\n")
+	body := strings.Join([]string{"host: 127.0.0.1", fmt.Sprintf("port: %d", m.port), "data_dir: " + dataDir, "auth_dir: " + authDir, "log_dir: " + filepath.Join(dataDir, "logs"), ""}, "\n")
 	if err := os.WriteFile(m.configPathLocked(), []byte(body), 0600); err != nil {
 		return fmt.Errorf("write config file: %w", err)
 	}
 	return nil
 }
 
-func (m *CLIProxyAPIManager) captureLogs(prefix string, src io.Reader) {
-	scanner := bufio.NewScanner(src)
-	for scanner.Scan() {
-		m.logs.Append(prefix + ": " + scanner.Text())
-	}
-	if err := scanner.Err(); err != nil {
-		m.logs.Append(prefix + " log read error: " + err.Error())
-	}
+func (m *CLIProxyAPIManager) runningLocked() bool {
+	return m.cmd != nil && m.cmd.Process != nil && m.cmd.ProcessState == nil
 }
-
-func (m *CLIProxyAPIManager) waitProcess(cmd *exec.Cmd) {
-	err := cmd.Wait()
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.cmd == cmd {
-		m.cmd = nil
-	}
-	if err != nil {
-		m.lastError = fmt.Sprintf("process exited: %v", err)
-		m.logs.Append(m.lastError)
-	}
-}
-
-func (m *CLIProxyAPIManager) waitHealthy(ctx context.Context) error {
-	for i := 0; i < 100; i++ {
-		if err := m.Health(ctx); err == nil {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(100 * time.Millisecond):
-		}
-	}
-	return context.DeadlineExceeded
-}
-
-func (m *CLIProxyAPIManager) runningLocked() bool { return m.cmd != nil && m.cmd.Process != nil }
 
 func (m *CLIProxyAPIManager) currentPort() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.port
-}
-
-func choosePort(preferred int) (int, error) {
-	if preferred == 0 {
-		preferred = 8317
-	}
-	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", preferred))
-	if err == nil {
-		return preferred, listener.Close()
-	}
-	listener, err = net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return 0, fmt.Errorf("listen on fallback port: %w", err)
-	}
-	defer listener.Close()
-	addr, ok := listener.Addr().(*net.TCPAddr)
-	if !ok {
-		return 0, fmt.Errorf("unexpected listener address %q", listener.Addr().String())
-	}
-	return addr.Port, nil
-}
-
-func fileExists(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && !info.IsDir()
 }

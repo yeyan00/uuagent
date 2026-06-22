@@ -2,8 +2,10 @@ package extensions_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -70,6 +72,81 @@ func Test_CLIProxyAPI_Start_returns_missing_status_when_binary_absent(t *testing
 	}
 	if !strings.Contains(err.Error(), "CLIProxyAPI binary missing") {
 		t.Fatalf("expected clear missing binary error, got %v", err)
+	}
+}
+
+func Test_CLIProxyAPI_Start_generates_config_reaches_running_and_captures_bounded_logs(t *testing.T) {
+	// Given
+	root := t.TempDir()
+	dataRoot := filepath.Join(root, "data")
+	binaryPath := buildFakeCLIProxyAPI(t, filepath.Join(root, "plugins"))
+	manager := extensions.NewCLIProxyAPIManager(extensions.CLIProxyAPIOptions{
+		PluginRoot: filepath.Join(root, "plugins"),
+		DataRoot:   dataRoot,
+		Port:       freeTestPort(t),
+		LogLines:   2,
+	})
+
+	// When
+	status, err := manager.Start(t.Context())
+
+	// Then
+	if err != nil {
+		t.Fatalf("start fake CLIProxyAPI: %v", err)
+	}
+	if status.Status != extensions.StatusRunning || !status.Installed || status.BinaryPath != binaryPath {
+		t.Fatalf("expected running installed status, got %+v", status)
+	}
+	configData, err := os.ReadFile(status.ConfigPath)
+	if err != nil {
+		t.Fatalf("read generated config: %v", err)
+	}
+	configText := string(configData)
+	for _, want := range configWants(dataRoot, status.Port) {
+		if !strings.Contains(configText, want) {
+			t.Fatalf("generated config missing %q in:\n%s", want, configText)
+		}
+	}
+	waitForLogLine(t, manager, "fake log line 3")
+	logs := manager.Logs()
+	if len(logs) != 2 || !strings.Contains(strings.Join(logs, "\n"), "fake log line 3") {
+		t.Fatalf("expected bounded logs to retain latest fake output, got %+v", logs)
+	}
+
+	// When
+	stopped, err := manager.Stop(t.Context())
+
+	// Then
+	if err != nil {
+		t.Fatalf("stop fake CLIProxyAPI: %v", err)
+	}
+	if stopped.Status != extensions.StatusStopped {
+		t.Fatalf("expected stopped status after stop, got %+v", stopped)
+	}
+}
+
+func Test_CLIProxyAPI_Status_reports_stopped_after_child_exits(t *testing.T) {
+	// Given
+	root := t.TempDir()
+	buildFakeCLIProxyAPI(t, filepath.Join(root, "plugins"))
+	manager := extensions.NewCLIProxyAPIManager(extensions.CLIProxyAPIOptions{
+		PluginRoot: filepath.Join(root, "plugins"),
+		DataRoot:   filepath.Join(root, "data"),
+		Port:       freeTestPort(t),
+	})
+	if _, err := manager.Start(t.Context()); err != nil {
+		t.Fatalf("start fake CLIProxyAPI: %v", err)
+	}
+	if _, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/exit", manager.Status(t.Context()).Port)); err != nil {
+		t.Fatalf("request fake exit: %v", err)
+	}
+
+	// When
+	status := waitForStatus(t, manager, extensions.StatusStopped)
+
+	// Then
+	if status.Status != extensions.StatusStopped {
+		t.Fatalf("expected exited child to be stopped, got %+v", status)
 	}
 }
 
