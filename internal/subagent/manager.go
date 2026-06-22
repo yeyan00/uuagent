@@ -18,12 +18,13 @@ import (
 
 // Result is the result of one delegated subtask.
 type Result struct {
-	ID        string `json:"id"`
-	Goal      string `json:"goal"`
-	Model     string `json:"model"`
-	SessionID string `json:"session_id,omitempty"`
-	Output    string `json:"output"`
-	Error     string `json:"error,omitempty"`
+	ID        string          `json:"id"`
+	Goal      string          `json:"goal"`
+	Model     string          `json:"model"`
+	Route     router.Decision `json:"route"`
+	SessionID string          `json:"session_id,omitempty"`
+	Output    string          `json:"output"`
+	Error     string          `json:"error,omitempty"`
 }
 
 // Task is one persisted delegated subagent task.
@@ -103,11 +104,8 @@ func (m *Manager) delegate(ctx context.Context, parent ParentAgent, parentID, pr
 			}
 			defer func() { <-sem }() // release semaphore
 
-			// Route simple subtasks to cheaper models when configured.
-			model, _ := m.router.Route(g, 0)
-			if profile.Model != "" {
-				model = profile.Model
-			}
+			decision := m.routeDecision(g, profile)
+			model := decision.Model
 
 			childID := fmt.Sprintf("sa-%d", idx)
 			if parentID != "" || profile.ID != "" {
@@ -128,6 +126,7 @@ func (m *Manager) delegate(ctx context.Context, parent ParentAgent, parentID, pr
 					ID:        childID,
 					Goal:      g,
 					Model:     model,
+					Route:     decision,
 					SessionID: sessionID,
 					Error:     err.Error(),
 				}
@@ -137,6 +136,7 @@ func (m *Manager) delegate(ctx context.Context, parent ParentAgent, parentID, pr
 					ID:        childID,
 					Goal:      g,
 					Model:     model,
+					Route:     decision,
 					SessionID: sessionID,
 					Output:    result,
 				}
@@ -147,6 +147,22 @@ func (m *Manager) delegate(ctx context.Context, parent ParentAgent, parentID, pr
 
 	wg.Wait()
 	return results
+}
+
+func (m *Manager) routeDecision(goal string, profile config.SubagentProfile) router.Decision {
+	decision := router.Decision{Model: "gpt-4o-mini", Tier: router.TierFast, Source: "fallback", Reason: "hardcoded fallback"}
+	if m.router != nil {
+		decision = m.router.Decide(goal, 0)
+	}
+	if profile.Model == "" {
+		return decision
+	}
+	decision.Model = profile.Model
+	decision.Tier = router.TierStrong
+	decision.Source = "subagent"
+	decision.RuleName = ""
+	decision.Reason = "subagent profile model override"
+	return decision
 }
 
 func (m *Manager) runChild(ctx context.Context, child ChildAgent, sessionID string, profile config.SubagentProfile, goal string) (string, error) {

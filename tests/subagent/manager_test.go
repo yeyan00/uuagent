@@ -139,6 +139,36 @@ func TestDelegateProfilePersistsTaskTreeAndUsesIndependentSessions(t *testing.T)
 	}
 }
 
+func TestDelegateProfileReportsSubagentRouteOverride_whenProfileModelConfigured(t *testing.T) {
+	// Given
+	parent := &captureParentAgent{}
+	profile := config.SubagentProfile{ID: "reviewer", Name: "Reviewer", Model: "subagent-model"}
+	routing := config.Default().Agent.Routing
+	routing.Fallback = "fast"
+	routing.Tiers = map[string][]string{
+		"fast":   {"fast-model"},
+		"strong": {"strong-model"},
+	}
+	m := subagent.NewManagerAt(config.SubagentConfig{MaxConcurrent: 1, Profiles: []config.SubagentProfile{profile}}, router.New(routing), "", "")
+
+	// When
+	results := m.DelegateProfile(context.Background(), parent, "parent-run", "reviewer", []string{"format this"})
+
+	// Then
+	if len(results) != 1 || results[0].Error != "" {
+		t.Fatalf("unexpected delegation result: %+v", results)
+	}
+	if results[0].Model != "subagent-model" || parent.model != "subagent-model" {
+		t.Fatalf("subagent profile model should win over routing, result=%+v parent_model=%q", results[0], parent.model)
+	}
+	if results[0].Route.Source != "subagent" || results[0].Route.Model != "subagent-model" || results[0].Route.Tier != router.TierStrong {
+		t.Fatalf("expected subagent route metadata, got %+v", results[0].Route)
+	}
+	if results[0].Route.Reason != "subagent profile model override" {
+		t.Fatalf("expected subagent profile reason, got %q", results[0].Route.Reason)
+	}
+}
+
 func TestDelegateProfileInheritsSubagentMaxTurnsWhenProfileUnset(t *testing.T) {
 	// Given
 	parent := &captureParentAgent{}
@@ -211,9 +241,11 @@ func TestDelegateDefaultsInvalidConcurrency(t *testing.T) {
 
 type captureParentAgent struct {
 	child *captureChildAgent
+	model string
 }
 
-func (p *captureParentAgent) NewSubagentChildWithSession(_ string, _ map[string]bool, _ *session.Store) subagent.ChildAgent {
+func (p *captureParentAgent) NewSubagentChildWithSession(model string, _ map[string]bool, _ *session.Store) subagent.ChildAgent {
+	p.model = model
 	p.child = &captureChildAgent{}
 	return p.child
 }
