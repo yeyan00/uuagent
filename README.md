@@ -54,7 +54,7 @@ The user config is stored at:
 ~/.uuagent/config.yaml
 ```
 
-Secrets should be provided through environment variables and should not be committed:
+Provider API keys should be provided through environment variables and should not be committed:
 
 ```bash
 export UUAGENT_API_KEY="..."
@@ -63,12 +63,19 @@ export UUAGENT_PROXY_URL="https://api.openai.com/v1"
 export UUAGENT_MODEL="gpt-4o-mini"
 ```
 
+When using the local CLIProxyAPI extension, UUAgent can persist the generated local proxy token as `agent.proxy-api-key` so Settings > Models and chat requests can authenticate to `http://127.0.0.1:<port>/v1`. This token is for the local sidecar, not a provider key, and safe config API responses redact it. It can also be overridden for the current process:
+
+```bash
+export UUAGENT_PROXY_API_KEY="sk-uuagent-local-token"
+```
+
 Example config:
 
 ```yaml
 port: 18463
 agent:
   proxy-url: "http://localhost:18463/v1"
+  proxy-api-key: "" # Optional local CLIProxyAPI sidecar token; provider keys stay in env vars.
   routing:
     fallback: strong
     tiers:
@@ -179,8 +186,9 @@ go install github.com/go-delve/delve/cmd/dlv@latest
 This release is a usable MVP for Windows testing. Key features:
 
 - **CLIProxyAPI Extension**: Place `cli-proxy-api.exe` and packaged `management.html` together under `~/.uuagent/plugins/cliproxyapi/`. The Extensions page reports missing/installed state, enables Start only when the binary exists, points CLIProxyAPI at the packaged panel without runtime downloads, and provides Start/Stop/Restart plus logs/status.
+- **CLIProxyAPI Credentials**: Extensions shows masked local management and proxy tokens with copy actions. `Use for Models` applies the CLIProxyAPI proxy URL and local proxy token to Settings > Models.
 - **Top-level Chat Navigation**: Chat now appears beside Projects in the main rail; Projects remains the project/session browser, and Chat prompts users to choose or create a project when none is active.
-- **Built-in Proxy URL**: Models can use the built-in proxy URL configured in Settings > Models.
+- **Built-in Proxy URL**: Models can use the built-in proxy URL and optional local sidecar proxy token configured in Settings > Models.
 - **Agent Subagent Allow-list**: Agents can restrict which subagents are enabled via the `enabled_subagents` field.
 - **Goal Mode**: Supports delegated activity with subagent task execution and plan/todo tracking in the Web UI.
 

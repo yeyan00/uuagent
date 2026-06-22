@@ -491,9 +491,30 @@ $env:GIT_MASTER='1'; git commit -m "Update extension and chat navigation docs" -
 
 ---
 
+## Phase 1 Follow-Up: CLIProxyAPI Models Integration
+
+**Implemented scope:** CLIProxyAPI now exposes locally generated credentials in Extensions, and Models Settings can persist the CLIProxyAPI proxy URL plus proxy API token as `proxy-api-key` / `proxy_api_key`. The agent request path prefers the configured proxy API key before environment API keys, so UUAgent can authenticate to the local CLIProxyAPI sidecar without asking users to inspect `config.yaml`.
+
+**Frontend updates:** Extensions detail includes a `Use for Models` action when CLIProxyAPI has both `proxy_url` and `proxy_api_token`. Models Settings is split into `web/src/components/ModelsSettingsPanel.tsx`, shows Proxy URL, Proxy API Token, fallback tier, deterministic tier descriptions, and route preview in card-based layout.
+
+**Backend updates:** `/api/models/settings` GET/PUT roundtrips `proxy_api_key`; persistent config writes `agent.proxy-api-key`; `UUAGENT_PROXY_API_KEY` is supported; chat/model requests send `Authorization: Bearer <proxy_api_key>` when configured.
+
+**Verification anchors:**
+
+```powershell
+go test ./tests/agent -run "TestModelsSettingsAPI_(gets_current_settings_and_flattened_model_ids|put_persists_settings_and_reloads_router)|TestChatRequestUsesConfiguredProxyAPIKey" -count=1 -v
+cd web; npm test -- --run App.test.tsx -t "applies CLIProxyAPI proxy credentials|Models Settings"
+cd web; npm run build
+powershell -ExecutionPolicy Bypass -File scripts/test.ps1
+```
+
+## Deferred Phase: Memory Scope and Prompt Cache Stability
+
+Memory work is intentionally deferred from Phase 1. Current backend support already distinguishes `global`, `project`, `agent`, and `session` scopes, but the UI mostly exposes project memory and the session receives a frozen memory snapshot. A later Memory phase should add explicit scope/scope-key UI and API affordances, then split system prompt construction into stable profile/tool/skill blocks and volatile memory blocks so prompt-cache stability is not invalidated by unrelated memory or skill changes.
+
 ## Self-Review Checklist
 
-- Spec coverage: Tasks cover plugin directory scaffolding, backend missing/present status tests, improved Extensions controls, top-level Chat nav, docs, and full verification.
+- Spec coverage: Tasks cover plugin directory scaffolding, backend missing/present status tests, improved Extensions controls, top-level Chat nav, CLIProxyAPI Models integration, docs, and full verification.
 - Placeholder scan: No TBD/TODO/fill-later placeholders are intended. Each task names concrete files, commands, expected outcomes, and code snippets.
 - Type consistency: `MainPage`, `ExtensionStatus`, `status`, `installed`, `binary_path`, and existing `/api/extensions` fields match current code patterns.
 - Scope check: This plan intentionally does not auto-download or fake CLIProxyAPI. A real executable must still be supplied at `plugins/cliproxyapi/cli-proxy-api.exe` for non-missing runtime status in real use.
