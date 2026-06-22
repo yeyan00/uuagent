@@ -288,10 +288,16 @@ func (a *Agent) unregisterRun(runID string) {
 
 // Route returns the model routing decision without running the agent.
 func (a *Agent) Route(prompt string, tokenCount int) (string, router.Tier) {
+	decision := a.DecideRoute(prompt, tokenCount)
+	return decision.Model, decision.Tier
+}
+
+// DecideRoute returns route decision metadata without running the agent.
+func (a *Agent) DecideRoute(prompt string, tokenCount int) router.Decision {
 	if a.fixedModel != "" {
-		return a.fixedModel, router.TierStrong
+		return router.Decision{Model: a.fixedModel, Tier: router.TierStrong, Source: "fixed", Reason: "fixed model"}
 	}
-	return a.router.Route(prompt, tokenCount)
+	return a.router.Decide(prompt, tokenCount)
 }
 
 // Profiles returns configured agent profiles.
@@ -483,11 +489,21 @@ func (a *Agent) RunWithAgentParts(ctx context.Context, sessionID, agentID string
 
 // RunWithAgentProjectParts runs one turn with project-scoped memory injection.
 func (a *Agent) RunWithAgentProjectParts(ctx context.Context, sessionID, agentID, projectID string, parts []types.ContentPart) (<-chan Event, error) {
-	profile, _ := a.GetProfile(agentID)
-	return a.runWithResolvedProfile(ctx, sessionID, projectID, profile, parts)
+	return a.RunWithAgentProjectPartsOptions(ctx, sessionID, agentID, projectID, parts, RunOptions{})
 }
 
-func (a *Agent) runWithResolvedProfile(ctx context.Context, sessionID, projectID string, profile config.AgentProfile, parts []types.ContentPart) (<-chan Event, error) {
+// RunOptions controls per-run routing choices.
+type RunOptions struct {
+	ModelOverride string
+}
+
+// RunWithAgentProjectPartsOptions runs one turn with explicit run options.
+func (a *Agent) RunWithAgentProjectPartsOptions(ctx context.Context, sessionID, agentID, projectID string, parts []types.ContentPart, options RunOptions) (<-chan Event, error) {
+	profile, _ := a.GetProfile(agentID)
+	return a.runWithResolvedProfile(ctx, sessionID, projectID, profile, parts, options)
+}
+
+func (a *Agent) runWithResolvedProfile(ctx context.Context, sessionID, projectID string, profile config.AgentProfile, parts []types.ContentPart, options RunOptions) (<-chan Event, error) {
 	prompt := ""
 	for _, p := range parts {
 		if p.Type == "text" {
@@ -498,10 +514,20 @@ func (a *Agent) runWithResolvedProfile(ctx context.Context, sessionID, projectID
 	if registeredProject && a.sessionExistsInOtherProject(sessionID, boundProjectID) {
 		return nil, ErrSessionProjectConflict
 	}
-	model, tier := a.Route(prompt, 0)
+	decision := a.DecideRoute(prompt, estimateRouteTokens(prompt, parts))
 	if profile.Model != "" {
-		model = profile.Model
+		decision.Model = profile.Model
+		decision.Source = "agent"
+		decision.Reason = "agent profile model override"
+		decision.RuleName = ""
 	}
+	if override := strings.TrimSpace(options.ModelOverride); override != "" && !strings.EqualFold(override, "auto") {
+		decision.Model = override
+		decision.Source = "manual"
+		decision.Reason = "per-chat model override"
+		decision.RuleName = ""
+	}
+	model := decision.Model
 	runID := fmt.Sprintf("run-%d", time.Now().UnixNano())
 	ctx = a.registerRun(ctx, runID)
 	events := make(chan Event, 64)
@@ -510,7 +536,7 @@ func (a *Agent) runWithResolvedProfile(ctx context.Context, sessionID, projectID
 		defer close(events)
 		defer a.unregisterRun(runID)
 		events <- Event{Type: "run", RunID: runID}
-		events <- Event{Type: "route", RunID: runID, Model: model, Tier: string(tier)}
+		events <- Event{Type: "route", RunID: runID, Model: decision.Model, Tier: string(decision.Tier), SelectedModel: decision.Model, SelectedTier: string(decision.Tier), Source: decision.Source, RuleName: decision.RuleName, Reason: decision.Reason}
 
 		sess := sessionStore.GetOrCreate(sessionID)
 		if registeredProject {
@@ -601,6 +627,23 @@ func (a *Agent) runWithResolvedProfile(ctx context.Context, sessionID, projectID
 	}()
 
 	return events, nil
+}
+
+func estimateRouteTokens(prompt string, parts []types.ContentPart) int {
+	chars := len(prompt)
+	for _, part := range parts {
+		if part.Type == "text" {
+			continue
+		}
+		chars += len(part.Type)
+		if part.ImageURL != nil {
+			chars += len(part.ImageURL.URL)
+		}
+	}
+	if chars == 0 {
+		return 0
+	}
+	return (chars + 3) / 4
 }
 
 func (a *Agent) storePendingApproval(p pendingApproval) {
@@ -803,7 +846,7 @@ func extractMemoryDraft(userPrompt, assistantResponse string) string {
 
 // RunWithProfileParts runs one turn with an explicit profile, used by delegated subagents.
 func (a *Agent) RunWithProfileParts(ctx context.Context, sessionID, projectID string, profile config.AgentProfile, parts []types.ContentPart) (<-chan Event, error) {
-	return a.runWithResolvedProfile(ctx, sessionID, projectID, profile, parts)
+	return a.runWithResolvedProfile(ctx, sessionID, projectID, profile, parts, RunOptions{})
 }
 
 func (a *Agent) withSystemPrompt(messages []Message, profile config.AgentProfile, memorySnapshot, prompt string) []Message {

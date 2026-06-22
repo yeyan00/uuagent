@@ -575,11 +575,12 @@ func handleListSubagentTasks(agt *agent.Agent) gin.HandlerFunc {
 }
 
 type chatRequest struct {
-	Prompt    string   `json:"prompt"`
-	SessionID string   `json:"session_id"`
-	AgentID   string   `json:"agent_id"`
-	ProjectID string   `json:"project_id"`
-	ImageURL  []string `json:"image_url"`
+	Prompt        string   `json:"prompt"`
+	SessionID     string   `json:"session_id"`
+	AgentID       string   `json:"agent_id"`
+	ProjectID     string   `json:"project_id"`
+	ModelOverride string   `json:"model_override"`
+	ImageURL      []string `json:"image_url"`
 }
 
 const (
@@ -601,6 +602,7 @@ func handleChatSSE(agt *agent.Agent) gin.HandlerFunc {
 			req.SessionID = c.Query("session_id")
 			req.AgentID = c.Query("agent_id")
 			req.ProjectID = c.Query("project_id")
+			req.ModelOverride = c.Query("model_override")
 			req.ImageURL = c.QueryArray("image_url")
 		}
 
@@ -640,7 +642,7 @@ func handleChatSSE(agt *agent.Agent) gin.HandlerFunc {
 				parts = append(parts, types.ContentPart{Type: "image_url", ImageURL: &types.ImageURL{URL: imageURL}})
 			}
 		}
-		events, err := agt.RunWithAgentProjectParts(c.Request.Context(), req.SessionID, req.AgentID, req.ProjectID, parts)
+		events, err := agt.RunWithAgentProjectPartsOptions(c.Request.Context(), req.SessionID, req.AgentID, req.ProjectID, parts, agent.RunOptions{ModelOverride: req.ModelOverride})
 		if err != nil {
 			if errors.Is(err, agent.ErrSessionProjectConflict) {
 				c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
@@ -964,13 +966,25 @@ func writeSSE(c *gin.Context, evt agent.Event) {
 func handleRouteInfo(agt *agent.Agent) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		prompt := c.Query("prompt")
-		model, tier := agt.Route(prompt, 0)
+		decision := agt.DecideRoute(prompt, estimatePromptTokens(prompt))
 		c.JSON(http.StatusOK, gin.H{
-			"model":  model,
-			"tier":   tier,
-			"prompt": prompt,
+			"model":          decision.Model,
+			"tier":           decision.Tier,
+			"selected_model": decision.Model,
+			"selected_tier":  decision.Tier,
+			"source":         decision.Source,
+			"rule_name":      decision.RuleName,
+			"reason":         decision.Reason,
+			"prompt":         prompt,
 		})
 	}
+}
+
+func estimatePromptTokens(prompt string) int {
+	if prompt == "" {
+		return 0
+	}
+	return (len(prompt) + 3) / 4
 }
 
 func handleListSessions(agt *agent.Agent) gin.HandlerFunc {

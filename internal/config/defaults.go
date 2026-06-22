@@ -13,6 +13,11 @@ func Default() *Config {
 					"strong":    {"claude-sonnet-4", "gpt-4o"},
 					"large_ctx": {"gemini-2.5-pro"},
 				},
+				Rules: []RouteRule{
+					{Name: "large-context", Condition: "tokens > 24000", Tier: "large_ctx"},
+					{Name: "fast-simple", Patterns: []string{"typo", "rename", "format", "explain"}, Tier: "fast"},
+					{Name: "coding-strong", Patterns: []string{"implement", "fix", "debug", "refactor", "test"}, Tier: "strong"},
+				},
 			},
 			Memory: MemoryConfig{
 				AutoDraft:        true,
