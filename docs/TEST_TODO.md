@@ -378,7 +378,7 @@
 
 ## 10. 测试覆盖率摘要
 
-### 已覆盖 (21 Go test files + 19 web tests)
+### 已覆盖 (21 Go test files + 44 web tests)
 
 **Go 测试文件：**
 1. `tests/agent/foundation_api_test.go` - Agent LLM 调用基础
