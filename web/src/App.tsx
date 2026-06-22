@@ -4,6 +4,7 @@ import { AgentsSettings } from './components/AgentsSettings'
 import { SubagentsSettings } from './components/SubagentsSettings'
 import { ExtensionsPanel } from './components/ExtensionsPanel'
 import type { ExtensionStatus } from './types'
+import { Folder, Puzzle, Clock, Settings } from 'lucide-react'
 
 interface ToolCallRecord { id?: string; function?: { name?: string; arguments?: string }; name?: string; args?: string }
 interface ChatEvent { type: string; run_id?: string; model?: string; tier?: string; text?: string; tool_name?: string; tool_id?: string; args?: string }
@@ -34,11 +35,11 @@ interface Goal { id: string; project_id: string; session_id?: string; agent_id?:
 type MainPage = 'projects' | 'extensions' | 'schedules' | 'settings'
 type ProjectSettingsTab = 'memory' | 'context' | 'config'
 
-const navItems: Array<{ id: MainPage; label: string; icon: string }> = [
-  { id: 'projects', label: 'Projects', icon: 'P' },
-  { id: 'extensions', label: 'Extensions', icon: 'X' },
-  { id: 'schedules', label: 'Schedules', icon: 'Q' },
-  { id: 'settings', label: 'Settings', icon: 'S' },
+const navItems: Array<{ id: MainPage; label: string; icon: ReactNode }> = [
+  { id: 'projects', label: 'Projects', icon: <Folder size={20} /> },
+  { id: 'extensions', label: 'Extensions', icon: <Puzzle size={20} /> },
+  { id: 'schedules', label: 'Schedules', icon: <Clock size={20} /> },
+  { id: 'settings', label: 'Settings', icon: <Settings size={20} /> },
 ]
 
 const settingsTabs = ['Agents', 'Subagents', 'Models', 'Skills', 'MCP', 'Permissions', 'Storage']
@@ -255,6 +256,8 @@ function App({ initialWorkspaceTab }: AppProps = {}) {
   const [modelsSettings, setModelsSettings] = useState<ModelsSettings | null>(null)
   const [modelsDraft, setModelsDraft] = useState<ModelsSettings | null>(null)
   const [modelsTestResult, setModelsTestResult] = useState<ModelsTestResult | null>(null)
+  const [routePreviewPrompt, setRoutePreviewPrompt] = useState('')
+  const [routePreviewResult, setRoutePreviewResult] = useState<{ selected_model?: string; selected_tier?: string; source?: string; rule_name?: string; reason?: string } | null>(null)
   const [isAgentSettingsOpen, setAgentSettingsOpen] = useState(false)
   const [settingsProjectId, setSettingsProjectId] = useState('')
   const [projectSettingsTab, setProjectSettingsTab] = useState<ProjectSettingsTab>('memory')
@@ -768,7 +771,8 @@ function App({ initialWorkspaceTab }: AppProps = {}) {
         session_id: sid,
         agent_id: agentId,
         ...(projectId ? { project_id: projectId } : {}),
-        ...(imageURLs.length > 0 ? { image_url: imageURLs } : {})
+        ...(imageURLs.length > 0 ? { image_url: imageURLs } : {}),
+        ...(modelOverride && modelOverride !== 'auto' ? { model_override: modelOverride } : {})
       })
       const response = await fetch('/api/chat', {
         method: 'POST',
@@ -915,6 +919,28 @@ function App({ initialWorkspaceTab }: AppProps = {}) {
           <><strong>Connection failed</strong><p>{modelsTestResult.error || 'Unknown error'}</p></>
         )}
       </div>}
+      <div className="wide"><h4>Route Preview</h4></div>
+      <label className="wide">
+        <input value={routePreviewPrompt} onChange={e=>setRoutePreviewPrompt(e.target.value)} placeholder="Enter prompt to preview routing..." />
+      </label>
+      <div className="settingsActions">
+        <button onClick={async () => {
+          if (!routePreviewPrompt.trim()) return
+          try {
+            const result = await api<{ selected_model?: string; selected_tier?: string; source?: string; rule_name?: string; reason?: string }>(`/api/route?prompt=${encodeURIComponent(routePreviewPrompt)}`)
+            setRoutePreviewResult(result)
+          } catch (err) {
+            setRoutePreviewResult({ source: 'error', reason: String(err) })
+          }
+        }}>Preview Route</button>
+      </div>
+      {routePreviewResult && <div className="testResult">
+        <strong>Selected: {routePreviewResult.selected_model || 'N/A'}</strong>
+        <p>Tier: {routePreviewResult.selected_tier || 'N/A'}</p>
+        <p>Source: {routePreviewResult.source || 'N/A'}</p>
+        {routePreviewResult.rule_name && <p>Rule: {routePreviewResult.rule_name}</p>}
+        {routePreviewResult.reason && <p>Reason: {routePreviewResult.reason}</p>}
+      </div>}
     </div>}
     {!modelsDraft && <div className="emptyPanel">Loading models settings...</div>}
   </div>
@@ -1045,7 +1071,7 @@ function App({ initialWorkspaceTab }: AppProps = {}) {
       <aside className="navRail">
         <div className="brandBlock"><div className="brandMark">U</div><div className="brandMini">UA</div></div>
         <nav className="navList">
-          {navItems.map(item => <button key={item.id} className={mainPage === item.id ? 'navItem active' : 'navItem'} onClick={() => { setMainPage(item.id); if (item.id === 'settings') setWorkspaceMode('settings') }} title={item.label}><span className="navIcon">{item.icon}</span><span>{item.label}</span></button>)}
+          {navItems.map(item => <button key={item.id} className={mainPage === item.id ? 'navItem active' : 'navItem'} onClick={() => { setMainPage(item.id); if (item.id === 'settings') setWorkspaceMode('settings') }} title={item.label} aria-label={item.label}><span className="navIcon">{item.icon}</span><span>{item.label}</span></button>)}
         </nav>
       </aside>
 
@@ -1191,7 +1217,7 @@ function App({ initialWorkspaceTab }: AppProps = {}) {
                   <label>Project<select value={projectId} onChange={e=>openProject(e.target.value)} disabled={activeSessionLocked}><option value="">None</option>{projects.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select>{activeSessionLocked && <span>locked</span>}</label>
                   <label>Agent<select value={agentId} onChange={e=>selectAgent(e.target.value)}>{agents.map(a=><option key={a.id} value={a.id}>{a.name || a.id}</option>)}</select></label>
                   <label>Skill<select aria-label="Skill" value={forcedSkill} onChange={e=>setForcedSkill(e.target.value)}><option value="">Auto</option>{skills.map(skill => <option key={skill.name} value={skill.name}>{skill.name}</option>)}</select></label>
-                  <label>Model<select value={modelOverride} onChange={e=>setModelOverride(e.target.value)}>{availableModels.map(m=><option key={m} value={m}>{m === 'auto' ? 'Auto' : m}</option>)}</select></label>
+                  <label>Model<select aria-label="Model" value={modelOverride} onChange={e=>setModelOverride(e.target.value)}>{availableModels.map(m=><option key={m} value={m}>{m === 'auto' ? 'Auto' : m}</option>)}</select></label>
                   <button className="softButton" onClick={() => setWorkspaceTab('goal')}>Goal mode</button>
                 </div>
               </footer>

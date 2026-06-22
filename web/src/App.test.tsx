@@ -1417,4 +1417,155 @@ describe('App', () => {
     expect(binaryPaths.length).toBeGreaterThan(0)
   })
 
+  it('concrete selected model sends model_override in /api/chat body', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const encoder = new TextEncoder()
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      calls.push({ url, init })
+      if (url === '/api/projects') return Response.json({ projects: [] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/sessions') return Response.json({ sessions: [] })
+      if (url === '/api/memory') return Response.json({ memories: [] })
+      if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
+      if (url === '/api/models/settings') return Response.json({ proxy_url: 'http://localhost:18463/v1', fallback_tier: 'strong', routing_tiers: {}, model_ids: ['gpt-4o', 'claude-sonnet-4'] })
+      if (url === '/api/chat') {
+        const stream = new ReadableStream<Uint8Array>({
+          start(c) {
+            c.enqueue(encoder.encode('data: {"type":"content","text":"ok"}\n\n'))
+            c.close()
+          },
+        })
+        return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } })
+      }
+      return Response.json({})
+    }) as any
+
+    render(<App />)
+    await waitFor(() => expect(screen.getAllByText('gpt-4o').length).toBeGreaterThan(0))
+
+    const modelSelect = screen.getAllByRole('combobox').find(el => el.getAttribute('aria-label')?.toLowerCase().includes('model'))
+    if (modelSelect) {
+      fireEvent.change(modelSelect, { target: { value: 'gpt-4o' } })
+    }
+
+    const input = await screen.findByPlaceholderText('Ask UUAgent to inspect, edit or explain code... Ctrl+Enter to send')
+    fireEvent.change(input, { target: { value: 'test message' } })
+    fireEvent.click(screen.getByText('Send'))
+
+    await waitFor(() => {
+      const chatCall = calls.find(c => c.url === '/api/chat')
+      expect(chatCall).toBeTruthy()
+      const body = JSON.parse(String(chatCall?.init?.body))
+      expect(body.model_override).toBe('gpt-4o')
+    })
+  })
+
+  it('auto selected model omits model_override from /api/chat body', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const encoder = new TextEncoder()
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      calls.push({ url, init })
+      if (url === '/api/projects') return Response.json({ projects: [] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/sessions') return Response.json({ sessions: [] })
+      if (url === '/api/memory') return Response.json({ memories: [] })
+      if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
+      if (url === '/api/models/settings') return Response.json({ proxy_url: 'http://localhost:18463/v1', fallback_tier: 'strong', routing_tiers: {}, model_ids: ['gpt-4o', 'claude-sonnet-4'] })
+      if (url === '/api/chat') {
+        const stream = new ReadableStream<Uint8Array>({
+          start(c) {
+            c.enqueue(encoder.encode('data: {"type":"content","text":"ok"}\n\n'))
+            c.close()
+          },
+        })
+        return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } })
+      }
+      return Response.json({})
+    }) as any
+
+    render(<App />)
+    await waitFor(() => expect(screen.getAllByText('Auto').length).toBeGreaterThan(0))
+
+    const modelSelect = screen.getAllByRole('combobox').find(el => el.getAttribute('aria-label')?.toLowerCase().includes('model'))
+    if (modelSelect) {
+      fireEvent.change(modelSelect, { target: { value: 'auto' } })
+    }
+
+    const input = await screen.findByPlaceholderText('Ask UUAgent to inspect, edit or explain code... Ctrl+Enter to send')
+    fireEvent.change(input, { target: { value: 'test message' } })
+    fireEvent.click(screen.getByText('Send'))
+
+    await waitFor(() => {
+      const chatCall = calls.find(c => c.url === '/api/chat')
+      expect(chatCall).toBeTruthy()
+      const body = JSON.parse(String(chatCall?.init?.body))
+      expect(body.model_override).toBeUndefined()
+    })
+  })
+
+  it('models route preview displays selected model source and rule from mocked /api/route', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/projects') return Response.json({ projects: [] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/subagents') return Response.json({ subagents: [] })
+      if (url === '/api/skills') return Response.json({ skills: [], diagnostics: [] })
+      if (url === '/api/memory') return Response.json({ memories: [] })
+      if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
+      if (url === '/api/models/settings') return Response.json({ proxy_url: 'http://localhost:18463/v1', fallback_tier: 'strong', routing_tiers: {}, model_ids: ['gpt-4o-mini', 'gpt-4o'] })
+      if (url.startsWith('/api/route')) {
+        return Response.json({
+          selected_model: 'gpt-4o-mini',
+          selected_tier: 'fast',
+          source: 'rule',
+          rule_name: 'fast-simple',
+          reason: 'pattern matched'
+        })
+      }
+      return Response.json({})
+    }) as any
+
+    render(<App />)
+    fireEvent.click(await screen.findByText('Settings'))
+    fireEvent.click(await screen.findByText('Models'))
+
+    expect(await screen.findByDisplayValue('http://localhost:18463/v1')).toBeTruthy()
+
+    const promptInput = await screen.findByPlaceholderText('Enter prompt to preview routing...')
+    fireEvent.change(promptInput, { target: { value: 'format this code' } })
+    fireEvent.click(await screen.findByText('Preview Route'))
+
+    await waitFor(() => {
+      expect(screen.getByText((content) => content.includes('gpt-4o-mini'))).toBeTruthy()
+      expect(screen.getByText((content) => content.includes('Tier:'))).toBeTruthy()
+      expect(screen.getByText((content) => content.includes('Source:'))).toBeTruthy()
+      expect(screen.getByText((content) => content.includes('Rule:'))).toBeTruthy()
+      expect(screen.getByText((content) => content.includes('Reason:'))).toBeTruthy()
+    })
+  })
+
+  it('navigation icon buttons keep accessible names for Projects Extensions Schedules Settings', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    globalThis.fetch = vi.fn(async (url: string) => {
+      if (url === '/api/projects') return Response.json({ projects: [] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/sessions') return Response.json({ sessions: [] })
+      if (url === '/api/memory') return Response.json({ memories: [] })
+      if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
+      return Response.json({})
+    }) as any
+
+    render(<App />)
+
+    expect(await screen.findByRole('button', { name: 'Projects' })).toBeTruthy()
+    expect(await screen.findByRole('button', { name: 'Extensions' })).toBeTruthy()
+    expect(await screen.findByRole('button', { name: 'Schedules' })).toBeTruthy()
+    expect(await screen.findByRole('button', { name: 'Settings' })).toBeTruthy()
+  })
+
 })
