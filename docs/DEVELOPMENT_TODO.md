@@ -345,7 +345,8 @@
 | Subagents | 已实现 | 后端管理器，支持并发限制、blocked tools、context cancel、独立 session、任务树持久化 |
 | Memory | 已实现 | Markdown-first，支持 global/project/agent/session scope，frozen snapshot |
 | Context Compression | 已实现基础闭环 | 本地确定性压缩逻辑；已支持手动 compact archive/history 与 restore/回滚；自动/模型摘要策略可继续增强 |
-| cliproxyapi/models | MVP (built-in extension) | CLIProxyAPI backend extension lifecycle endpoints 已实现；Extensions UI 支持 start/stop/check CLIProxyAPI 与查看 logs/status；Models Settings API/UI 已支持 proxy URL、/models 连接测试、模型列表与 routing tiers；CLIProxyAPI 二进制需放置于 plugins/cliproxyapi/cli-proxy-api.exe |
+| cliproxyapi/models | MVP (built-in extension) | CLIProxyAPI backend extension lifecycle endpoints 已实现；Extensions UI 支持 missing/installed 状态、二进制路径提示、Start/Stop/Restart 控制与 logs/status；Models Settings API/UI 已支持 proxy URL、/models 连接测试、模型列表与 routing tiers；CLIProxyAPI 二进制需放置于 plugins/cliproxyapi/cli-proxy-api.exe |
+| Chat Navigation | 已实现 | Chat 已提升为与 Projects 同级的主导航入口；Projects 保留项目/session 浏览，Chat 无 active project 时提示选择或创建项目 |
 | Session Token 显示 | 已实现 | active session workspace header 显示 Input/Output/Total；Project Settings context 仍显示详细 token |
 | Compact Archive | 已实现 | 手动 Compact 会归档被压缩消息并显示 Compact Archives；支持 restore/回滚并刷新当前 session/context |
 | Project Path UX | 已实现 | 创建项目时路径 trim、错误提示、existing-file path 校验、中文/空格路径测试已覆盖 |
@@ -364,9 +365,10 @@
 
 **已完成 MVP：**
 1. **Agent/Subagent Settings** - Agent Profile 支持 enabled_subagents 限制子代理范围；Subagent 支持并发限制、blocked tools、context cancel、独立 session、任务树持久化。
-2. **CLIProxyAPI Extension** - 作为默认内置扩展 MVP 实现：backend 支持 lifecycle 端点，Extensions UI 支持 start/stop/check CLIProxyAPI 与查看 logs/status。
-3. **Model Routing** - 部分实现但明确可测试：Models Settings API/UI 支持 proxy URL、/models 连接测试、模型列表与 routing tiers/fallback。
-4. **Goal Mode** - MVP 实现：GoalRun store/API/runner、内置 profiles、delegate_task 工具、Web Goal mode 与 plan/todo/activity 展示、subagent 委派执行。
+2. **CLIProxyAPI Extension** - 作为默认内置扩展 MVP 实现：backend 支持 lifecycle 端点，Extensions UI 支持 missing/installed 状态、`plugins/cliproxyapi/cli-proxy-api.exe` 路径提示、Start/Stop/Restart 控制与查看 logs/status。
+3. **Top-level Chat Navigation** - Chat 已提升为与 Projects 同级的主导航入口；Projects 保留项目/session 浏览，Chat 无 active project 时显示选择或创建项目的空状态。
+4. **Model Routing** - 部分实现但明确可测试：Models Settings API/UI 支持 proxy URL、/models 连接测试、模型列表与 routing tiers/fallback。
+5. **Goal Mode** - MVP 实现：GoalRun store/API/runner、内置 profiles、delegate_task 工具、Web Goal mode 与 plan/todo/activity 展示、subagent 委派执行。
 
 **仍为未来工作：**
 - Real MCP client 生命周期 (stdio/http/sse)
