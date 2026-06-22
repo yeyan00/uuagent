@@ -631,3 +631,253 @@ input:focus, textarea:focus, select:focus { border-color: #5d87ff; box-shadow: 0
 .btn-danger:hover:not(:disabled) {
   background: #ffd6d4;
 }
+
+/* Extensions Panel Styles */
+.extensionsPanel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.extensionsList {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+.extensionListItem {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid rgba(132, 146, 170, 0.16);
+  border-radius: 12px;
+  background: #fff;
+  margin-bottom: 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  text-align: left;
+}
+
+.extensionListItem:hover {
+  background: #f8fafc;
+  border-color: rgba(76, 120, 255, 0.3);
+}
+
+.extensionListItem.selected {
+  background: #eef3fb;
+  border-color: #4c78ff;
+}
+
+.extensionListHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.extensionName {
+  font-weight: 600;
+  font-size: 14px;
+  color: #162033;
+}
+
+.builtInBadge {
+  font-size: 10px;
+  padding: 2px 6px;
+  background: #e8f0ff;
+  color: #4c78ff;
+  border-radius: 4px;
+  font-weight: 600;
+}
+
+.extensionListMeta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.statusBadge {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-weight: 600;
+}
+
+.statusBadge.running {
+  background: #e6f4ea;
+  color: #1e7e34;
+}
+
+.statusBadge.starting {
+  background: #fff8e1;
+  color: #f57c00;
+}
+
+.statusBadge.stopped {
+  background: #f5f5f5;
+  color: #666;
+}
+
+.statusBadge.missing {
+  background: #ffebee;
+  color: #c62828;
+}
+
+.statusBadge.error {
+  background: #ffebee;
+  color: #c62828;
+}
+
+.notInstalledBadge {
+  font-size: 10px;
+  padding: 2px 6px;
+  background: #fff3e0;
+  color: #e65100;
+  border-radius: 4px;
+  font-weight: 600;
+}
+
+.extensionDetail {
+  border-top: 1px solid rgba(132, 146, 170, 0.16);
+  padding: 16px;
+  background: #f8fafc;
+  max-height: 50%;
+  overflow-y: auto;
+}
+
+.extensionDetailHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 16px;
+}
+
+.extensionDetailHeader h3 {
+  margin: 0 0 4px 0;
+  font-size: 16px;
+  color: #162033;
+}
+
+.extensionDescription {
+  margin: 0;
+  font-size: 13px;
+  color: #62738f;
+}
+
+.extensionActions {
+  display: flex;
+  gap: 8px;
+}
+
+.extensionStatusCard {
+  background: #fff;
+  border: 1px solid rgba(132, 146, 170, 0.16);
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.statusRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(132, 146, 170, 0.1);
+}
+
+.statusRow:last-child {
+  border-bottom: none;
+}
+
+.statusRow.errorRow {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.statusLabel {
+  font-size: 12px;
+  color: #62738f;
+  font-weight: 500;
+}
+
+.statusValue {
+  font-size: 12px;
+  color: #162033;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Consolas, monospace;
+}
+
+.statusValueWithAction {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.copyButton {
+  font-size: 11px;
+  padding: 4px 8px;
+  background: #edf2fb;
+  border: 0;
+  border-radius: 6px;
+  color: #4c78ff;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.copyButton:hover {
+  background: #e2e8f3;
+}
+
+.managementLink {
+  font-size: 12px;
+  color: #4c78ff;
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.managementLink:hover {
+  text-decoration: underline;
+}
+
+.errorValue {
+  background: #ffebee;
+  color: #c62828;
+  padding: 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  width: 100%;
+}
+
+.extensionGuidance {
+  margin-top: 16px;
+  padding: 12px;
+  background: #fff8e1;
+  border: 1px solid #ffe082;
+  border-radius: 12px;
+}
+
+.extensionGuidance h4 {
+  margin: 0 0 8px 0;
+  font-size: 13px;
+  color: #f57c00;
+}
+
+.extensionGuidance p {
+  margin: 0 0 8px 0;
+  font-size: 12px;
+  color: #62738f;
+}
+
+.extensionGuidance code {
+  display: block;
+  padding: 8px;
+  background: #fff;
+  border: 1px solid #ffe082;
+  border-radius: 6px;
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Consolas, monospace;
+  color: #162033;
+}

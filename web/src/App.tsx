@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type ReactNo
 import './App.css'
 import { AgentsSettings } from './components/AgentsSettings'
 import { SubagentsSettings } from './components/SubagentsSettings'
+import { ExtensionsPanel } from './components/ExtensionsPanel'
+import type { ExtensionStatus } from './types'
 
 interface ToolCallRecord { id?: string; function?: { name?: string; arguments?: string }; name?: string; args?: string }
 interface ChatEvent { type: string; run_id?: string; model?: string; tier?: string; text?: string; tool_name?: string; tool_id?: string; args?: string }
@@ -260,6 +262,8 @@ function App({ initialWorkspaceTab }: AppProps = {}) {
   const [attachments, setAttachments] = useState<ChatAttachment[]>([])
   const [workspaceTab, setWorkspaceTab] = useState<'chat' | 'goal'>(initialWorkspaceTab ?? 'chat')
   const [goals, setGoals] = useState<Goal[]>([])
+  const [extensions, setExtensions] = useState<ExtensionStatus[]>([])
+  const [selectedExtensionId, setSelectedExtensionId] = useState('')
 
   useEffect(() => {
     if (initialWorkspaceTab) {
@@ -301,13 +305,14 @@ function App({ initialWorkspaceTab }: AppProps = {}) {
   const hasSessionUsage = !!(usageInputTokens || usageOutputTokens || usageTotalTokens)
 
   const refresh = async () => {
-    const [p, a, m, sa, sk, ms] = await Promise.all([
+    const [p, a, m, sa, sk, ms, ex] = await Promise.all([
       api<{projects: Project[]}>('/api/projects'),
       api<{agents: AgentProfile[]}>('/api/agents'),
       api<{memories: MemoryEntry[]}>(memoryURL),
       api<{subagents: SubagentProfile[]}>('/api/subagents').catch(() => ({ subagents: [] })),
       api<{skills: SkillInfo[]; diagnostics?: SkillDiagnostic[]}>('/api/skills').catch(() => ({ skills: [], diagnostics: [] })),
       api<ModelsSettings>('/api/models/settings').catch(() => ({ proxy_url: '', fallback_tier: 'strong', routing_tiers: {}, model_ids: [] })),
+      api<{extensions: ExtensionStatus[]}>('/api/extensions').catch(() => ({ extensions: [] })),
     ])
     const projectList = p.projects || []
     setProjects(projectList)
@@ -318,11 +323,50 @@ function App({ initialWorkspaceTab }: AppProps = {}) {
     setMemories(m.memories || [])
     setModelsSettings(ms)
     setModelsDraft(ms)
+    setExtensions(ex.extensions || [])
     const pairs = await Promise.all(projectList.map(async p => {
       const r = await api<{sessions: Session[]}>(`/api/projects/${encodeURIComponent(p.id)}/sessions`).catch(() => ({ sessions: [] }))
       return [p.id, r.sessions || []] as const
     }))
     setProjectSessions(Object.fromEntries(pairs))
+  }
+
+  const fetchExtensions = async () => {
+    const r = await api<{extensions: ExtensionStatus[]}>('/api/extensions').catch(() => ({ extensions: [] }))
+    setExtensions(r.extensions || [])
+  }
+
+  const startExtension = async (id: string) => {
+    setStatus(`Starting ${id}...`)
+    try {
+      await api(`/api/extensions/${encodeURIComponent(id)}/start`, { method: 'POST' })
+      await fetchExtensions()
+      setStatus(`${id} started`)
+    } catch (err) {
+      setStatus(`Failed to start ${id}: ${err}`)
+    }
+  }
+
+  const stopExtension = async (id: string) => {
+    setStatus(`Stopping ${id}...`)
+    try {
+      await api(`/api/extensions/${encodeURIComponent(id)}/stop`, { method: 'POST' })
+      await fetchExtensions()
+      setStatus(`${id} stopped`)
+    } catch (err) {
+      setStatus(`Failed to stop ${id}: ${err}`)
+    }
+  }
+
+  const restartExtension = async (id: string) => {
+    setStatus(`Restarting ${id}...`)
+    try {
+      await api(`/api/extensions/${encodeURIComponent(id)}/restart`, { method: 'POST' })
+      await fetchExtensions()
+      setStatus(`${id} restarted`)
+    } catch (err) {
+      setStatus(`Failed to restart ${id}: ${err}`)
+    }
   }
 
   useEffect(() => { refresh().catch(err => setStatus(String(err))) }, [])
@@ -954,9 +998,19 @@ function App({ initialWorkspaceTab }: AppProps = {}) {
   const renderSidebarBody = () => {
     if (mainPage !== 'projects') {
       if (mainPage === 'settings') return renderSettingsSideMenu()
-      const text = mainPage === 'extensions'
-        ? 'Manage marketplace extensions and installable capability packs.'
-        : 'Create recurring project scans, tests, reports and knowledge refresh jobs.'
+      if (mainPage === 'extensions') {
+        return (
+          <ExtensionsPanel
+            extensions={extensions}
+            selectedExtensionId={selectedExtensionId}
+            onSelectExtension={setSelectedExtensionId}
+            onStartExtension={startExtension}
+            onStopExtension={stopExtension}
+            onRestartExtension={restartExtension}
+          />
+        )
+      }
+      const text = 'Create recurring project scans, tests, reports and knowledge refresh jobs.'
       return <div className="sidePlaceholder"><h3>{navItems.find(n => n.id === mainPage)?.label}</h3><p>{text}</p><button className="softButton">Coming soon</button></div>
     }
 

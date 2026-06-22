@@ -1,5 +1,21 @@
 // Shared frontend types for Agent and Subagent profiles
 
+export interface ExtensionStatus {
+  id: string;
+  name: string;
+  description?: string;
+  built_in: boolean;
+  installed: boolean;
+  enabled: boolean;
+  status: string;
+  binary_path?: string;
+  config_path?: string;
+  port?: number;
+  proxy_url?: string;
+  management_url?: string;
+  last_error?: string;
+}
+
 export interface AgentProfile {
   id: string;
   name: string;

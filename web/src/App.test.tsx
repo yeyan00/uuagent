@@ -1396,4 +1396,25 @@ describe('App', () => {
     })
   })
 
+  it('shows built-in CLIProxyAPI extension status and actions', async () => {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/extensions') return Response.json({ extensions: [{ id: 'cliproxyapi', name: 'CLIProxyAPI', built_in: true, installed: false, status: 'missing', binary_path: 'plugins/cliproxyapi/cli-proxy-api.exe', proxy_url: 'http://127.0.0.1:8317/v1' }] })
+      if (url === '/api/projects') return Response.json({ projects: [] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/sessions') return Response.json({ sessions: [] })
+      if (url === '/api/memory') return Response.json({ memories: [] })
+      if (url === '/api/models/settings') return Response.json({ proxy_url: 'http://localhost:18463/v1', fallback_tier: 'strong', routing_tiers: {}, model_ids: [] })
+      if (url === '/api/skills') return Response.json({ skills: [] })
+      return Response.json({})
+    }) as any
+    render(<App />)
+    fireEvent.click(await screen.findByText('Extensions'))
+    expect(await screen.findByText('CLIProxyAPI')).toBeTruthy()
+    expect(await screen.findByText('Missing')).toBeTruthy()
+    fireEvent.click(await screen.findByText('CLIProxyAPI'))
+    const binaryPaths = await screen.findAllByText('plugins/cliproxyapi/cli-proxy-api.exe')
+    expect(binaryPaths.length).toBeGreaterThan(0)
+  })
+
 })
