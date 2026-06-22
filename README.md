@@ -178,7 +178,7 @@ go install github.com/go-delve/delve/cmd/dlv@latest
 
 This release is a usable MVP for Windows testing. Key features:
 
-- **CLIProxyAPI Extension**: Place `cli-proxy-api.exe` at `plugins/cliproxyapi/cli-proxy-api.exe` (relative to the working directory). The Extensions page reports missing/installed state, enables Start only when the binary exists, and provides Start/Stop/Restart plus logs/status.
+- **CLIProxyAPI Extension**: Place `cli-proxy-api.exe` at `~/.uuagent/plugins/cliproxyapi/cli-proxy-api.exe`. The Extensions page reports missing/installed state, enables Start only when the binary exists, and provides Start/Stop/Restart plus logs/status.
 - **Top-level Chat Navigation**: Chat now appears beside Projects in the main rail; Projects remains the project/session browser, and Chat prompts users to choose or create a project when none is active.
 - **Built-in Proxy URL**: Models can use the built-in proxy URL configured in Settings > Models.
 - **Agent Subagent Allow-list**: Agents can restrict which subagents are enabled via the `enabled_subagents` field.
