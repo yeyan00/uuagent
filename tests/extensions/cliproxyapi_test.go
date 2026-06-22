@@ -75,6 +75,41 @@ func Test_CLIProxyAPI_Start_returns_missing_status_when_binary_absent(t *testing
 	}
 }
 
+func Test_CLIProxyAPI_Status_becomes_stopped_when_binary_exists(t *testing.T) {
+	// Given
+	root := t.TempDir()
+	pluginRoot := filepath.Join(root, "plugins")
+	manager := extensions.NewCLIProxyAPIManager(extensions.CLIProxyAPIOptions{
+		PluginRoot: pluginRoot,
+		DataRoot:   filepath.Join(root, "data"),
+		LogLines:   20,
+	})
+	missing := manager.Status(t.Context())
+	if missing.Status != extensions.StatusMissing {
+		t.Fatalf("expected missing before binary exists, got %q", missing.Status)
+	}
+	if missing.Installed {
+		t.Fatalf("missing binary should report installed=false")
+	}
+	if err := os.MkdirAll(filepath.Dir(missing.BinaryPath), 0755); err != nil {
+		t.Fatalf("create plugin dir: %v", err)
+	}
+	if err := os.WriteFile(missing.BinaryPath, []byte("fake"), 0755); err != nil {
+		t.Fatalf("write fake binary: %v", err)
+	}
+
+	// When
+	installed := manager.Status(t.Context())
+
+	// Then
+	if installed.Status != extensions.StatusStopped {
+		t.Fatalf("expected stopped after binary exists, got %q", installed.Status)
+	}
+	if !installed.Installed {
+		t.Fatalf("existing binary should report installed=true")
+	}
+}
+
 func Test_CLIProxyAPI_Start_generates_config_reaches_running_and_captures_bounded_logs(t *testing.T) {
 	// Given
 	root := t.TempDir()
