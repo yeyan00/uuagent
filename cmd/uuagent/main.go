@@ -2,13 +2,17 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"runtime"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/yeyan00/uuagent/api/server"
@@ -84,9 +88,29 @@ func main() {
 	fmt.Printf("║  Admin: %s/management.html  ║\n", padRight(url, 22))
 	fmt.Printf("╚══════════════════════════════════════╝\n")
 
-	if err := r.Run(addr); err != nil {
-		fmt.Printf("Server error: %v\n", err)
-		os.Exit(1)
+	httpServer := &http.Server{Addr: addr, Handler: r}
+	serverErrors := make(chan error, 1)
+	go func() {
+		serverErrors <- httpServer.ListenAndServe()
+	}()
+
+	shutdownSignals := make(chan os.Signal, 1)
+	signal.Notify(shutdownSignals, os.Interrupt, syscall.SIGTERM)
+	select {
+	case err := <-serverErrors:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			fmt.Printf("Server error: %v\n", err)
+			os.Exit(1)
+		}
+	case <-shutdownSignals:
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+			fmt.Printf("Server shutdown error: %v\n", err)
+		}
+		if err := server.ShutdownExtensions(shutdownCtx); err != nil {
+			fmt.Printf("Extension shutdown error: %v\n", err)
+		}
 	}
 
 	// TODO: Wails desktop mode.
@@ -117,6 +141,3 @@ func padRight(s string, len int) string {
 }
 
 func lenString(s string) int { return len(s) }
-
-// Keep context for future use
-var _ = context.Background

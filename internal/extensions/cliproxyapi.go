@@ -103,6 +103,11 @@ func (m *CLIProxyAPIManager) Restart(ctx context.Context) (Status, error) {
 	return m.Start(ctx)
 }
 
+func (m *CLIProxyAPIManager) Close(ctx context.Context) error {
+	_, err := m.Stop(ctx)
+	return err
+}
+
 func (m *CLIProxyAPIManager) Health(ctx context.Context) error {
 	port := m.currentPort()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/healthz", port), nil)
@@ -177,7 +182,8 @@ func (m *CLIProxyAPIManager) statusLocked(state string) Status {
 	if state == StatusRunning && managementInstalled && m.managementPanelAvailableLocked() {
 		managementURL = fmt.Sprintf("http://127.0.0.1:%d/management.html", m.port)
 	}
-	return Status{ID: cliProxyAPIID, Name: "CLIProxyAPI", Description: "OpenAI-compatible model proxy and management panel", BuiltIn: true, Installed: fileExists(m.binaryPathLocked()), Enabled: true, Status: state, BinaryPath: m.binaryPathLocked(), ConfigPath: m.configPathLocked(), Port: m.port, ProxyURL: fmt.Sprintf("http://127.0.0.1:%d/v1", m.port), ManagementURL: managementURL, ManagementPath: managementPath, ManagementInstalled: managementInstalled, LastError: m.lastError}
+	authDir := m.authDirLocked()
+	return Status{ID: cliProxyAPIID, Name: "CLIProxyAPI", Description: "OpenAI-compatible model proxy and management panel", BuiltIn: true, Installed: fileExists(m.binaryPathLocked()), Enabled: true, Status: state, BinaryPath: m.binaryPathLocked(), ConfigPath: m.configPathLocked(), Port: m.port, ProxyURL: fmt.Sprintf("http://127.0.0.1:%d/v1", m.port), ManagementURL: managementURL, ManagementPath: managementPath, ManagementInstalled: managementInstalled, ManagementSecret: readCredential(credentialPath(authDir, managementSecretFile)), ProxyAPIToken: readCredential(credentialPath(authDir, proxyAPITokenFile)), LastError: m.lastError}
 }
 
 func (m *CLIProxyAPIManager) setErrorLocked(state string, err error) Status {
@@ -225,27 +231,28 @@ func (m *CLIProxyAPIManager) configPathLocked() string {
 	return filepath.Join(m.opts.DataRoot, cliProxyAPIID, "config.yaml")
 }
 
+func (m *CLIProxyAPIManager) authDirLocked() string {
+	return filepath.Join(m.opts.DataRoot, cliProxyAPIID, "auth")
+}
+
 func (m *CLIProxyAPIManager) writeConfigLocked() error {
 	dataDir := filepath.Join(m.opts.DataRoot, cliProxyAPIID)
 	if err := os.MkdirAll(filepath.Join(dataDir, "logs"), 0755); err != nil {
 		return fmt.Errorf("create extension log dir: %w", err)
 	}
-	authDir := filepath.Join(dataDir, "auth")
+	authDir := m.authDirLocked()
 	if err := os.MkdirAll(authDir, 0755); err != nil {
 		return fmt.Errorf("create extension auth dir: %w", err)
 	}
-	secretPath := filepath.Join(authDir, "management.secret")
-	if _, err := os.Stat(secretPath); errors.Is(err, os.ErrNotExist) {
-		if err := os.WriteFile(secretPath, []byte(fmt.Sprintf("local-%d", time.Now().UnixNano())), 0600); err != nil {
-			return fmt.Errorf("write management secret: %w", err)
-		}
-	}
-	secretData, err := os.ReadFile(secretPath)
+	secret, err := ensureCredential(credentialPath(authDir, managementSecretFile), "mgmt-")
 	if err != nil {
-		return fmt.Errorf("read management secret: %w", err)
+		return fmt.Errorf("ensure management secret: %w", err)
 	}
-	secret := strings.TrimSpace(string(secretData))
-	body := strings.Join([]string{"host: 127.0.0.1", fmt.Sprintf("port: %d", m.port), "data_dir: " + dataDir, "auth_dir: " + authDir, "log_dir: " + filepath.Join(dataDir, "logs"), "remote-management:", "  secret-key: " + secret, "  disable-auto-update-panel: true", ""}, "\n")
+	proxyToken, err := ensureCredential(credentialPath(authDir, proxyAPITokenFile), "sk-uuagent-")
+	if err != nil {
+		return fmt.Errorf("ensure proxy API token: %w", err)
+	}
+	body := strings.Join([]string{"host: 127.0.0.1", fmt.Sprintf("port: %d", m.port), "data_dir: " + dataDir, "auth_dir: " + authDir, "log_dir: " + filepath.Join(dataDir, "logs"), "api-keys:", "  - \"" + proxyToken + "\"", "remote-management:", "  secret-key: " + secret, "  disable-auto-update-panel: true", ""}, "\n")
 	if err := os.WriteFile(m.configPathLocked(), []byte(body), 0600); err != nil {
 		return fmt.Errorf("write config file: %w", err)
 	}

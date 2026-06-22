@@ -23,6 +23,8 @@ type Status struct {
 	ManagementURL       string `json:"management_url"`
 	ManagementPath      string `json:"management_path"`
 	ManagementInstalled bool   `json:"management_installed"`
+	ManagementSecret    string `json:"management_secret"`
+	ProxyAPIToken       string `json:"proxy_api_token"`
 	LastError           string `json:"last_error"`
 }
 

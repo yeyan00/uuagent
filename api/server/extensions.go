@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"path/filepath"
@@ -23,6 +24,16 @@ func extensionManager() *extensions.CLIProxyAPIManager {
 		cliProxyAPIManager = extensions.NewCLIProxyAPIManager(extensions.CLIProxyAPIOptions{PluginRoot: filepath.Join(paths.UserDir(), "plugins"), DataRoot: filepath.Join(paths.UserDir(), "extensions")})
 	}
 	return cliProxyAPIManager
+}
+
+func ShutdownExtensions(ctx context.Context) error {
+	extensionsMu.Lock()
+	manager := cliProxyAPIManager
+	extensionsMu.Unlock()
+	if manager == nil {
+		return nil
+	}
+	return manager.Close(ctx)
 }
 
 func handleListExtensions() gin.HandlerFunc {
