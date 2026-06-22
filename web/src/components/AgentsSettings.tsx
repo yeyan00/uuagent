@@ -51,12 +51,16 @@ export function AgentsSettings({ agents, subagents, onSave, onDelete, onCreate }
 
   const handleDelete = async () => {
     if (selectedAgent && confirm(`Delete agent "${selectedAgent.name}"?`)) {
-      await onDelete(selectedAgent.id);
-      if (agents.length > 1) {
-        const remaining = agents.filter(a => a.id !== selectedAgent.id);
-        setSelectedAgentId(remaining[0]?.id || null);
-      } else {
-        setSelectedAgentId(null);
+      try {
+        await onDelete(selectedAgent.id);
+        if (agents.length > 1) {
+          const remaining = agents.filter(a => a.id !== selectedAgent.id);
+          setSelectedAgentId(remaining[0]?.id || null);
+        } else {
+          setSelectedAgentId(null);
+        }
+      } catch {
+        // Keep current selection if delete fails
       }
     }
   };
@@ -131,14 +135,14 @@ export function AgentsSettings({ agents, subagents, onSave, onDelete, onCreate }
                       min="0"
                       max="2"
                       value={editedAgent.temperature ?? ''}
-                      onChange={e => setEditedAgent({ ...editedAgent, temperature: parseFloat(e.target.value) })}
+                      onChange={e => setEditedAgent({ ...editedAgent, temperature: e.target.value ? parseFloat(e.target.value) : undefined })}
                     />
                   </div>
                 </div>
                 
-                <div className="form-group">
-                  <label>Enabled Subagents</label>
-                  <div className="subagent-checkboxes">
+                  <div className="form-group">
+                  <label id="enabled-subagents-label">Enabled Subagents</label>
+                  <div className="subagent-checkboxes" role="group" aria-labelledby="enabled-subagents-label">
                     {subagents.length === 0 ? (
                       <p className="no-subagents">No subagents available</p>
                     ) : (
@@ -147,6 +151,7 @@ export function AgentsSettings({ agents, subagents, onSave, onDelete, onCreate }
                           <input
                             type="checkbox"
                             id={`subagent-${subagent.id}`}
+                            aria-label={`Enable subagent ${subagent.name} for ${editedAgent.name || editedAgent.id}`}
                             checked={(editedAgent.enabled_subagents || []).includes(subagent.id)}
                             onChange={() => handleToggleSubagent(subagent.id)}
                           />

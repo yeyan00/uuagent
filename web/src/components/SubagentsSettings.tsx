@@ -42,12 +42,16 @@ export function SubagentsSettings({ subagents, agents, onSave, onDelete, onCreat
 
   const handleDelete = async () => {
     if (selectedSubagent && confirm(`Delete subagent "${selectedSubagent.name}"?`)) {
-      await onDelete(selectedSubagent.id);
-      if (subagents.length > 1) {
-        const remaining = subagents.filter(s => s.id !== selectedSubagent.id);
-        setSelectedSubagentId(remaining[0]?.id || null);
-      } else {
-        setSelectedSubagentId(null);
+      try {
+        await onDelete(selectedSubagent.id);
+        if (subagents.length > 1) {
+          const remaining = subagents.filter(s => s.id !== selectedSubagent.id);
+          setSelectedSubagentId(remaining[0]?.id || null);
+        } else {
+          setSelectedSubagentId(null);
+        }
+      } catch {
+        // Keep current selection if delete fails
       }
     }
   };
@@ -134,7 +138,7 @@ export function SubagentsSettings({ subagents, agents, onSave, onDelete, onCreat
                       min="0"
                       max="2"
                       value={editedSubagent.temperature ?? ''}
-                      onChange={e => setEditedSubagent({ ...editedSubagent, temperature: parseFloat(e.target.value) })}
+                      onChange={e => setEditedSubagent({ ...editedSubagent, temperature: e.target.value ? parseFloat(e.target.value) : undefined })}
                     />
                   </div>
                 </div>

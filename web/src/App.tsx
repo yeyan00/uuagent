@@ -287,7 +287,7 @@ function App({ initialWorkspaceTab }: AppProps = {}) {
   const availableModels = useMemo(() => {
     const agentModels = agents.map(a => a.model).filter((model): model is string => Boolean(model))
     const configuredModels = modelsSettings?.model_ids || []
-    return ['auto', ...Array.from(new Set([...agentModels, ...configuredModels]))]
+    return Array.from(new Set(['auto', ...agentModels, ...configuredModels]))
   }, [agents, modelsSettings])
   const memoryURL = projectId ? `/api/memory?project=${encodeURIComponent(projectId)}` : '/api/memory'
   const formatTokens = (n?: number) => {
