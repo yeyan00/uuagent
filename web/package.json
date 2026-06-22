@@ -10,18 +10,19 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "lucide-react": "^1.21.0",
     "react": "^19",
     "react-dom": "^19",
     "zustand": "^5"
   },
   "devDependencies": {
+    "@testing-library/react": "^16",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@vitejs/plugin-react": "^4",
+    "jsdom": "^26",
     "typescript": "^5",
     "vite": "^6",
-    "vitest": "^3",
-    "@testing-library/react": "^16",
-    "jsdom": "^26"
+    "vitest": "^3"
   }
 }

@@ -428,7 +428,7 @@
 
 ## 11. 测试缺口与优先级
 
-### P0 - 阻塞发布
+### P0 - 阻塞发布 (Task 8 MVP 已覆盖)
 - [ ] E2E/Playwright 基础框架搭建
 - [ ] Windows release smoke tests
 - [ ] 真实 MCP stdio/http/sse 生命周期测试
@@ -440,15 +440,18 @@
 - [ ] activity panel 思考过程显示测试
 - [x] models settings API+UI 测试（proxy URL、/models 连接测试、routing tiers）
 - [x] compact archive/history 归档与展示测试
-- [ ] compact restore/回滚归档消息测试
-- [ ] goal/delegate mode 自动路由测试
+- [x] compact restore/回滚归档消息测试
+- [x] goal/delegate mode 自动路由测试（Goal Store/API/Runner、delegate_task、Web Goal Mode 已覆盖）
 - [ ] deny approval 后继续对话不中断
+- [x] extension backend/UI 测试（CLIProxyAPI lifecycle、Extensions UI）
+- [x] agent enabled_subagents 测试
+- [x] explicit model routing 测试
 
 ### P2 - 体验优化
 - [ ] 中文路径/空格路径 workspace 测试
 - [ ] 1000+ message session 性能测试
 - [ ] 长时间 SSE 内存泄漏测试
-- [ ] project path UX 改进测试
+- [x] project path UX 改进测试
 - [ ] Windows Defender 兼容性测试
 
 ### P3 - 完善覆盖
@@ -497,18 +500,19 @@ bash scripts/test.sh
 - [x] Skills grid/modal/bulk delete 测试
 - [x] Subagent create/edit/delete 测试
 
-### 新增测试缺口
+### Task 8 新增测试覆盖 (2026-06-22)
 - [x] models settings API+UI（proxy URL、/models mock、Settings Models UI）
 - [x] compact archive/history 归档与展示
-- [ ] compact restore/回滚归档消息
-- [ ] cliproxyapi 嵌入/托管代理流程
-- [ ] goal/delegate mode 自动路由
-- [ ] activity panel 思考过程显示
+- [x] compact restore/回滚归档消息
+- [x] cliproxyapi extension backend/UI（lifecycle endpoints、Extensions UI start/stop/check/logs）
+- [x] goal/delegate mode 自动路由（Goal Store/API/Runner、delegate_task、Web Goal Mode、Activity Panel）
+- [x] activity panel 思考过程显示（Goal Activity Panel 已展示 subagent delegate activities）
+- [x] agent enabled_subagents 限制测试
 - [ ] 真实 MCP stdio/http/sse
 - [ ] attachments/paste image
 - [ ] Knowledge Base 完整流程
 - [ ] malformed SSE/error streams
 - [ ] deny approval 后继续对话
-- [ ] project path UX
+- [x] project path UX
 - [ ] E2E/Playwright 框架
 - [ ] Windows release smoke tests

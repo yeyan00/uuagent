@@ -174,11 +174,22 @@ If Go debugging reports that `dlv` is missing, install Delve:
 go install github.com/go-delve/delve/cmd/dlv@latest
 ```
 
+## Windows-First Test Release Notes
+
+This release is a usable MVP for Windows testing. Key features:
+
+- **CLIProxyAPI Extension**: Place `cli-proxy-api.exe` at `plugins/cliproxyapi/cli-proxy-api.exe` (relative to the working directory). The Extensions page can start/stop/check CLIProxyAPI and view logs/status.
+- **Built-in Proxy URL**: Models can use the built-in proxy URL configured in Settings > Models.
+- **Agent Subagent Allow-list**: Agents can restrict which subagents are enabled via the `enabled_subagents` field.
+- **Goal Mode**: Supports delegated activity with subagent task execution and plan/todo tracking in the Web UI.
+
+**Note**: Windows packaging is in progress. Real MCP client support and knowledge base features are planned for future releases.
+
 ## Project Status
 
-UUAgent is under active development. Current capabilities include the Web UI, agent profiles, OpenAI-compatible model calls, tool calls, persistent sessions, persistent memory, mock MCP, mock skills, multimodal backend content parts, and automated tests.
+UUAgent is under active development. Current capabilities include the Web UI, agent profiles, OpenAI-compatible model calls, tool calls, persistent sessions, persistent memory, mock MCP, mock skills, multimodal backend content parts, automated tests, CLIProxyAPI extension lifecycle management, and Goal Mode with delegated subagent execution.
 
-Planned work includes real MCP client support, project-scoped sessions, knowledge base indexing, model-based compression, packaging, and richer UI testing.
+Planned work includes real MCP client support, project-scoped sessions, knowledge base indexing, model-based compression, Windows packaging, E2E testing, and richer UI testing.
 
 ## License
 

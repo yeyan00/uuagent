@@ -23,6 +23,7 @@ import (
 	"github.com/yeyan00/uuagent/internal/router"
 	"github.com/yeyan00/uuagent/internal/session"
 	"github.com/yeyan00/uuagent/internal/skills"
+	"github.com/yeyan00/uuagent/internal/subagent"
 	"github.com/yeyan00/uuagent/internal/tools"
 	"github.com/yeyan00/uuagent/internal/types"
 )
@@ -115,6 +116,10 @@ func (a *Agent) NewChildWithSession(model string, blockedTools map[string]bool, 
 		child.session = store
 	}
 	return child
+}
+
+func (a *Agent) NewSubagentChildWithSession(model string, blockedTools map[string]bool, store *session.Store) subagent.ChildAgent {
+	return a.NewChildWithSession(model, blockedTools, store)
 }
 
 // RunOnce runs a single isolated prompt and returns the final text response.
@@ -283,10 +288,16 @@ func (a *Agent) unregisterRun(runID string) {
 
 // Route returns the model routing decision without running the agent.
 func (a *Agent) Route(prompt string, tokenCount int) (string, router.Tier) {
+	decision := a.DecideRoute(prompt, tokenCount)
+	return decision.Model, decision.Tier
+}
+
+// DecideRoute returns route decision metadata without running the agent.
+func (a *Agent) DecideRoute(prompt string, tokenCount int) router.Decision {
 	if a.fixedModel != "" {
-		return a.fixedModel, router.TierStrong
+		return router.Decision{Model: a.fixedModel, Tier: router.TierStrong, Source: "fixed", Reason: "fixed model"}
 	}
-	return a.router.Route(prompt, tokenCount)
+	return a.router.Decide(prompt, tokenCount)
 }
 
 // Profiles returns configured agent profiles.
@@ -389,6 +400,9 @@ func (a *Agent) SubagentProfiles() []config.SubagentProfile {
 // UpsertSubagentProfile creates or updates a subagent profile and persists user config.
 func (a *Agent) UpsertSubagentProfile(profile config.SubagentProfile) (config.SubagentProfile, error) {
 	profile = normalizeSubagentProfile(profile)
+	if hasOnlyDefaultGoalSubagents(a.cfg.Agent.Subagent.Profiles) {
+		a.cfg.Agent.Subagent.Profiles = nil
+	}
 	for i := range a.cfg.Agent.Subagent.Profiles {
 		if a.cfg.Agent.Subagent.Profiles[i].ID == profile.ID {
 			a.cfg.Agent.Subagent.Profiles[i] = profile
@@ -408,6 +422,22 @@ func (a *Agent) DeleteSubagentProfile(id string) error {
 		}
 	}
 	return fmt.Errorf("subagent profile not found")
+}
+
+func hasOnlyDefaultGoalSubagents(profiles []config.SubagentProfile) bool {
+	if len(profiles) != 5 {
+		return false
+	}
+	seen := map[string]bool{}
+	for _, profile := range profiles {
+		seen[profile.ID] = true
+	}
+	for _, id := range []string{"planner", "explorer", "builder", "tester", "reviewer"} {
+		if !seen[id] {
+			return false
+		}
+	}
+	return true
 }
 
 func normalizeSubagentProfile(profile config.SubagentProfile) config.SubagentProfile {
@@ -459,11 +489,21 @@ func (a *Agent) RunWithAgentParts(ctx context.Context, sessionID, agentID string
 
 // RunWithAgentProjectParts runs one turn with project-scoped memory injection.
 func (a *Agent) RunWithAgentProjectParts(ctx context.Context, sessionID, agentID, projectID string, parts []types.ContentPart) (<-chan Event, error) {
-	profile, _ := a.GetProfile(agentID)
-	return a.runWithResolvedProfile(ctx, sessionID, projectID, profile, parts)
+	return a.RunWithAgentProjectPartsOptions(ctx, sessionID, agentID, projectID, parts, RunOptions{})
 }
 
-func (a *Agent) runWithResolvedProfile(ctx context.Context, sessionID, projectID string, profile config.AgentProfile, parts []types.ContentPart) (<-chan Event, error) {
+// RunOptions controls per-run routing choices.
+type RunOptions struct {
+	ModelOverride string
+}
+
+// RunWithAgentProjectPartsOptions runs one turn with explicit run options.
+func (a *Agent) RunWithAgentProjectPartsOptions(ctx context.Context, sessionID, agentID, projectID string, parts []types.ContentPart, options RunOptions) (<-chan Event, error) {
+	profile, _ := a.GetProfile(agentID)
+	return a.runWithResolvedProfile(ctx, sessionID, projectID, profile, parts, options)
+}
+
+func (a *Agent) runWithResolvedProfile(ctx context.Context, sessionID, projectID string, profile config.AgentProfile, parts []types.ContentPart, options RunOptions) (<-chan Event, error) {
 	prompt := ""
 	for _, p := range parts {
 		if p.Type == "text" {
@@ -474,10 +514,20 @@ func (a *Agent) runWithResolvedProfile(ctx context.Context, sessionID, projectID
 	if registeredProject && a.sessionExistsInOtherProject(sessionID, boundProjectID) {
 		return nil, ErrSessionProjectConflict
 	}
-	model, tier := a.Route(prompt, 0)
+	decision := a.DecideRoute(prompt, estimateRouteTokens(prompt, parts))
 	if profile.Model != "" {
-		model = profile.Model
+		decision.Model = profile.Model
+		decision.Source = "agent"
+		decision.Reason = "agent profile model override"
+		decision.RuleName = ""
 	}
+	if override := strings.TrimSpace(options.ModelOverride); override != "" && !strings.EqualFold(override, "auto") {
+		decision.Model = override
+		decision.Source = "manual"
+		decision.Reason = "per-chat model override"
+		decision.RuleName = ""
+	}
+	model := decision.Model
 	runID := fmt.Sprintf("run-%d", time.Now().UnixNano())
 	ctx = a.registerRun(ctx, runID)
 	events := make(chan Event, 64)
@@ -486,7 +536,7 @@ func (a *Agent) runWithResolvedProfile(ctx context.Context, sessionID, projectID
 		defer close(events)
 		defer a.unregisterRun(runID)
 		events <- Event{Type: "run", RunID: runID}
-		events <- Event{Type: "route", RunID: runID, Model: model, Tier: string(tier)}
+		events <- Event{Type: "route", RunID: runID, Model: decision.Model, Tier: string(decision.Tier), SelectedModel: decision.Model, SelectedTier: string(decision.Tier), Source: decision.Source, RuleName: decision.RuleName, Reason: decision.Reason}
 
 		sess := sessionStore.GetOrCreate(sessionID)
 		if registeredProject {
@@ -520,8 +570,8 @@ func (a *Agent) runWithResolvedProfile(ctx context.Context, sessionID, projectID
 		if maxTurns <= 0 {
 			maxTurns = a.cfg.Agent.MaxTurns
 		}
-		if maxTurns <= 0 || maxTurns > 20 {
-			maxTurns = 20
+		if maxTurns <= 0 {
+			maxTurns = 90
 		}
 
 		toolWorkspace := a.toolWorkspace(projectPath)
@@ -561,7 +611,7 @@ func (a *Agent) runWithResolvedProfile(ctx context.Context, sessionID, projectID
 			for i, tc := range toolCalls {
 				name := toolCallName(tc)
 				events <- Event{Type: "tool_start", RunID: runID, ToolName: name, ToolID: tc.ID, Args: toolCallArgs(tc)}
-				result := a.executeTool(ctx, tc, policy, toolWorkspace, nil)
+				result := a.executeTool(ctx, tc, policy, profile, toolWorkspace, nil)
 				events <- Event{Type: "tool_result", RunID: runID, ToolName: name, ToolID: tc.ID, Text: result}
 				if isApprovalRequiredResult(result) {
 					a.storePendingApproval(pendingApproval{Session: sess, RunID: runID, Model: model, Prompt: prompt, Profile: profile, Policy: policy, ToolCall: tc, ToolName: name, RemainingToolCalls: append([]ToolCall(nil), toolCalls[i+1:]...), ToolWorkspace: toolWorkspace})
@@ -577,6 +627,23 @@ func (a *Agent) runWithResolvedProfile(ctx context.Context, sessionID, projectID
 	}()
 
 	return events, nil
+}
+
+func estimateRouteTokens(prompt string, parts []types.ContentPart) int {
+	chars := len(prompt)
+	for _, part := range parts {
+		if part.Type == "text" {
+			continue
+		}
+		chars += len(part.Type)
+		if part.ImageURL != nil {
+			chars += len(part.ImageURL.URL)
+		}
+	}
+	if chars == 0 {
+		return 0
+	}
+	return (chars + 3) / 4
 }
 
 func (a *Agent) storePendingApproval(p pendingApproval) {
@@ -628,7 +695,7 @@ func (a *Agent) ApproveRunEvents(ctx context.Context, runID string) (<-chan Even
 		args["approved"] = true
 		p.ToolCall.Function.Arguments = mustJSON(args)
 		events <- Event{Type: "tool_start", RunID: runID, ToolName: p.ToolName, ToolID: p.ToolCall.ID, Args: toolCallArgs(p.ToolCall)}
-		result := a.executeTool(ctx, p.ToolCall, p.Policy, p.ToolWorkspace, p.ApprovedPaths)
+		result := a.executeTool(ctx, p.ToolCall, p.Policy, p.Profile, p.ToolWorkspace, p.ApprovedPaths)
 		events <- Event{Type: "tool_result", RunID: runID, ToolName: p.ToolName, ToolID: p.ToolCall.ID, Text: result}
 		p.Session.AppendTool(p.ToolCall.ID, p.ToolName, result)
 		if approvedPath != "" && !isApprovalRequiredResult(result) {
@@ -637,7 +704,7 @@ func (a *Agent) ApproveRunEvents(ctx context.Context, runID string) (<-chan Even
 		for i, tc := range p.RemainingToolCalls {
 			name := toolCallName(tc)
 			events <- Event{Type: "tool_start", RunID: runID, ToolName: name, ToolID: tc.ID, Args: toolCallArgs(tc)}
-			result := a.executeTool(ctx, tc, p.Policy, p.ToolWorkspace, p.ApprovedPaths)
+			result := a.executeTool(ctx, tc, p.Policy, p.Profile, p.ToolWorkspace, p.ApprovedPaths)
 			events <- Event{Type: "tool_result", RunID: runID, ToolName: name, ToolID: tc.ID, Text: result}
 			if isApprovalRequiredResult(result) {
 				a.storePendingApproval(pendingApproval{Session: p.Session, RunID: runID, Model: p.Model, Prompt: p.Prompt, Profile: p.Profile, Policy: p.Policy, ToolCall: tc, ToolName: name, RemainingToolCalls: append([]ToolCall(nil), p.RemainingToolCalls[i+1:]...), ToolWorkspace: p.ToolWorkspace, ApprovedPaths: p.ApprovedPaths})
@@ -685,7 +752,7 @@ func (a *Agent) ApproveRunEvents(ctx context.Context, runID string) (<-chan Even
 			for i, tc := range toolCalls {
 				name := toolCallName(tc)
 				events <- Event{Type: "tool_start", RunID: runID, ToolName: name, ToolID: tc.ID, Args: toolCallArgs(tc)}
-				result := a.executeTool(ctx, tc, p.Policy, p.ToolWorkspace, p.ApprovedPaths)
+				result := a.executeTool(ctx, tc, p.Policy, p.Profile, p.ToolWorkspace, p.ApprovedPaths)
 				events <- Event{Type: "tool_result", RunID: runID, ToolName: name, ToolID: tc.ID, Text: result}
 				if isApprovalRequiredResult(result) {
 					a.storePendingApproval(pendingApproval{Session: p.Session, RunID: runID, Model: p.Model, Prompt: p.Prompt, Profile: p.Profile, Policy: p.Policy, ToolCall: tc, ToolName: name, RemainingToolCalls: append([]ToolCall(nil), toolCalls[i+1:]...), ToolWorkspace: p.ToolWorkspace, ApprovedPaths: p.ApprovedPaths})
@@ -779,7 +846,7 @@ func extractMemoryDraft(userPrompt, assistantResponse string) string {
 
 // RunWithProfileParts runs one turn with an explicit profile, used by delegated subagents.
 func (a *Agent) RunWithProfileParts(ctx context.Context, sessionID, projectID string, profile config.AgentProfile, parts []types.ContentPart) (<-chan Event, error) {
-	return a.runWithResolvedProfile(ctx, sessionID, projectID, profile, parts)
+	return a.runWithResolvedProfile(ctx, sessionID, projectID, profile, parts, RunOptions{})
 }
 
 func (a *Agent) withSystemPrompt(messages []Message, profile config.AgentProfile, memorySnapshot, prompt string) []Message {
@@ -940,6 +1007,9 @@ func (a *Agent) callLLM(ctx context.Context, model string, messages []Message, p
 	toolDefs := tools.NewRegistryWithOptions(".", tools.Options{PermissionMode: toolPermissionMode(policy.PermissionMode)}).DefinitionsFor(policy.AllowedTools)
 	if len(policy.AllowedTools) == 0 || policy.AllowedTools["memory"] {
 		toolDefs = append(toolDefs, memoryToolDefinition())
+	}
+	if len(policy.AllowedTools) == 0 || policy.AllowedTools["delegate_task"] {
+		toolDefs = append(toolDefs, delegateTaskToolDefinition())
 	}
 	if a.isMCPServerEnabled("mock") && (len(policy.AllowedMCPServers) == 0 || policy.AllowedMCPServers["mock"]) {
 		toolDefs = append(toolDefs, map[string]any{"type": "function", "function": map[string]any{"name": "mcp_echo", "description": "Echo arguments through the mock MCP client."}})
@@ -1105,7 +1175,7 @@ func streamResult(content string, toolsByIndex map[int]*streamToolCall) (string,
 	return content, calls
 }
 
-func (a *Agent) executeTool(ctx context.Context, tc ToolCall, policy runtimePolicy, workspace string, approvedPaths []string) string {
+func (a *Agent) executeTool(ctx context.Context, tc ToolCall, policy runtimePolicy, profile config.AgentProfile, workspace string, approvedPaths []string) string {
 	name := toolCallName(tc)
 	argText := toolCallArgs(tc)
 	if a.blockedTools != nil && a.blockedTools[name] {
@@ -1128,6 +1198,9 @@ func (a *Agent) executeTool(ctx context.Context, tc ToolCall, policy runtimePoli
 	}
 	if name == "memory" {
 		return a.executeMemoryTool(args)
+	}
+	if name == "delegate_task" {
+		return a.executeDelegateTaskTool(ctx, profile, args)
 	}
 	if tool, ok := a.tools.Get(name); ok {
 		if policy.PermissionMode != "" {
@@ -1152,6 +1225,24 @@ func (a *Agent) executeTool(ctx context.Context, tc ToolCall, policy runtimePoli
 	return fmt.Sprintf("tool %s not found", name)
 }
 
+func delegateTaskToolDefinition() map[string]any {
+	return map[string]any{
+		"type": "function",
+		"function": map[string]any{
+			"name":        "delegate_task",
+			"description": "Delegate one isolated task to a configured subagent profile and return its result.",
+			"parameters": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"profile_id": map[string]any{"type": "string"},
+					"task":       map[string]any{"type": "string"},
+				},
+				"required": []string{"profile_id", "task"},
+			},
+		},
+	}
+}
+
 func memoryToolDefinition() map[string]any {
 	return map[string]any{
 		"type": "function",
@@ -1172,6 +1263,39 @@ func memoryToolDefinition() map[string]any {
 			},
 		},
 	}
+}
+
+func (a *Agent) executeDelegateTaskTool(ctx context.Context, profile config.AgentProfile, args map[string]any) string {
+	profileID, _ := args["profile_id"].(string)
+	task, _ := args["task"].(string)
+	if strings.TrimSpace(profileID) == "" || strings.TrimSpace(task) == "" {
+		return mustJSON(map[string]any{"success": false, "error": "profile_id and task are required"})
+	}
+	if !subagentAllowed(profile, profileID) {
+		return mustJSON(map[string]any{"success": false, "profile_id": profileID, "task": task, "error": "subagent profile is not enabled for this agent"})
+	}
+	manager := subagent.NewManager(a.cfg.Agent.Subagent, a.router)
+	results := manager.DelegateProfile(ctx, a, "delegate_task", profileID, []string{task})
+	if len(results) != 1 {
+		return mustJSON(map[string]any{"success": false, "profile_id": profileID, "task": task, "error": "delegate_task returned no result"})
+	}
+	result := results[0]
+	if result.Error != "" {
+		return mustJSON(map[string]any{"success": false, "profile_id": profileID, "task": task, "task_id": result.ID, "session_id": result.SessionID, "error": result.Error})
+	}
+	return mustJSON(map[string]any{"success": true, "profile_id": profileID, "task": task, "task_id": result.ID, "session_id": result.SessionID, "output": result.Output})
+}
+
+func subagentAllowed(profile config.AgentProfile, profileID string) bool {
+	if len(profile.EnabledSubagents) == 0 {
+		return true
+	}
+	for _, enabledID := range profile.EnabledSubagents {
+		if enabledID == profileID {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *Agent) executeMemoryTool(args map[string]any) string {

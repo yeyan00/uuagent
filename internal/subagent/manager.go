@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yeyan00/uuagent/internal/agent"
 	"github.com/yeyan00/uuagent/internal/config"
 	"github.com/yeyan00/uuagent/internal/paths"
 	"github.com/yeyan00/uuagent/internal/router"
@@ -19,12 +18,13 @@ import (
 
 // Result is the result of one delegated subtask.
 type Result struct {
-	ID        string `json:"id"`
-	Goal      string `json:"goal"`
-	Model     string `json:"model"`
-	SessionID string `json:"session_id,omitempty"`
-	Output    string `json:"output"`
-	Error     string `json:"error,omitempty"`
+	ID        string          `json:"id"`
+	Goal      string          `json:"goal"`
+	Model     string          `json:"model"`
+	Route     router.Decision `json:"route"`
+	SessionID string          `json:"session_id,omitempty"`
+	Output    string          `json:"output"`
+	Error     string          `json:"error,omitempty"`
 }
 
 // Task is one persisted delegated subagent task.
@@ -65,21 +65,21 @@ func NewManagerAt(cfg config.SubagentConfig, r *router.Router, taskPath, session
 }
 
 // Delegate executes subtasks concurrently.
-func (m *Manager) Delegate(parent *agent.Agent, goals []string) []Result {
+func (m *Manager) Delegate(parent ParentAgent, goals []string) []Result {
 	return m.DelegateContext(context.Background(), parent, goals)
 }
 
 // DelegateContext executes subtasks concurrently and propagates cancellation to child agents.
-func (m *Manager) DelegateContext(ctx context.Context, parent *agent.Agent, goals []string) []Result {
+func (m *Manager) DelegateContext(ctx context.Context, parent ParentAgent, goals []string) []Result {
 	return m.delegate(ctx, parent, "", "", goals)
 }
 
 // DelegateProfile executes goals through a configured subagent profile and persists task state.
-func (m *Manager) DelegateProfile(ctx context.Context, parent *agent.Agent, parentID, profileID string, goals []string) []Result {
+func (m *Manager) DelegateProfile(ctx context.Context, parent ParentAgent, parentID, profileID string, goals []string) []Result {
 	return m.delegate(ctx, parent, parentID, profileID, goals)
 }
 
-func (m *Manager) delegate(ctx context.Context, parent *agent.Agent, parentID, profileID string, goals []string) []Result {
+func (m *Manager) delegate(ctx context.Context, parent ParentAgent, parentID, profileID string, goals []string) []Result {
 	var wg sync.WaitGroup
 	results := make([]Result, len(goals))
 	maxConcurrent := m.cfg.MaxConcurrent
@@ -93,6 +93,7 @@ func (m *Manager) delegate(ctx context.Context, parent *agent.Agent, parentID, p
 		go func(idx int, g string) {
 			defer wg.Done()
 			profile := m.profile(profileID)
+			profile.MaxTurns = m.resolveMaxTurns(profile)
 
 			select {
 			case sem <- struct{}{}: // acquire semaphore
@@ -103,11 +104,8 @@ func (m *Manager) delegate(ctx context.Context, parent *agent.Agent, parentID, p
 			}
 			defer func() { <-sem }() // release semaphore
 
-			// Route simple subtasks to cheaper models when configured.
-			model, _ := m.router.Route(g, 0)
-			if profile.Model != "" {
-				model = profile.Model
-			}
+			decision := m.routeDecision(g, profile)
+			model := decision.Model
 
 			childID := fmt.Sprintf("sa-%d", idx)
 			if parentID != "" || profile.ID != "" {
@@ -120,7 +118,7 @@ func (m *Manager) delegate(ctx context.Context, parent *agent.Agent, parentID, p
 			m.upsertTask(Task{ID: childID, ParentID: parentID, ProfileID: profile.ID, Goal: g, Model: model, SessionID: sessionID, Status: "running"})
 
 			// Create an isolated child Agent with the routed model and restricted tools.
-			child := parent.NewChildWithSession(model, m.blockedToolsForProfile(profile), m.sessionStore())
+			child := parent.NewSubagentChildWithSession(model, m.blockedToolsForProfile(profile), m.sessionStore())
 
 			result, err := m.runChild(ctx, child, sessionID, profile, g)
 			if err != nil {
@@ -128,6 +126,7 @@ func (m *Manager) delegate(ctx context.Context, parent *agent.Agent, parentID, p
 					ID:        childID,
 					Goal:      g,
 					Model:     model,
+					Route:     decision,
 					SessionID: sessionID,
 					Error:     err.Error(),
 				}
@@ -137,6 +136,7 @@ func (m *Manager) delegate(ctx context.Context, parent *agent.Agent, parentID, p
 					ID:        childID,
 					Goal:      g,
 					Model:     model,
+					Route:     decision,
 					SessionID: sessionID,
 					Output:    result,
 				}
@@ -149,7 +149,23 @@ func (m *Manager) delegate(ctx context.Context, parent *agent.Agent, parentID, p
 	return results
 }
 
-func (m *Manager) runChild(ctx context.Context, child *agent.Agent, sessionID string, profile config.SubagentProfile, goal string) (string, error) {
+func (m *Manager) routeDecision(goal string, profile config.SubagentProfile) router.Decision {
+	decision := router.Decision{Model: "gpt-4o-mini", Tier: router.TierFast, Source: "fallback", Reason: "hardcoded fallback"}
+	if m.router != nil {
+		decision = m.router.Decide(goal, 0)
+	}
+	if profile.Model == "" {
+		return decision
+	}
+	decision.Model = profile.Model
+	decision.Tier = router.TierStrong
+	decision.Source = "subagent"
+	decision.RuleName = ""
+	decision.Reason = "subagent profile model override"
+	return decision
+}
+
+func (m *Manager) runChild(ctx context.Context, child ChildAgent, sessionID string, profile config.SubagentProfile, goal string) (string, error) {
 	if profile.ID == "" {
 		return child.RunOnce(ctx, goal)
 	}

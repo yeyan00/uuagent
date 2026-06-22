@@ -209,11 +209,11 @@
 - [x] Subagent Profile 与 Agent Profile 共用基础运行字段。
 - [x] API 端可配置 subagent：prompt/tools/skills/mcp/model/权限。
 - [x] Web 端可配置 subagent：prompt/tools/skills/mcp/model/权限（Settings 页面）。
-- [ ] 支持在主 Agent 中选择可委派的 subagents（Goal 模式待实现）。
+- [x] 支持在主 Agent 中选择可委派的 subagents（enabled_subagents 字段已实现）。
 - [x] 子任务执行隔离：独立 session、受限 tools。
 - [ ] 子任务执行隔离：受限 workspace。
 - [x] API 端显示 subagent 任务树与执行结果。
-- [ ] Web 端显示 subagent 任务树与执行结果（Activity Panel 待实现）。
+- [x] Web 端显示 subagent 任务树与执行结果（Goal Activity Panel 已实现）。
 - [x] Subagent context cancel 传播与 invalid concurrency 防死锁。
 
 ---
@@ -345,33 +345,51 @@
 | Subagents | 已实现 | 后端管理器，支持并发限制、blocked tools、context cancel、独立 session、任务树持久化 |
 | Memory | 已实现 | Markdown-first，支持 global/project/agent/session scope，frozen snapshot |
 | Context Compression | 已实现基础闭环 | 本地确定性压缩逻辑；已支持手动 compact archive/history 与 restore/回滚；自动/模型摘要策略可继续增强 |
-| cliproxyapi/models | 部分实现 | Models Settings API/UI 已支持 proxy URL、/models 连接测试、模型列表与 routing tiers；未嵌入 /v1 代理子进程 |
+| cliproxyapi/models | MVP (built-in extension) | CLIProxyAPI backend extension lifecycle endpoints 已实现；Extensions UI 支持 start/stop/check CLIProxyAPI 与查看 logs/status；Models Settings API/UI 已支持 proxy URL、/models 连接测试、模型列表与 routing tiers；CLIProxyAPI 二进制需放置于 plugins/cliproxyapi/cli-proxy-api.exe |
 | Session Token 显示 | 已实现 | active session workspace header 显示 Input/Output/Total；Project Settings context 仍显示详细 token |
 | Compact Archive | 已实现 | 手动 Compact 会归档被压缩消息并显示 Compact Archives；支持 restore/回滚并刷新当前 session/context |
 | Project Path UX | 已实现 | 创建项目时路径 trim、错误提示、existing-file path 校验、中文/空格路径测试已覆盖 |
 | Attachments | 已实现 | 后端支持 image_url；Web 支持图片选择/粘贴、预览/删除、附件-only 发送与消息渲染 |
-| Goal/Delegate Mode | 未实现 | 复杂任务自动决策 subagent 未实现 |
-| Activity Panel | 未实现 | 工具调用/思考过程未统一展示 |
+| Goal/Delegate Mode | MVP | GoalRun JSON store、Goal API、顺序 runner、内置 planner/explorer/builder/tester/reviewer profiles、delegate_task 工具、Web Goal mode 与 plan/todo/activity 展示、subagent 独立 session 与任务树持久化、context cancel 传播、并发限制防死锁均已实现；验证：go test ./...、cd web && npm test 通过 |
+| Activity Panel | MVP (Goal activity) | Goal Activity Panel 已展示 Goal plan/todos/subagent delegate activities；通用工具调用/思考过程统一面板仍待完善 |
 | Real MCP | 未实现 | 仅 mock，无真实 stdio/http/sse client |
 | Knowledge Base | 未实现 | 无文档索引与检索 |
+| Agent enabled_subagents | MVP | Agent Profile 支持 enabled_subagents 字段，可限制子代理调用范围 |
 
 ---
 
-## 下一阶段计划 (2026-06-18)
+## Task 8 发布状态 (2026-06-22)
+
+本次 Windows-first test release MVP 已完成：
+
+**已完成 MVP：**
+1. **Agent/Subagent Settings** - Agent Profile 支持 enabled_subagents 限制子代理范围；Subagent 支持并发限制、blocked tools、context cancel、独立 session、任务树持久化。
+2. **CLIProxyAPI Extension** - 作为默认内置扩展 MVP 实现：backend 支持 lifecycle 端点，Extensions UI 支持 start/stop/check CLIProxyAPI 与查看 logs/status。
+3. **Model Routing** - 部分实现但明确可测试：Models Settings API/UI 支持 proxy URL、/models 连接测试、模型列表与 routing tiers/fallback。
+4. **Goal Mode** - MVP 实现：GoalRun store/API/runner、内置 profiles、delegate_task 工具、Web Goal mode 与 plan/todo/activity 展示、subagent 委派执行。
+
+**仍为未来工作：**
+- Real MCP client 生命周期 (stdio/http/sse)
+- Knowledge Base 索引与检索
+- Windows 打包与发布流程
+- E2E/Playwright 测试框架
+- Windows release smoke tests
+
+## 下一阶段计划 (2026-06-22)
 
 按优先级排序：
 
-已完成 P0：
-1. **Project Path UX** - 已完成创建项目路径 trim、错误提示、existing-file path 校验与测试。
-2. **Attachments / Multimodal Web** - 已完成图片选择/粘贴、预览/删除、image_url 发送与消息渲染。
-3. **Compact Restore** - 已完成 Compact Archives restore/回滚 API、持久化与 UI。
+**P1 - 近期重点：**
+1. **Real MCP** - 实现真实 MCP client 生命周期 (stdio/http/sse)。
+2. **Knowledge Base** - 项目/全局知识库，文档索引与检索注入。
+3. **Activity Panel 完善** - 通用工具调用/思考过程统一展示面板。
+4. **模型路由策略增强** - 基于任务类型/上下文长度的自动路由决策。
 
-下一阶段 P1：
-1. **cliproxyapi 嵌入增强** - 在已完成 Models Settings 基础上评估/实现托管 /v1 代理子进程。
-2. **Goal/Delegate Mode** - 实现复杂任务的自动 subagent 决策与委派。
-3. **Activity Panel** - 统一展示工具调用、思考过程、subagent 执行。
-4. **Real MCP** - 实现真实 MCP client 生命周期 (stdio/http/sse)。
-5. **Knowledge Base** - 项目/全局知识库，文档索引与检索注入。
+**P2 - 后续规划：**
+5. **Windows 打包** - 单二进制发布、安装脚本、CI 构建。
+6. **E2E 测试** - Playwright 框架搭建与核心流程覆盖。
+7. **大文件策略** - 自动截断与流式读取完善。
+8. **SQLite 存储迁移** - 从 JSON 持久化迁移到 SQLite。
 
 ---
 

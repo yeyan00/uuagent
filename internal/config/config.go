@@ -17,6 +17,7 @@ type Config struct {
 	Port       int               `yaml:"port" json:"port"`
 	Agent      AgentConfig       `yaml:"agent" json:"agent"`
 	Agents     []AgentProfile    `yaml:"agents" json:"agents"`
+	Goal       GoalConfig        `yaml:"goal" json:"goal"`
 	Skills     []SkillConfig     `yaml:"skills" json:"skills"`
 	MCPServers []MCPServerConfig `yaml:"mcp_servers" json:"mcp_servers"`
 }
@@ -45,6 +46,7 @@ type AgentProfile struct {
 	EnabledTools      []string `yaml:"enabled_tools" json:"enabled_tools"`
 	EnabledSkills     []string `yaml:"enabled_skills" json:"enabled_skills"`
 	EnabledMCPServers []string `yaml:"enabled_mcp_servers" json:"enabled_mcp_servers"`
+	EnabledSubagents  []string `yaml:"enabled_subagents" json:"enabled_subagents"`
 	PermissionMode    string   `yaml:"permission_mode" json:"permission_mode"`
 	MaxTurns          int      `yaml:"max_turns" json:"max_turns"`
 }
@@ -131,62 +133,9 @@ type UIConfig struct {
 	Theme string `yaml:"theme" json:"theme"`
 }
 
-// Default returns a usable baseline config without reading files.
-func Default() *Config {
-	return &Config{
-		Port: 18463,
-		Agent: AgentConfig{
-			ProxyURL: "http://localhost:18463/v1",
-			Routing: RoutingConfig{
-				Fallback: "strong",
-				Tiers: map[string][]string{
-					"fast":      {"gpt-4o-mini", "deepseek-chat"},
-					"strong":    {"claude-sonnet-4", "gpt-4o"},
-					"large_ctx": {"gemini-2.5-pro"},
-				},
-			},
-			Memory: MemoryConfig{
-				AutoDraft:        true,
-				MaxEntries:       100,
-				MaxCharsPerEntry: 2000,
-			},
-			Context: ContextConfig{
-				MaxTokens:         32000,
-				CompressThreshold: 0.75,
-				KeepLastMessages:  12,
-				AutoCompress:      true,
-			},
-			Subagent: SubagentConfig{
-				MaxConcurrent: 3,
-				MaxTurns:      20,
-				BlockedTools:  []string{"delegate", "memory"},
-			},
-			MaxTurns:          50,
-			ReasoningEffort:   "medium",
-			DefaultPermission: "workspace-write",
-			UI:                UIConfig{Theme: "dark"},
-		},
-		Agents: []AgentProfile{{
-			ID:          "default",
-			Name:        "Default Agent",
-			Description: "General-purpose coding assistant",
-			MaxTurns:    50,
-		}},
-		Skills: []SkillConfig{{
-			Name:        "mock-planner",
-			Description: "Built-in simulated planning skill",
-			Prompt:      "First state a short plan, then execute concisely.",
-			Enabled:     true,
-			Scope:       "global",
-		}},
-		MCPServers: []MCPServerConfig{{
-			ID:        "mock",
-			Name:      "Mock MCP",
-			Transport: "mock",
-			Enabled:   true,
-			Scope:     "global",
-		}},
-	}
+// GoalConfig controls autonomous goal-mode execution.
+type GoalConfig struct {
+	MaxTurns int `yaml:"max_turns" json:"max_turns"`
 }
 
 // UserDir returns ~/.uuagent by default, overridable for tests/dev by UUAGENT_HOME.

@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type ReactNode } from 'react'
 import './App.css'
+import { AgentsSettings } from './components/AgentsSettings'
+import { SubagentsSettings } from './components/SubagentsSettings'
+import { ExtensionsPanel } from './components/ExtensionsPanel'
+import type { ExtensionStatus } from './types'
+import { Folder, Puzzle, Clock, Settings } from 'lucide-react'
 
 interface ToolCallRecord { id?: string; function?: { name?: string; arguments?: string }; name?: string; args?: string }
 interface ChatEvent { type: string; run_id?: string; model?: string; tier?: string; text?: string; tool_name?: string; tool_id?: string; args?: string }
@@ -21,15 +26,20 @@ interface ApprovalPayload { approval_required?: boolean; tool?: string; path?: s
 interface ToolEventPayload { kind?: 'tool_start' | 'tool_result'; tool?: string; tool_id?: string; args?: string; text?: string }
 interface ModelsSettings { proxy_url: string; fallback_tier: string; routing_tiers: Record<string, string[]>; model_ids: string[] }
 interface ModelsTestResult { success: boolean; model_ids?: string[]; error?: string }
+interface GoalStep { id: string; description: string; subagent: string }
+interface GoalTodo { id: string; step_id: string; description: string; status: string; result: string }
+interface GoalActivity { id: string; type: string; text: string; subagent_id?: string; result?: string }
+interface Goal { id: string; project_id: string; session_id?: string; agent_id?: string; goal: string; status: string; plan?: GoalStep[]; todos?: GoalTodo[]; activities?: GoalActivity[] }
+
 
 type MainPage = 'projects' | 'extensions' | 'schedules' | 'settings'
 type ProjectSettingsTab = 'memory' | 'context' | 'config'
 
-const navItems: Array<{ id: MainPage; label: string; icon: string }> = [
-  { id: 'projects', label: 'Projects', icon: 'P' },
-  { id: 'extensions', label: 'Extensions', icon: 'X' },
-  { id: 'schedules', label: 'Schedules', icon: 'Q' },
-  { id: 'settings', label: 'Settings', icon: 'S' },
+const navItems: Array<{ id: MainPage; label: string; icon: ReactNode }> = [
+  { id: 'projects', label: 'Projects', icon: <Folder size={20} /> },
+  { id: 'extensions', label: 'Extensions', icon: <Puzzle size={20} /> },
+  { id: 'schedules', label: 'Schedules', icon: <Clock size={20} /> },
+  { id: 'settings', label: 'Settings', icon: <Settings size={20} /> },
 ]
 
 const settingsTabs = ['Agents', 'Subagents', 'Models', 'Skills', 'MCP', 'Permissions', 'Storage']
@@ -199,7 +209,11 @@ const toolEventFromMessage = (message: Message, toolArgs: Record<string, string>
   return { kind: 'tool_result', tool: message.tool_name || message.tool_call_id || 'tool', tool_id: message.tool_call_id, args: message.tool_call_id ? toolArgs[message.tool_call_id] : undefined, text: String(message.content || '') }
 }
 
-function App() {
+interface AppProps {
+  initialWorkspaceTab?: 'chat' | 'goal'
+}
+
+function App({ initialWorkspaceTab }: AppProps = {}) {
   const [mainPage, setMainPage] = useState<MainPage>('projects')
   const [workspaceMode, setWorkspaceMode] = useState<'chat' | 'settings'>('chat')
   const [messages, setMessages] = useState<Message[]>([])
@@ -242,11 +256,30 @@ function App() {
   const [modelsSettings, setModelsSettings] = useState<ModelsSettings | null>(null)
   const [modelsDraft, setModelsDraft] = useState<ModelsSettings | null>(null)
   const [modelsTestResult, setModelsTestResult] = useState<ModelsTestResult | null>(null)
+  const [routePreviewPrompt, setRoutePreviewPrompt] = useState('')
+  const [routePreviewResult, setRoutePreviewResult] = useState<{ selected_model?: string; selected_tier?: string; source?: string; rule_name?: string; reason?: string } | null>(null)
   const [isAgentSettingsOpen, setAgentSettingsOpen] = useState(false)
   const [settingsProjectId, setSettingsProjectId] = useState('')
   const [projectSettingsTab, setProjectSettingsTab] = useState<ProjectSettingsTab>('memory')
   const [attachmentNotice, setAttachmentNotice] = useState('')
   const [attachments, setAttachments] = useState<ChatAttachment[]>([])
+  const [workspaceTab, setWorkspaceTab] = useState<'chat' | 'goal'>(initialWorkspaceTab ?? 'chat')
+  const [goals, setGoals] = useState<Goal[]>([])
+  const [extensions, setExtensions] = useState<ExtensionStatus[]>([])
+  const [selectedExtensionId, setSelectedExtensionId] = useState('')
+
+  useEffect(() => {
+    if (initialWorkspaceTab) {
+      setWorkspaceTab(initialWorkspaceTab)
+      setSelectedGoalId('')
+      setGoalInput('')
+      setIsCreatingGoal(false)
+      setGoals([])
+    }
+  }, [initialWorkspaceTab])
+  const [selectedGoalId, setSelectedGoalId] = useState('')
+  const [goalInput, setGoalInput] = useState('')
+  const [isCreatingGoal, setIsCreatingGoal] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const abortRef = useRef<AbortController | null>(null)
@@ -257,10 +290,11 @@ function App() {
   const activeProjectSessions = projectId ? (projectSessions[projectId] || []) : []
   const activeSession = activeProjectSessions.find(s => s.id === sessionId)
   const activeSessionLocked = !!activeSession && ((activeSession.messages?.length || 0) > 0 || !!activeSession.project_id)
+  const activeGoal = goals.find(g => g.id === selectedGoalId)
   const availableModels = useMemo(() => {
     const agentModels = agents.map(a => a.model).filter((model): model is string => Boolean(model))
     const configuredModels = modelsSettings?.model_ids || []
-    return ['auto', ...Array.from(new Set([...agentModels, ...configuredModels]))]
+    return Array.from(new Set(['auto', ...agentModels, ...configuredModels]))
   }, [agents, modelsSettings])
   const memoryURL = projectId ? `/api/memory?project=${encodeURIComponent(projectId)}` : '/api/memory'
   const formatTokens = (n?: number) => {
@@ -274,13 +308,14 @@ function App() {
   const hasSessionUsage = !!(usageInputTokens || usageOutputTokens || usageTotalTokens)
 
   const refresh = async () => {
-    const [p, a, m, sa, sk, ms] = await Promise.all([
+    const [p, a, m, sa, sk, ms, ex] = await Promise.all([
       api<{projects: Project[]}>('/api/projects'),
       api<{agents: AgentProfile[]}>('/api/agents'),
       api<{memories: MemoryEntry[]}>(memoryURL),
       api<{subagents: SubagentProfile[]}>('/api/subagents').catch(() => ({ subagents: [] })),
       api<{skills: SkillInfo[]; diagnostics?: SkillDiagnostic[]}>('/api/skills').catch(() => ({ skills: [], diagnostics: [] })),
       api<ModelsSettings>('/api/models/settings').catch(() => ({ proxy_url: '', fallback_tier: 'strong', routing_tiers: {}, model_ids: [] })),
+      api<{extensions: ExtensionStatus[]}>('/api/extensions').catch(() => ({ extensions: [] })),
     ])
     const projectList = p.projects || []
     setProjects(projectList)
@@ -291,11 +326,50 @@ function App() {
     setMemories(m.memories || [])
     setModelsSettings(ms)
     setModelsDraft(ms)
+    setExtensions(ex.extensions || [])
     const pairs = await Promise.all(projectList.map(async p => {
       const r = await api<{sessions: Session[]}>(`/api/projects/${encodeURIComponent(p.id)}/sessions`).catch(() => ({ sessions: [] }))
       return [p.id, r.sessions || []] as const
     }))
     setProjectSessions(Object.fromEntries(pairs))
+  }
+
+  const fetchExtensions = async () => {
+    const r = await api<{extensions: ExtensionStatus[]}>('/api/extensions').catch(() => ({ extensions: [] }))
+    setExtensions(r.extensions || [])
+  }
+
+  const startExtension = async (id: string) => {
+    setStatus(`Starting ${id}...`)
+    try {
+      await api(`/api/extensions/${encodeURIComponent(id)}/start`, { method: 'POST' })
+      await fetchExtensions()
+      setStatus(`${id} started`)
+    } catch (err) {
+      setStatus(`Failed to start ${id}: ${err}`)
+    }
+  }
+
+  const stopExtension = async (id: string) => {
+    setStatus(`Stopping ${id}...`)
+    try {
+      await api(`/api/extensions/${encodeURIComponent(id)}/stop`, { method: 'POST' })
+      await fetchExtensions()
+      setStatus(`${id} stopped`)
+    } catch (err) {
+      setStatus(`Failed to stop ${id}: ${err}`)
+    }
+  }
+
+  const restartExtension = async (id: string) => {
+    setStatus(`Restarting ${id}...`)
+    try {
+      await api(`/api/extensions/${encodeURIComponent(id)}/restart`, { method: 'POST' })
+      await fetchExtensions()
+      setStatus(`${id} restarted`)
+    } catch (err) {
+      setStatus(`Failed to restart ${id}: ${err}`)
+    }
   }
 
   useEffect(() => { refresh().catch(err => setStatus(String(err))) }, [])
@@ -391,6 +465,56 @@ function App() {
     setStatus('Restored archive')
     await refresh()
   }
+
+  const fetchGoals = async () => {
+    if (!projectId) return
+    const r = await api<{goals: Goal[]}>(`/api/projects/${encodeURIComponent(projectId)}/goals`).catch(() => ({ goals: [] }))
+    setGoals(r.goals || [])
+  }
+
+  const createGoal = async () => {
+    if (!projectId || !goalInput.trim()) return
+    setIsCreatingGoal(true)
+    try {
+      const g = await api<Goal>(`/api/projects/${encodeURIComponent(projectId)}/goals`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ goal: goalInput.trim(), agent_id: agentId })
+      })
+      setGoals(prev => [...prev, g])
+      setSelectedGoalId(g.id)
+      setGoalInput('')
+      setStatus(`Goal created: ${g.goal}`)
+    } catch (err) {
+      setStatus(String(err))
+    } finally {
+      setIsCreatingGoal(false)
+    }
+  }
+
+  const loadGoal = async (id: string) => {
+    if (!projectId) return
+    const g = await api<Goal>(`/api/projects/${encodeURIComponent(projectId)}/goals/${encodeURIComponent(id)}`)
+    setGoals(prev => prev.map(goal => goal.id === id ? g : goal))
+    setSelectedGoalId(id)
+  }
+
+  const stopGoal = async () => {
+    if (!projectId || !selectedGoalId) return
+    try {
+      const r = await api<{status: string}>(`/api/projects/${encodeURIComponent(projectId)}/goals/${encodeURIComponent(selectedGoalId)}/stop`, { method: 'POST' })
+      setGoals(prev => prev.map(g => g.id === selectedGoalId ? { ...g, status: r.status } : g))
+      setStatus(`Goal ${r.status}`)
+    } catch (err) {
+      setStatus(String(err))
+    }
+  }
+
+  useEffect(() => {
+    if (projectId && workspaceTab === 'goal') {
+      fetchGoals()
+    }
+  }, [projectId, workspaceTab])
 
   const selectAgent = (id: string) => {
     setAgentId(id)
@@ -647,7 +771,8 @@ function App() {
         session_id: sid,
         agent_id: agentId,
         ...(projectId ? { project_id: projectId } : {}),
-        ...(imageURLs.length > 0 ? { image_url: imageURLs } : {})
+        ...(imageURLs.length > 0 ? { image_url: imageURLs } : {}),
+        ...(modelOverride && modelOverride !== 'auto' ? { model_override: modelOverride } : {})
       })
       const response = await fetch('/api/chat', {
         method: 'POST',
@@ -794,6 +919,28 @@ function App() {
           <><strong>Connection failed</strong><p>{modelsTestResult.error || 'Unknown error'}</p></>
         )}
       </div>}
+      <div className="wide"><h4>Route Preview</h4></div>
+      <label className="wide">
+        <input value={routePreviewPrompt} onChange={e=>setRoutePreviewPrompt(e.target.value)} placeholder="Enter prompt to preview routing..." />
+      </label>
+      <div className="settingsActions">
+        <button onClick={async () => {
+          if (!routePreviewPrompt.trim()) return
+          try {
+            const result = await api<{ selected_model?: string; selected_tier?: string; source?: string; rule_name?: string; reason?: string }>(`/api/route?prompt=${encodeURIComponent(routePreviewPrompt)}`)
+            setRoutePreviewResult(result)
+          } catch (err) {
+            setRoutePreviewResult({ source: 'error', reason: String(err) })
+          }
+        }}>Preview Route</button>
+      </div>
+      {routePreviewResult && <div className="testResult">
+        <strong>Selected: {routePreviewResult.selected_model || 'N/A'}</strong>
+        <p>Tier: {routePreviewResult.selected_tier || 'N/A'}</p>
+        <p>Source: {routePreviewResult.source || 'N/A'}</p>
+        {routePreviewResult.rule_name && <p>Rule: {routePreviewResult.rule_name}</p>}
+        {routePreviewResult.reason && <p>Reason: {routePreviewResult.reason}</p>}
+      </div>}
     </div>}
     {!modelsDraft && <div className="emptyPanel">Loading models settings...</div>}
   </div>
@@ -809,18 +956,87 @@ function App() {
   </div>
 
   const renderSettingsBody = () => <div className="settingsPanel settingsWorkspacePanel">
-    {settingsTab === 'Skills' ? renderSkillsSettings() : settingsTab === 'Subagents' ? renderSubagentSettings() : settingsTab === 'Models' ? renderModelsSettings() : <div className="itemList">
-      <button className="listItem" onClick={() => setAgentSettingsOpen(true)}><span>Open agent settings</span><small>Prompts, models, tools and MCP access</small></button>
-      {settingsTab !== 'Agents' && <div className="emptyPanel">Coming soon.</div>}
-    </div>}
+    {settingsTab === 'Agents' ? (
+      <AgentsSettings
+        agents={agents}
+        subagents={subagents}
+        onSave={async (agent) => {
+          const saved = await api<AgentProfile>('/api/agents', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(agent) })
+          setStatus(`Saved agent ${saved.id}`)
+          await refresh()
+        }}
+        onDelete={async (agentId) => {
+          if (agentId === 'default') return
+          await api(`/api/agents/${encodeURIComponent(agentId)}`, { method:'DELETE' })
+          setStatus(`Deleted agent ${agentId}`)
+          await refresh()
+        }}
+        onCreate={async () => {
+          const newAgent: AgentProfile = { 
+            id: `agent-${Date.now()}`, 
+            name: 'New Agent', 
+            enabled_tools: ['read','ls'], 
+            enabled_mcp_servers: ['mock'], 
+            permission_mode: 'workspace-write', 
+            max_turns: 20 
+          }
+          const saved = await api<AgentProfile>('/api/agents', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(newAgent) })
+          setAgentId(saved.id)
+          setStatus(`Created agent ${saved.id}`)
+          await refresh()
+        }}
+      />
+    ) : settingsTab === 'Subagents' ? (
+      <SubagentsSettings
+        subagents={subagents}
+        agents={agents}
+        onSave={async (subagent) => {
+          const saved = await api<SubagentProfile>('/api/subagents', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(subagent) })
+          setStatus(`Saved subagent ${saved.name || saved.id}`)
+          await refresh()
+        }}
+        onDelete={async (subagentId) => {
+          await api(`/api/subagents/${encodeURIComponent(subagentId)}`, { method:'DELETE' })
+          setStatus(`Deleted subagent ${subagentId}`)
+          await refresh()
+        }}
+        onCreate={async () => {
+          const newSubagent: SubagentProfile = { 
+            id: `subagent-${Date.now()}`, 
+            name: '', 
+            enabled_tools: [], 
+            enabled_mcp_servers: [], 
+            enabled_skills: [], 
+            permission_mode: 'ask', 
+            max_turns: 10 
+          }
+          const saved = await api<SubagentProfile>('/api/subagents', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(newSubagent) })
+          setSubagentDraft(saved)
+          setStatus(`Created subagent ${saved.id}`)
+          await refresh()
+        }}
+      />
+    ) : settingsTab === 'Skills' ? renderSkillsSettings() : settingsTab === 'Models' ? renderModelsSettings() : (
+      <div className="emptyPanel">Coming soon.</div>
+    )}
   </div>
 
   const renderSidebarBody = () => {
     if (mainPage !== 'projects') {
       if (mainPage === 'settings') return renderSettingsSideMenu()
-      const text = mainPage === 'extensions'
-        ? 'Manage marketplace extensions and installable capability packs.'
-        : 'Create recurring project scans, tests, reports and knowledge refresh jobs.'
+      if (mainPage === 'extensions') {
+        return (
+          <ExtensionsPanel
+            extensions={extensions}
+            selectedExtensionId={selectedExtensionId}
+            onSelectExtension={setSelectedExtensionId}
+            onStartExtension={startExtension}
+            onStopExtension={stopExtension}
+            onRestartExtension={restartExtension}
+          />
+        )
+      }
+      const text = 'Create recurring project scans, tests, reports and knowledge refresh jobs.'
       return <div className="sidePlaceholder"><h3>{navItems.find(n => n.id === mainPage)?.label}</h3><p>{text}</p><button className="softButton">Coming soon</button></div>
     }
 
@@ -855,7 +1071,7 @@ function App() {
       <aside className="navRail">
         <div className="brandBlock"><div className="brandMark">U</div><div className="brandMini">UA</div></div>
         <nav className="navList">
-          {navItems.map(item => <button key={item.id} className={mainPage === item.id ? 'navItem active' : 'navItem'} onClick={() => { setMainPage(item.id); if (item.id === 'settings') setWorkspaceMode('settings') }} title={item.label}><span className="navIcon">{item.icon}</span><span>{item.label}</span></button>)}
+          {navItems.map(item => <button key={item.id} className={mainPage === item.id ? 'navItem active' : 'navItem'} onClick={() => { setMainPage(item.id); if (item.id === 'settings') setWorkspaceMode('settings') }} title={item.label} aria-label={item.label}><span className="navIcon">{item.icon}</span><span>{item.label}</span></button>)}
         </nav>
       </aside>
 
@@ -889,30 +1105,124 @@ function App() {
         </header>
 
         {workspaceMode === 'settings' ? <section className="settingsWorkspace">{renderSettingsBody()}</section> : <>
-          <section className="messagesPane">
-            {messages.length === 0 && <div className="emptyState"><div>✨</div><h2>Start a coding session</h2><p>Open a project, choose an agent and ask UUAgent to inspect, explain or modify your code.</p></div>}
-            {groupMessagesIntoTurns(messages).map((turn, i) => renderTurn(turn, i))}
-            <div ref={messagesEndRef}/>
-          </section>
+          {workspaceTab === 'goal' ? (
+            <section className="goalWorkspace">
+              <div className="goalPanel">
+                <div className="goalHeader">
+                  <h2>Goal mode</h2>
+                  <button className="softButton" onClick={() => setWorkspaceTab('chat')}>Chat</button>
+                </div>
+                {!selectedGoalId ? (
+                  <div className="goalCreate">
+                    <h3>Create New Goal</h3>
+                    <textarea
+                      value={goalInput}
+                      onChange={e => setGoalInput(e.target.value)}
+                      placeholder="Enter your goal..."
+                      disabled={isCreatingGoal || !projectId}
+                    />
+                    <button
+                      className="sendButton"
+                      onClick={createGoal}
+                      disabled={!goalInput.trim() || isCreatingGoal || !projectId}
+                    >
+                      {isCreatingGoal ? 'Creating...' : 'Start Goal'}
+                    </button>
+                    {goals.length > 0 && (
+                      <div className="goalList">
+                        <h4>Existing Goals</h4>
+                        {goals.map(g => (
+                          <div key={g.id} className="goalItem" onClick={() => loadGoal(g.id)}>
+                            <span>{g.goal}</span>
+                            <span className={`goalStatus ${g.status}`}>{g.status}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="goalActivity">
+                    <div className="goalActivityHeader">
+                      <h3>{activeGoal?.goal}</h3>
+                      {activeGoal?.status === 'running' && (
+                        <button className="sendButton" onClick={stopGoal}>Stop goal</button>
+                      )}
+                    </div>
+                    <div className="goalStatusDisplay">{activeGoal?.status}</div>
+                    {activeGoal?.plan && activeGoal.plan.length > 0 && (
+                      <div className="goalSection">
+                        <h4>Plan</h4>
+                        <div className="planSteps">
+                          {activeGoal.plan.map((step, idx) => (
+                            <div key={step.id} className="planStep">
+                              <span className="stepNumber">{idx + 1}</span>
+                              <span className="stepDescription">{step.description}</span>
+                              <span className="stepSubagent">{step.subagent}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {activeGoal?.todos && activeGoal.todos.length > 0 && (
+                      <div className="goalSection">
+                        <h4>Todos</h4>
+                        <div className="todoList">
+                          {activeGoal.todos.map(todo => (
+                            <div key={todo.id} className={`todoItem ${todo.status}`}>
+                              <span className="todoStatus">{todo.status}</span>
+                              <span className="todoDescription">{todo.description}</span>
+                              {todo.result && <span className="todoResult">{todo.result}</span>}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {activeGoal?.activities && activeGoal.activities.length > 0 && (
+                      <div className="goalSection">
+                        <h4>Activity</h4>
+                        <div className="activityList">
+                          {activeGoal.activities.map(act => (
+                            <div key={act.id} className="activityItem">
+                              <span className="activityText">{act.text}</span>
+                              {act.subagent_id && <span className="activitySubagent">{act.subagent_id}</span>}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </section>
+          ) : (
+            <>
+              <section className="messagesPane">
+                {messages.length === 0 && <div className="emptyState"><div>✨</div><h2>Start a coding session</h2><p>Open a project, choose an agent and ask UUAgent to inspect, explain or modify your code.</p></div>}
+                {groupMessagesIntoTurns(messages).map((turn, i) => renderTurn(turn, i))}
+                <div ref={messagesEndRef}/>
+              </section>
 
-          <footer className="composerShell">
-            {attachmentNotice && <div className="attachmentNotice">{attachmentNotice}</div>}
-            {attachments.length > 0 && <div className="attachmentPreviewGrid composerAttachments">
-              {attachments.map(item => <div key={item.id} className="attachmentPreview"><img src={item.dataURL} alt="Attachment preview" /><span>{item.name}</span><button type="button" aria-label="Remove attachment" onClick={() => removeAttachment(item.id)}>×</button></div>)}
-            </div>}
-            <div className="composerBox">
-              <textarea value={input} onChange={e=>setInput(e.target.value)} onPaste={onComposerPaste} onKeyDown={e=>{ if(e.key==='Enter' && (e.ctrlKey || e.metaKey)){ e.preventDefault(); sendMessage() } }} placeholder="Ask UUAgent to inspect, edit or explain code... Ctrl+Enter to send" />
-              <button className="attachButton" onClick={onAttachClick} title="Attach image or file">＋</button>
-              {isStreaming ? <button className="sendButton" onClick={stopRun}>Stop</button> : <button className="sendButton" onClick={sendMessage} disabled={!input.trim() && attachments.length === 0}>Send</button>}
-              <input ref={fileInputRef} aria-label="Attach image or file" type="file" multiple accept="image/*,.txt,.md,.json,.yaml,.yml,.go,.ts,.tsx" hidden onChange={e=>{ onFilesSelected(e.target.files); e.currentTarget.value = '' }} />
-            </div>
-            <div className="composerMeta">
-              <label>Project<select value={projectId} onChange={e=>openProject(e.target.value)} disabled={activeSessionLocked}><option value="">None</option>{projects.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select>{activeSessionLocked && <span>locked</span>}</label>
-              <label>Agent<select value={agentId} onChange={e=>selectAgent(e.target.value)}>{agents.map(a=><option key={a.id} value={a.id}>{a.name || a.id}</option>)}</select></label>
-              <label>Skill<select aria-label="Skill" value={forcedSkill} onChange={e=>setForcedSkill(e.target.value)}><option value="">Auto</option>{skills.map(skill => <option key={skill.name} value={skill.name}>{skill.name}</option>)}</select></label>
-              <label>Model<select value={modelOverride} onChange={e=>setModelOverride(e.target.value)}>{availableModels.map(m=><option key={m} value={m}>{m === 'auto' ? 'Auto' : m}</option>)}</select></label>
-            </div>
-          </footer>
+              <footer className="composerShell">
+                {attachmentNotice && <div className="attachmentNotice">{attachmentNotice}</div>}
+                {attachments.length > 0 && <div className="attachmentPreviewGrid composerAttachments">
+                  {attachments.map(item => <div key={item.id} className="attachmentPreview"><img src={item.dataURL} alt="Attachment preview" /><span>{item.name}</span><button type="button" aria-label="Remove attachment" onClick={() => removeAttachment(item.id)}>×</button></div>)}
+                </div>}
+                <div className="composerBox">
+                  <textarea value={input} onChange={e=>setInput(e.target.value)} onPaste={onComposerPaste} onKeyDown={e=>{ if(e.key==='Enter' && (e.ctrlKey || e.metaKey)){ e.preventDefault(); sendMessage() } }} placeholder="Ask UUAgent to inspect, edit or explain code... Ctrl+Enter to send" />
+                  <button className="attachButton" onClick={onAttachClick} title="Attach image or file">＋</button>
+                  {isStreaming ? <button className="sendButton" onClick={stopRun}>Stop</button> : <button className="sendButton" onClick={sendMessage} disabled={!input.trim() && attachments.length === 0}>Send</button>}
+                  <input ref={fileInputRef} aria-label="Attach image or file" type="file" multiple accept="image/*,.txt,.md,.json,.yaml,.yml,.go,.ts,.tsx" hidden onChange={e=>{ onFilesSelected(e.target.files); e.currentTarget.value = '' }} />
+                </div>
+                <div className="composerMeta">
+                  <label>Project<select value={projectId} onChange={e=>openProject(e.target.value)} disabled={activeSessionLocked}><option value="">None</option>{projects.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select>{activeSessionLocked && <span>locked</span>}</label>
+                  <label>Agent<select value={agentId} onChange={e=>selectAgent(e.target.value)}>{agents.map(a=><option key={a.id} value={a.id}>{a.name || a.id}</option>)}</select></label>
+                  <label>Skill<select aria-label="Skill" value={forcedSkill} onChange={e=>setForcedSkill(e.target.value)}><option value="">Auto</option>{skills.map(skill => <option key={skill.name} value={skill.name}>{skill.name}</option>)}</select></label>
+                  <label>Model<select aria-label="Model" value={modelOverride} onChange={e=>setModelOverride(e.target.value)}>{availableModels.map(m=><option key={m} value={m}>{m === 'auto' ? 'Auto' : m}</option>)}</select></label>
+                  <button className="softButton" onClick={() => setWorkspaceTab('goal')}>Goal mode</button>
+                </div>
+              </footer>
+            </>
+          )}
         </>}
       </main>
     </div>

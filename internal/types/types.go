@@ -4,14 +4,19 @@ import "encoding/json"
 
 // Event is an Agent event streamed over SSE.
 type Event struct {
-	Type     string `json:"type"` // route, status, content, tool_start, tool_result, error, done
-	RunID    string `json:"run_id,omitempty"`
-	Model    string `json:"model,omitempty"`
-	Tier     string `json:"tier,omitempty"`
-	Text     string `json:"text,omitempty"`
-	ToolName string `json:"tool_name,omitempty"`
-	ToolID   string `json:"tool_id,omitempty"`
-	Args     string `json:"args,omitempty"`
+	Type          string `json:"type"` // route, status, content, tool_start, tool_result, error, done
+	RunID         string `json:"run_id,omitempty"`
+	Model         string `json:"model,omitempty"`
+	Tier          string `json:"tier,omitempty"`
+	SelectedModel string `json:"selected_model,omitempty"`
+	SelectedTier  string `json:"selected_tier,omitempty"`
+	Source        string `json:"source,omitempty"`
+	RuleName      string `json:"rule_name,omitempty"`
+	Reason        string `json:"reason,omitempty"`
+	Text          string `json:"text,omitempty"`
+	ToolName      string `json:"tool_name,omitempty"`
+	ToolID        string `json:"tool_id,omitempty"`
+	Args          string `json:"args,omitempty"`
 }
 
 // Message OpenAI-compatible chat message. Content may be a plain string or a

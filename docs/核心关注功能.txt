@@ -9,17 +9,17 @@
 | 序号 | 功能项 | 当前状态 | 当前证据/行为 | 下一步开发动作 | 所需测试 |
 |------|--------|----------|---------------|----------------|----------|
 | 1 | 大文件读写 | partial | read/write 工具已实现基础功能；大文件截断策略待完善 | 实现大文件自动截断与流式读取；增加文件大小阈值配置 | 大文件(>1MB)读取截断测试；流式写入测试；中文路径大文件测试 |
-| 2 | Agent/Subagent 定义与构造 | partial | Agent Profile 支持 prompt/model/tools/skills/MCP 配置；Subagent 支持并发限制、blocked tools、独立 session | 完善 Subagent Profile Web 配置界面；实现常用任务 Agent 模板(plan/build/goal) | Agent Profile CRUD 测试；Subagent 任务树持久化测试；常用模板加载测试 |
+| 2 | Agent/Subagent 定义与构造 | MVP release-ready | Agent Profile 支持 prompt/model/tools/skills/MCP/enabled_subagents 配置；Subagent 支持并发限制、blocked tools、独立 session、context cancel、任务树持久化；Web Settings 支持 Subagent 配置 | 后续可选：受限 workspace、更多 Agent 模板 | Agent Profile CRUD 测试已覆盖；Subagent 任务树持久化测试已覆盖；enabled_subagents 限制测试已覆盖 |
 | 3 | 可扩展工具(URL/MCP) | partial | MCP 配置结构已定义；mock MCP 工具已接入；真实 MCP client 生命周期未实现 | 实现 MCP stdio/http/sse client 启动/停止/重启；工具 schema 自动发现 | MCP server 生命周期测试；工具 schema 发现测试；MCP 连接失败错误处理测试 |
 | 4 | 消息压缩与归档 | implemented | 压缩摘要已写入 session JSON；手动 Compact 会归档被压缩消息并在 Project Settings Context 中展示 Compact Archives；restore/回滚已支持并移除已恢复 archive | 可选增强：归档详情预览、自动压缩归档策略、更多恢复审计信息 | 压缩前后消息完整性测试已覆盖；归档持久化测试已覆盖；restore/回滚 API/UI 测试已覆盖；fork 后压缩记录继承测试已覆盖 |
 | 5 | 多 Session/项目并发 | partial | 支持多 session 同时存在；session 级别并发无限制 | 评估是否需要 session 级别并发限制；验证多项目同时工作稳定性 | 多 session 并发测试；项目间数据隔离测试；长时间 SSE 连接稳定性测试 |
 | 6 | 统一探索/活动面板 | not implemented | 工具调用和思考过程分散显示，无统一面板 | 设计探索面板 UI；将 tool_start/tool_result/thinking 统一归入可展开面板 | 面板展开/收起交互测试；大量工具调用时性能测试 |
 | 7 | Token 用量显示位置 | implemented | active session workspace header 已显示 Session Tokens(Input/Output/Total)；Project Settings Context 保留详细 token usage | 可选增强：增加历史 token 趋势 | session 级 token 显示测试已覆盖；后续补 token 趋势测试 |
 | 8 | 项目本地目录选择 | implemented | 后端支持注册本地项目路径，临时目录自动创建已支持；Web 创建项目会 trim name/path、显示路径错误并保留输入；existing-file workspace path 会返回明确错误 | 可选增强：原生目录选择器/文件系统 picker、目录权限预检查 | 项目创建路径 trim 测试已覆盖；existing-file path 错误测试已覆盖；中文/空格路径测试已覆盖 |
-| 9 | Goal 模式与子 Agent 记账 | not implemented | subagent 独立 session 与 task tree 已实现；Goal 模式自动决策与 delegate tool 未实现 | 实现 goal 模式自动决策逻辑；完善 subagent token 累计统计 | goal 模式决策测试；subagent token 累计准确性测试；嵌套 subagent 记账测试 |
-| 10 | CLIProxyAPI / Models Settings | partial | Models Settings API/UI 已支持 proxy URL、/models 连接测试、模型列表、routing tiers/fallback；cliproxyapi 仍未嵌入/托管 | 评估是否托管 cliproxyapi 子进程；补 Providers 管理与更完整路由决策可视化 | proxy-url 配置生效测试已覆盖；/v1/models mock 测试已覆盖；Settings Models UI 测试已覆盖；后续补嵌入代理生命周期测试 |
+| 9 | Goal 模式与子 Agent 记账 | MVP release-ready | GoalRun store/API/runner 已实现；内置 planner/explorer/builder/tester/reviewer profiles 已加入；delegate_task 工具已接入；Web Goal mode 可显示 plan/todos/activity 并支持 stop；subagent 独立 session 与 task tree 已实现；context cancel 传播与并发限制防死锁已支持 | 后续可选：长跑 goal 上下文压缩、subagent token 累计统计与嵌套记账 | Goal Store/API/Runner 测试、delegate_task 测试、Web Goal Mode 测试已覆盖；subagent 取消传播测试已覆盖 |
+| 10 | CLIProxyAPI / Models Settings | MVP release-ready (built-in extension) | CLIProxyAPI backend extension lifecycle 端点已实现；Extensions UI 支持 start/stop/check CLIProxyAPI 与查看 logs/status；Models Settings API/UI 已支持 proxy URL、/models 连接测试、模型列表、routing tiers/fallback；CLIProxyAPI 二进制需放置于 plugins/cliproxyapi/cli-proxy-api.exe | 后续可选：自动下载/更新 CLIProxyAPI、Providers 管理、路由决策可视化增强 | proxy-url 配置生效测试已覆盖；/v1/models mock 测试已覆盖；Settings Models UI 测试已覆盖；extension lifecycle 测试已覆盖 |
 | 11 | 取消功能 | implemented | Agent Stop API 已实现；可取消上游 LLM request；subagent context cancel 已支持 | 无需进一步开发 | Stop API 测试；取消后资源清理测试；subagent 取消传播测试 |
-| 12 | 模型自动切换 | partial | 模型路由框架已存在(fast/strong/large_ctx tier)；自动切换策略待完善 | 完善基于任务类型/上下文长度的自动路由策略；增加路由决策可视化 | 路由规则匹配测试；fallback 策略测试；路由决策事件测试 |
+| 12 | 模型自动切换 | partial (explicit/testable) | 模型路由框架已存在(fast/strong/large_ctx tier)；Models Settings 支持 routing tiers/fallback 配置；自动切换策略基础已可用 | 后续可选：基于任务类型/上下文长度的自动路由策略；路由决策可视化增强 | 路由规则匹配测试；fallback 策略测试；路由决策事件测试 |
 | 13 | 多模态输入 | implemented | 后端支持 image_url content part；Web 端支持图片选择、粘贴、附件预览/删除、附件-only 发送，并在用户消息中渲染图片预览 | 可选增强：非图片文件解析、附件大小限制与上传存储、更多 provider 兼容性测试 | 图片粘贴测试已覆盖；图片文件选择测试已覆盖；附件预览/删除/发送测试已覆盖；消息渲染测试已覆盖 |
 | 14 | 知识库 | not implemented | 知识库功能未开始；P2 计划中 | 实现知识库 source 管理(文件/目录)；实现全文索引与检索；Chat 注入知识片段 | 知识库 source CRUD 测试；索引进度测试；检索相关性测试；Chat 注入片段测试 |
 
@@ -35,21 +35,23 @@
 
 ## 优先级建议
 
-### P0 (当前迭代)
-- 已完成：项目本地目录选择 UX
-- 已完成：多模态 Web 端实现
-- 已完成：Compact Archive restore/回滚
+### P0 (Task 8 MVP 已完成)
+- 已完成：Agent/Subagent Settings (enabled_subagents、并发限制、context cancel、任务树)
+- 已完成：CLIProxyAPI Extension MVP (lifecycle 端点、Extensions UI、logs/status)
+- 已完成：Goal Mode MVP (GoalRun、delegate_task、Activity Panel、subagent 委派)
+- 已完成：模型路由 explicit/testable (routing tiers/fallback、Models Settings)
 
 ### P1 (下个迭代)
-- cliproxyapi 嵌入/托管代理增强
-- Goal 模式与 delegate tool
-- 统一探索/活动面板
+- Real MCP client 生命周期 (stdio/http/sse)
+- Knowledge Base 初版
+- 统一探索/活动面板完善
+- 模型自动切换策略增强
 
 ### P2 (后续规划)
-- 可扩展工具 MCP 真实实现
-- 知识库初版
+- Windows 打包与发布流程
+- E2E/Playwright 测试框架
 - 大文件读写完善与更细粒度文件策略
-- 模型自动切换策略增强
+- SQLite 存储迁移
 
 ---
 

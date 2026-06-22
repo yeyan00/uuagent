@@ -16,6 +16,15 @@ const (
 	TierLargeCtx Tier = "large_ctx" // large context
 )
 
+// Decision explains why a model was selected.
+type Decision struct {
+	Model    string `json:"selected_model"`
+	Tier     Tier   `json:"selected_tier"`
+	Source   string `json:"source"`
+	RuleName string `json:"rule_name,omitempty"`
+	Reason   string `json:"reason,omitempty"`
+}
+
 // Router chooses a model based on rules and context size.
 type Router struct {
 	tiers    map[string][]string
@@ -32,55 +41,47 @@ func New(cfg config.RoutingConfig) *Router {
 	}
 }
 
+// Decide chooses a model and returns route metadata for the prompt and token count.
+func (r *Router) Decide(prompt string, tokenCount int) Decision {
+	lower := strings.ToLower(prompt)
+	for _, rule := range r.rules {
+		if matched, reason := ruleMatches(rule, lower, tokenCount); matched {
+			tier := Tier(rule.Tier)
+			if model := r.pickModel(tier); model != "" {
+				return Decision{Model: model, Tier: tier, Source: "rule", RuleName: rule.Name, Reason: reason}
+			}
+		}
+	}
+	if model := r.pickModel(Tier(r.fallback)); model != "" {
+		return Decision{Model: model, Tier: Tier(r.fallback), Source: "fallback", Reason: "fallback tier"}
+	}
+	if model := r.pickModel(TierStrong); model != "" {
+		return Decision{Model: model, Tier: TierStrong, Source: "fallback", Reason: "strong tier fallback"}
+	}
+	return Decision{Model: "gpt-4o-mini", Tier: TierFast, Source: "fallback", Reason: "hardcoded fallback"}
+}
+
 // Route chooses a model for the prompt and token count.
 // It returns the model name and selected tier.
 func (r *Router) Route(prompt string, tokenCount int) (string, Tier) {
-	// 1. Match explicit routing rules.
-	for _, rule := range r.rules {
-		if r.matchRule(prompt, tokenCount, rule) {
-			tier := Tier(rule.Tier)
-			if model := r.pickModel(tier); model != "" {
-				return model, tier
-			}
-		}
-	}
-
-	// 2. Use fallback tier when no rule matches.
-	if model := r.pickModel(Tier(r.fallback)); model != "" {
-		return model, Tier(r.fallback)
-	}
-
-	// 3. Use the first strong model if fallback is unavailable.
-	if model := r.pickModel(TierStrong); model != "" {
-		return model, TierStrong
-	}
-
-	return "gpt-4o-mini", TierFast // final fallback
+	decision := r.Decide(prompt, tokenCount)
+	return decision.Model, decision.Tier
 }
 
-// matchRule checks whether a rule matches.
-func (r *Router) matchRule(prompt string, tokenCount int, rule config.RouteRule) bool {
-	lower := strings.ToLower(prompt)
-
-	// Keyword match.
+func ruleMatches(rule config.RouteRule, lowerPrompt string, tokenCount int) (bool, string) {
 	for _, pattern := range rule.Patterns {
-		if strings.Contains(lower, strings.ToLower(pattern)) {
-			return true
+		normalized := strings.ToLower(pattern)
+		if strings.Contains(lowerPrompt, normalized) {
+			return true, "matched pattern: " + normalized
 		}
 	}
-
-	// Simple condition parsing for "tokens > N".
-	if rule.Condition != "" {
-		if strings.Contains(rule.Condition, "tokens >") {
-			var threshold int
-			fmt.Sscanf(rule.Condition, "tokens > %d", &threshold)
-			if tokenCount > threshold {
-				return true
-			}
+	if strings.Contains(rule.Condition, "tokens >") {
+		var threshold int
+		if _, err := fmt.Sscanf(rule.Condition, "tokens > %d", &threshold); err == nil && tokenCount > threshold {
+			return true, fmt.Sprintf("matched condition: tokens > %d", threshold)
 		}
 	}
-
-	return false
+	return false, ""
 }
 
 // pickModel selects the first configured model for a tier.
