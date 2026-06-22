@@ -55,7 +55,7 @@ func (m *CLIProxyAPIManager) Start(ctx context.Context) (Status, error) {
 		m.mu.Unlock()
 		return status, nil
 	}
-	status, err := m.startLocked(ctx)
+	status, err := m.startLocked()
 	m.mu.Unlock()
 	if err != nil {
 		return status, err
@@ -122,7 +122,7 @@ func (m *CLIProxyAPIManager) Health(ctx context.Context) error {
 
 func (m *CLIProxyAPIManager) Logs() []string { return m.logs.Lines() }
 
-func (m *CLIProxyAPIManager) startLocked(ctx context.Context) (Status, error) {
+func (m *CLIProxyAPIManager) startLocked() (Status, error) {
 	if m.cmd != nil && m.cmd.ProcessState != nil {
 		m.cmd = nil
 	}
@@ -134,7 +134,7 @@ func (m *CLIProxyAPIManager) startLocked(ctx context.Context) (Status, error) {
 	if err := m.writeConfigLocked(); err != nil {
 		return m.setErrorLocked(StatusError, err), fmt.Errorf("write CLIProxyAPI config: %w", err)
 	}
-	cmd := exec.CommandContext(ctx, m.binaryPathLocked(), "--config", m.configPathLocked())
+	cmd := exec.Command(m.binaryPathLocked(), "--config", m.configPathLocked())
 	cmd.Dir = filepath.Dir(m.binaryPathLocked())
 	cmd.Env = append(os.Environ(), "MANAGEMENT_STATIC_PATH="+m.managementDirLocked())
 	stdout, err := cmd.StdoutPipe()

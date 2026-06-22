@@ -1,6 +1,7 @@
 package extensions_test
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/yeyan00/uuagent/api/server"
@@ -174,6 +176,40 @@ func Test_CLIProxyAPI_Start_generates_config_reaches_running_and_captures_bounde
 	}
 	if stopped.Status != extensions.StatusStopped {
 		t.Fatalf("expected stopped status after stop, got %+v", stopped)
+	}
+}
+
+func Test_CLIProxyAPI_Start_survives_caller_context_cancellation(t *testing.T) {
+	// Given
+	root := t.TempDir()
+	buildFakeCLIProxyAPI(t, filepath.Join(root, "plugins"))
+	manager := extensions.NewCLIProxyAPIManager(extensions.CLIProxyAPIOptions{
+		PluginRoot: filepath.Join(root, "plugins"),
+		DataRoot:   filepath.Join(root, "data"),
+		Port:       freeTestPort(t),
+	})
+	ctx, cancel := context.WithCancel(t.Context())
+
+	// When
+	status, err := manager.Start(ctx)
+	cancel()
+
+	// Then
+	if err != nil {
+		t.Fatalf("start fake CLIProxyAPI: %v", err)
+	}
+	if status.Status != extensions.StatusRunning {
+		t.Fatalf("expected running after start, got %+v", status)
+	}
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if current := manager.Status(t.Context()); current.Status != extensions.StatusRunning {
+			t.Fatalf("sidecar should survive caller context cancellation, got %+v", current)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if _, err := manager.Stop(t.Context()); err != nil {
+		t.Fatalf("stop fake CLIProxyAPI: %v", err)
 	}
 }
 
