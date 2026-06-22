@@ -81,14 +81,14 @@ func (s *Store) List(ctx context.Context, projectID string) ([]Goal, error) {
 func (s *Store) MarkRunning(ctx context.Context, id string) error {
 	return s.update(ctx, id, func(goal *Goal) {
 		goal.Status = StatusRunning
-		goal.Activities = append(goal.Activities, newActivity(ActivityGoalRunning))
+		goal.Activities = append(goal.Activities, newActivity(ActivityGoalStarted), newActivity(ActivityGoalRunning))
 	})
 }
 
 func (s *Store) Stop(ctx context.Context, id string) (Goal, error) {
 	if err := s.update(ctx, id, func(goal *Goal) {
 		goal.Status = StatusCancelled
-		goal.Activities = append(goal.Activities, newActivity(ActivityGoalCancelled))
+		goal.Activities = append(goal.Activities, newActivity(ActivityGoalStopped), newActivity(ActivityGoalCancelled))
 	}); err != nil {
 		return Goal{}, err
 	}

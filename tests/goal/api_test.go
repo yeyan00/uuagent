@@ -91,12 +91,47 @@ func Test_GoalAPI_Stop_cancels_running_goal(t *testing.T) {
 	}
 }
 
+func Test_GoalAPI_Run_creates_persisted_delegated_activity(t *testing.T) {
+	// Given
+	r, projectID := newGoalAPIServer(t)
+	created := createGoalViaAPI(t, r, projectID, "Run delegated goal")
+
+	// When
+	runRec := httptest.NewRecorder()
+	r.ServeHTTP(runRec, httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/goals/"+created.ID+"/run", nil))
+	getRec := httptest.NewRecorder()
+	r.ServeHTTP(getRec, httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/goals/"+created.ID, nil))
+
+	// Then
+	if runRec.Code != http.StatusOK {
+		t.Fatalf("run goal status=%d body=%s", runRec.Code, runRec.Body.String())
+	}
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get goal status=%d body=%s", getRec.Code, getRec.Body.String())
+	}
+	var reloaded goalAPIResponse
+	if err := json.Unmarshal(getRec.Body.Bytes(), &reloaded); err != nil {
+		t.Fatalf("decode get response: %v", err)
+	}
+	if reloaded.Status != "done" {
+		t.Fatalf("expected done goal after run, got %+v", reloaded)
+	}
+	for _, kind := range []string{"goal_started", "todo_started", "delegate_started", "delegate_completed", "todo_completed", "goal_completed"} {
+		if !hasAPIActivityKind(reloaded.Activities, kind) {
+			t.Fatalf("expected %s activity after run, got %+v", kind, reloaded.Activities)
+		}
+	}
+	if !hasAPIActivity(reloaded.Activities, "delegate_completed", "reviewer") {
+		t.Fatalf("expected reviewer delegated completion activity, got %+v", reloaded.Activities)
+	}
+}
+
 type goalAPIResponse struct {
-	ID         string `json:"id"`
-	ProjectID  string `json:"project_id"`
-	Prompt     string `json:"prompt"`
-	Status     string `json:"status"`
-	Plan       struct {
+	ID        string `json:"id"`
+	ProjectID string `json:"project_id"`
+	Prompt    string `json:"prompt"`
+	Status    string `json:"status"`
+	Plan      struct {
 		Todos []struct {
 			ID      string `json:"id"`
 			Content string `json:"content"`
@@ -104,8 +139,33 @@ type goalAPIResponse struct {
 		} `json:"todos"`
 	} `json:"plan"`
 	Activities []struct {
-		Kind string `json:"kind"`
+		Kind      string `json:"kind"`
+		ProfileID string `json:"profile_id"`
 	} `json:"activities"`
+}
+
+func hasAPIActivityKind(activities []struct {
+	Kind      string `json:"kind"`
+	ProfileID string `json:"profile_id"`
+}, kind string) bool {
+	for _, activity := range activities {
+		if activity.Kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
+func hasAPIActivity(activities []struct {
+	Kind      string `json:"kind"`
+	ProfileID string `json:"profile_id"`
+}, kind string, profileID string) bool {
+	for _, activity := range activities {
+		if activity.Kind == kind && activity.ProfileID == profileID {
+			return true
+		}
+	}
+	return false
 }
 
 func newGoalAPIServer(t *testing.T) (http.Handler, string) {
@@ -116,8 +176,15 @@ func newGoalAPIServer(t *testing.T) (http.Handler, string) {
 	if err := os.MkdirAll(workspace, 0755); err != nil {
 		t.Fatal(err)
 	}
+	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"goal delegate completed"}}]}`))
+	}))
+	t.Cleanup(llm.Close)
 	gin.SetMode(gin.TestMode)
-	a := agent.New(config.Default())
+	cfg := config.Default()
+	cfg.Agent.ProxyURL = llm.URL + "/v1"
+	a := agent.New(cfg)
 	r := gin.New()
 	server.RegisterRoutes(r.Group("/api"), a)
 	return r, createGoalProject(t, r, workspace)

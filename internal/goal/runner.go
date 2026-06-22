@@ -52,19 +52,36 @@ func (r *Runner) Run(ctx context.Context, id string) (Goal, error) {
 		goal.Plan = r.plan(goal)
 	}
 	for i := range goal.Plan.Todos {
-		if goal.Status == StatusCancelled {
-			return r.store.Get(ctx, id)
+		if goal.Plan.Todos[i].Status == TodoDone {
+			continue
 		}
 		profileID := r.profileID(i)
+		goal.Plan.Todos[i].Status = TodoRunning
+		goal.Activities = append(goal.Activities,
+			activityForTodo(ActivityTodoStarted, goal.Plan.Todos[i], profileID, ""),
+			activityForTodo(ActivityDelegateStarted, goal.Plan.Todos[i], profileID, ""),
+		)
+		if err := r.store.Save(ctx, goal); err != nil {
+			return Goal{}, err
+		}
 		result, err := r.delegate(ctx, profileID, goal.Plan.Todos[i].Content)
 		if err != nil {
+			goal.Status = StatusFailed
+			goal.Activities = append(goal.Activities, activityForTodo(ActivityGoalFailed, goal.Plan.Todos[i], profileID, err.Error()))
+			if saveErr := r.store.Save(ctx, goal); saveErr != nil {
+				return Goal{}, saveErr
+			}
 			return Goal{}, fmt.Errorf("delegate %s: %w", profileID, err)
 		}
 		goal.Plan.Todos[i].Status = TodoDone
-		goal.Activities = append(goal.Activities, Activity{Kind: ActivitySubagentCompleted, ProfileID: profileID, Task: result.Task, Output: result.Output})
+		goal.Activities = append(goal.Activities,
+			activityForResult(ActivityDelegateCompleted, goal.Plan.Todos[i], profileID, result),
+			activityForResult(ActivitySubagentCompleted, goal.Plan.Todos[i], profileID, result),
+			activityForResult(ActivityTodoCompleted, goal.Plan.Todos[i], profileID, result),
+		)
 		if r.consumeStopAfterNext(id) {
 			goal.Status = StatusCancelled
-			goal.Activities = append(goal.Activities, newActivity(ActivityGoalCancelled))
+			goal.Activities = append(goal.Activities, newActivity(ActivityGoalStopped), newActivity(ActivityGoalCancelled))
 			if err := r.store.Save(ctx, goal); err != nil {
 				return Goal{}, err
 			}
@@ -75,11 +92,27 @@ func (r *Runner) Run(ctx context.Context, id string) (Goal, error) {
 		}
 	}
 	goal.Status = StatusDone
-	goal.Activities = append(goal.Activities, newActivity(ActivityGoalDone))
+	goal.Activities = append(goal.Activities, newActivity(ActivityGoalCompleted), newActivity(ActivityGoalDone))
 	if err := r.store.Save(ctx, goal); err != nil {
 		return Goal{}, err
 	}
 	return goal, nil
+}
+
+func activityForTodo(kind ActivityKind, todo Todo, profileID string, message string) Activity {
+	activity := newActivity(kind)
+	activity.TodoID = todo.ID
+	activity.ProfileID = profileID
+	activity.Task = todo.Content
+	activity.Error = message
+	return activity
+}
+
+func activityForResult(kind ActivityKind, todo Todo, profileID string, result DelegateResult) Activity {
+	activity := activityForTodo(kind, todo, profileID, "")
+	activity.Task = result.Task
+	activity.Output = result.Output
+	return activity
 }
 
 func (r *Runner) StopAfterNextActivityForTest(id string) {

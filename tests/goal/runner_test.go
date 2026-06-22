@@ -48,9 +48,31 @@ func Test_Runner_Run_completes_goal_with_plan_todos_and_subagent_activities(t *t
 			t.Fatalf("expected completed todo, got %+v", todo)
 		}
 	}
-	if !goal.HasActivity(completed.Activities, goal.ActivitySubagentCompleted, "reviewer") {
-		t.Fatalf("reviewer completion activity missing: %+v", completed.Activities)
+	reloaded, err := store.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("reload completed goal: %v", err)
 	}
+	if reloaded.Status != goal.StatusDone {
+		t.Fatalf("expected persisted done goal, got %+v", reloaded)
+	}
+	wantActivities := []string{"goal_started", "todo_started", "delegate_started", "delegate_completed", "todo_completed", "goal_completed"}
+	for _, kind := range wantActivities {
+		if !hasActivityKind(reloaded.Activities, kind) {
+			t.Fatalf("expected persisted %s activity, got %+v", kind, reloaded.Activities)
+		}
+	}
+	if !goal.HasActivity(reloaded.Activities, goal.ActivityKind("delegate_completed"), "reviewer") {
+		t.Fatalf("reviewer delegate completion activity missing: %+v", reloaded.Activities)
+	}
+}
+
+func hasActivityKind(activities []goal.Activity, kind string) bool {
+	for _, activity := range activities {
+		if string(activity.Kind) == kind {
+			return true
+		}
+	}
+	return false
 }
 
 func Test_Runner_Stop_cancels_goal_before_next_todo(t *testing.T) {

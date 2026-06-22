@@ -9,6 +9,7 @@ const (
 	StatusRunning   Status = "running"
 	StatusDone      Status = "done"
 	StatusCancelled Status = "cancelled"
+	StatusFailed    Status = "failed"
 )
 
 type TodoStatus string
@@ -23,8 +24,16 @@ type ActivityKind string
 
 const (
 	ActivityGoalCreated       ActivityKind = "goal_created"
+	ActivityGoalStarted       ActivityKind = "goal_started"
 	ActivityGoalRunning       ActivityKind = "goal_running"
+	ActivityTodoStarted       ActivityKind = "todo_started"
+	ActivityDelegateStarted   ActivityKind = "delegate_started"
+	ActivityDelegateCompleted ActivityKind = "delegate_completed"
+	ActivityTodoCompleted     ActivityKind = "todo_completed"
+	ActivityGoalCompleted     ActivityKind = "goal_completed"
 	ActivityGoalDone          ActivityKind = "goal_done"
+	ActivityGoalFailed        ActivityKind = "goal_failed"
+	ActivityGoalStopped       ActivityKind = "goal_stopped"
 	ActivityGoalCancelled     ActivityKind = "goal_cancelled"
 	ActivitySubagentCompleted ActivityKind = "subagent_completed"
 )
@@ -54,9 +63,11 @@ type Todo struct {
 
 type Activity struct {
 	Kind      ActivityKind `json:"kind"`
+	TodoID    string       `json:"todo_id,omitempty"`
 	ProfileID string       `json:"profile_id,omitempty"`
 	Task      string       `json:"task,omitempty"`
 	Output    string       `json:"output,omitempty"`
+	Error     string       `json:"error,omitempty"`
 	CreatedAt int64        `json:"created_at"`
 }
 
