@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type ReactNode } from 'react'
 import './App.css'
+import { AgentsSettings } from './components/AgentsSettings'
+import { SubagentsSettings } from './components/SubagentsSettings'
 
 interface ToolCallRecord { id?: string; function?: { name?: string; arguments?: string }; name?: string; args?: string }
 interface ChatEvent { type: string; run_id?: string; model?: string; tier?: string; text?: string; tool_name?: string; tool_id?: string; args?: string }
@@ -884,10 +886,69 @@ function App({ initialWorkspaceTab }: AppProps = {}) {
   </div>
 
   const renderSettingsBody = () => <div className="settingsPanel settingsWorkspacePanel">
-    {settingsTab === 'Skills' ? renderSkillsSettings() : settingsTab === 'Subagents' ? renderSubagentSettings() : settingsTab === 'Models' ? renderModelsSettings() : <div className="itemList">
-      <button className="listItem" onClick={() => setAgentSettingsOpen(true)}><span>Open agent settings</span><small>Prompts, models, tools and MCP access</small></button>
-      {settingsTab !== 'Agents' && <div className="emptyPanel">Coming soon.</div>}
-    </div>}
+    {settingsTab === 'Agents' ? (
+      <AgentsSettings
+        agents={agents}
+        subagents={subagents}
+        onSave={async (agent) => {
+          const saved = await api<AgentProfile>('/api/agents', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(agent) })
+          setStatus(`Saved agent ${saved.id}`)
+          await refresh()
+        }}
+        onDelete={async (agentId) => {
+          if (agentId === 'default') return
+          await api(`/api/agents/${encodeURIComponent(agentId)}`, { method:'DELETE' })
+          setStatus(`Deleted agent ${agentId}`)
+          await refresh()
+        }}
+        onCreate={async () => {
+          const newAgent: AgentProfile = { 
+            id: `agent-${Date.now()}`, 
+            name: 'New Agent', 
+            enabled_tools: ['read','ls'], 
+            enabled_mcp_servers: ['mock'], 
+            permission_mode: 'workspace-write', 
+            max_turns: 20 
+          }
+          const saved = await api<AgentProfile>('/api/agents', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(newAgent) })
+          setAgentId(saved.id)
+          setStatus(`Created agent ${saved.id}`)
+          await refresh()
+        }}
+      />
+    ) : settingsTab === 'Subagents' ? (
+      <SubagentsSettings
+        subagents={subagents}
+        agents={agents}
+        onSave={async (subagent) => {
+          const saved = await api<SubagentProfile>('/api/subagents', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(subagent) })
+          setStatus(`Saved subagent ${saved.name || saved.id}`)
+          await refresh()
+        }}
+        onDelete={async (subagentId) => {
+          await api(`/api/subagents/${encodeURIComponent(subagentId)}`, { method:'DELETE' })
+          setStatus(`Deleted subagent ${subagentId}`)
+          await refresh()
+        }}
+        onCreate={async () => {
+          const newSubagent: SubagentProfile = { 
+            id: `subagent-${Date.now()}`, 
+            name: '', 
+            enabled_tools: [], 
+            enabled_mcp_servers: [], 
+            enabled_skills: [], 
+            permission_mode: 'ask', 
+            max_turns: 10 
+          }
+          const saved = await api<SubagentProfile>('/api/subagents', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(newSubagent) })
+          setSubagentDraft(saved)
+          setStatus(`Created subagent ${saved.id}`)
+          await refresh()
+        }}
+      />
+    ) : settingsTab === 'Skills' ? renderSkillsSettings() : settingsTab === 'Models' ? renderModelsSettings() : (
+      <div className="emptyPanel">Coming soon.</div>
+    )}
   </div>
 
   const renderSidebarBody = () => {

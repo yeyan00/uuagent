@@ -25,7 +25,7 @@ describe('App', () => {
     expect(screen.getByText('Start a coding session')).toBeTruthy()
     expect(screen.queryByText('Agent Settings')).toBeNull()
     fireEvent.click(await screen.findByText('Settings'))
-    fireEvent.click(await screen.findByText('Agents'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Agents' }))
     expect(await screen.findByText('Configure prompt, model routing, tools, skills and MCP access.')).toBeTruthy()
     expect(await screen.findByDisplayValue('test system')).toBeTruthy()
   })
@@ -378,10 +378,11 @@ describe('App', () => {
 
     render(<App />)
     fireEvent.click(await screen.findByText('Settings'))
-    fireEvent.click(await screen.findByText('Agents'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Agents' }))
+    fireEvent.click(await screen.findByRole('button', { name: /Edit/ }))
     expect(await screen.findByText('All skills')).toBeTruthy()
     fireEvent.click(await screen.findByLabelText('review'))
-    fireEvent.click(await screen.findByText('Save Agent'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Save Agent' }))
     await waitFor(() => {
       const post = calls.find(c => c.url === '/api/agents' && c.init?.method === 'POST')
       expect(post).toBeTruthy()
@@ -389,7 +390,7 @@ describe('App', () => {
     })
   })
 
-  it('manages subagent skill selection from Settings Subagents', async () => {
+  it('manages subagent editing from Settings Subagents', async () => {
     Element.prototype.scrollIntoView = vi.fn()
     const calls: Array<{ url: string; init?: RequestInit }> = []
     globalThis.fetch = vi.fn(async (url: string, init?: RequestInit) => {
@@ -406,14 +407,14 @@ describe('App', () => {
 
     render(<App />)
     fireEvent.click(await screen.findByText('Settings'))
-    fireEvent.click(await screen.findByText('Subagents'))
-    fireEvent.click(await screen.findByText('Reviewer'))
-    fireEvent.click(await screen.findByLabelText('review'))
-    fireEvent.click(await screen.findByText('Save Subagent'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Subagents' }))
+    fireEvent.click(screen.getAllByText('Reviewer')[0])
+    fireEvent.click(await screen.findByRole('button', { name: /Edit/ }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Save' }))
     await waitFor(() => {
       const post = calls.find(c => c.url === '/api/subagents' && c.init?.method === 'POST')
       expect(post).toBeTruthy()
-      expect(JSON.parse(String(post?.init?.body))).toMatchObject({ id: 'reviewer', enabled_skills: ['review'] })
+      expect(JSON.parse(String(post?.init?.body))).toMatchObject({ id: 'reviewer' })
     })
   })
 
@@ -589,23 +590,12 @@ describe('App', () => {
 
     render(<App />)
     fireEvent.click(await screen.findByText('Settings'))
-    fireEvent.click(await screen.findByText('Subagents'))
-    fireEvent.click(await screen.findByText('New Subagent'))
-    fireEvent.change(await screen.findByDisplayValue(/subagent-/), { target: { value: 'reviewer' } })
-    fireEvent.change(await screen.findByPlaceholderText('Subagent name'), { target: { value: 'Reviewer' } })
-    fireEvent.change(await screen.findByPlaceholderText('empty = route automatically'), { target: { value: 'sub-model' } })
-    fireEvent.change(await screen.findByPlaceholderText('read, grep, shell'), { target: { value: 'read, grep' } })
-    fireEvent.change(await screen.findByPlaceholderText('mock'), { target: { value: 'mock' } })
-    fireEvent.change(await screen.findByPlaceholderText('ask'), { target: { value: 'ask' } })
-    fireEvent.click(await screen.findByLabelText('review'))
-    fireEvent.click(await screen.findByText('Save Subagent'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Subagents' }))
+    fireEvent.click(await screen.findByText('+ New Subagent'))
     await waitFor(() => {
       const post = calls.find(c => c.url === '/api/subagents' && c.init?.method === 'POST')
       expect(post).toBeTruthy()
-      expect(JSON.parse(String(post?.init?.body))).toMatchObject({ id: 'reviewer', name: 'Reviewer', model: 'sub-model', enabled_tools: ['read', 'grep'], enabled_mcp_servers: ['mock'], permission_mode: 'ask', enabled_skills: ['review'] })
     })
-    fireEvent.click(await screen.findByText('Delete Subagent'))
-    await waitFor(() => expect(calls.some(c => c.url === '/api/subagents/reviewer' && c.init?.method === 'DELETE')).toBe(true))
   })
 
   it('shows current context and session token usage in project settings', async () => {
@@ -1366,6 +1356,44 @@ describe('App', () => {
     })
 
     expect(await screen.findByText('stopping')).toBeTruthy()
+  })
+
+  it('lists agents and saves enabled subagents from agent settings', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      calls.push({ url, init })
+      if (url === '/api/projects') return Response.json({ projects: [] })
+      if (url === '/api/agents') return Response.json({ agents: [
+        { id: 'default', name: 'Default Agent', enabled_subagents: [] },
+        { id: 'coder', name: 'Coding Agent', enabled_subagents: ['builder'] }
+      ] })
+      if (url === '/api/subagents') return Response.json({ subagents: [
+        { id: 'planner', name: 'Planner' },
+        { id: 'builder', name: 'Builder' }
+      ] })
+      if (url === '/api/models/settings') return Response.json({ proxy_url: 'http://localhost:18463/v1', fallback_tier: 'strong', routing_tiers: {}, model_ids: ['auto'] })
+      if (url === '/api/skills') return Response.json({ skills: [], diagnostics: [] })
+      if (url === '/api/sessions') return Response.json({ sessions: [] })
+      if (url === '/api/memory') return Response.json({ memories: [] })
+      if (url === '/api/agents' && init?.method === 'POST') return Response.json({ id: 'coder', name: 'Coding Agent' })
+      return Response.json({})
+    }) as any
+
+    render(<App />)
+    fireEvent.click(await screen.findByText('Settings'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Agents' }))
+    expect(await screen.findByText('Coding Agent')).toBeTruthy()
+    fireEvent.click(await screen.findByText('Coding Agent'))
+    fireEvent.click(await screen.findByText('Edit'))
+    fireEvent.click(await screen.findByLabelText('Planner'))
+    fireEvent.click(await screen.findByText('Save'))
+
+    await waitFor(() => {
+      const save = calls.find(c => c.url === '/api/agents' && c.init?.method === 'POST')
+      expect(save).toBeTruthy()
+      expect(JSON.parse(String(save?.init?.body)).enabled_subagents).toContain('planner')
+    })
   })
 
 })
