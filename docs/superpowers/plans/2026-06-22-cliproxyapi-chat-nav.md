@@ -508,6 +508,24 @@ cd web; npm run build
 powershell -ExecutionPolicy Bypass -File scripts/test.ps1
 ```
 
+## Phase 2 Follow-Up: Workspace Chrome Cleanup and Chat Session Tabs
+
+**Implemented workspace cleanup:** Projects, Extensions, Schedules, and Settings are now non-Chat workspaces. Chat-only chrome (`composerShell`, Session Tokens, Compact, route/model pill, goal controls) is gated to `mainPage === 'chat'`. Projects and Schedules have their own placeholder workspace panes, Settings no longer renders a duplicate workspace `Chat` button, and repeated sidebar utility controls use Lucide icons with accessible labels.
+
+**New Phase 2 tab scope:** Projects remains the project/session library, while Chat becomes the active conversation workspace. Clicking an existing session under Projects opens or activates a browser-like Chat tab and switches to Chat. Creating a new session opens it as a Chat tab. Tabs represent only open working sessions, not every historical session. Closing a tab removes it from the working set without deleting the session; if no tabs remain, Chat shows the choose/open-session empty state.
+
+**Frontend files:** `web/src/App.tsx` owns the initial inline state until the oversized shell is split in a future refactor. Add `openChatTabs` and active-tab helpers near existing `projectId/sessionId` state. Render a tab strip above the Chat messages pane. Keep `Projects` free of the composer and route controls.
+
+**Regression tests:** `web/src/App.test.tsx` should cover Projects session click -> Chat tab + composer, new session -> Chat tab, switching between tabs for different projects, and closing a tab without deleting the session. Existing chrome-leak tests remain authoritative for non-Chat pages.
+
+**Verification anchors:**
+
+```powershell
+cd web; npm test -- --run App.test.tsx -t "Chat tabs|Projects session|new session opens"
+cd web; npm test -- --run App.test.tsx
+cd web; npm run build
+```
+
 ## Deferred Phase: Memory Scope and Prompt Cache Stability
 
 Memory work is intentionally deferred from Phase 1. Current backend support already distinguishes `global`, `project`, `agent`, and `session` scopes, but the UI mostly exposes project memory and the session receives a frozen memory snapshot. A later Memory phase should add explicit scope/scope-key UI and API affordances, then split system prompt construction into stable profile/tool/skill blocks and volatile memory blocks so prompt-cache stability is not invalidated by unrelated memory or skill changes.
