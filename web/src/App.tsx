@@ -5,7 +5,7 @@ import { SubagentsSettings } from './components/SubagentsSettings'
 import { ExtensionsPanel } from './components/ExtensionsPanel'
 import { ModelsSettingsPanel } from './components/ModelsSettingsPanel'
 import type { ExtensionStatus, ModelsSettings, ModelsTestResult, RoutePreviewResult } from './types'
-import { ChevronDown, ChevronRight, Clock, Folder, GitFork, MessageSquare, Paperclip, Pencil, Plus, Puzzle, Settings, Trash2 } from 'lucide-react'
+import { ChevronDown, ChevronRight, Clock, Folder, GitFork, MessageSquare, Paperclip, Pencil, Plus, Puzzle, Settings, Trash2, X } from 'lucide-react'
 
 interface ToolCallRecord { id?: string; function?: { name?: string; arguments?: string }; name?: string; args?: string }
 interface ChatEvent { type: string; run_id?: string; model?: string; tier?: string; text?: string; tool_name?: string; tool_id?: string; args?: string }
@@ -209,6 +209,14 @@ const toolEventFromMessage = (message: Message, toolArgs: Record<string, string>
   return { kind: 'tool_result', tool: message.tool_name || message.tool_call_id || 'tool', tool_id: message.tool_call_id, args: message.tool_call_id ? toolArgs[message.tool_call_id] : undefined, text: String(message.content || '') }
 }
 
+interface ChatTab {
+  id: string
+  projectId: string
+  sessionId: string
+  projectName: string
+  title: string
+}
+
 interface AppProps {
   initialPage?: MainPage
   initialWorkspaceTab?: 'chat' | 'goal'
@@ -235,6 +243,7 @@ function App({ initialPage, initialWorkspaceTab }: AppProps = {}) {
   const [projectId, setProjectId] = useState('')
   const [agentId, setAgentId] = useState('default')
   const [sessionId, setSessionId] = useState('default')
+  const [openChatTabs, setOpenChatTabs] = useState<ChatTab[]>([])
   const [modelOverride, setModelOverride] = useState('auto')
   const [newProjectName, setNewProjectName] = useState('')
   const [newProjectPath, setNewProjectPath] = useState('')
@@ -291,6 +300,7 @@ function App({ initialPage, initialWorkspaceTab }: AppProps = {}) {
   const activeProjectSessions = projectId ? (projectSessions[projectId] || []) : []
   const activeSession = activeProjectSessions.find(s => s.id === sessionId)
   const activeSessionLocked = !!activeSession && ((activeSession.messages?.length || 0) > 0 || !!activeSession.project_id)
+  const activeChatTabId = projectId && sessionId ? `${projectId}:${sessionId}` : ''
   const activeGoal = goals.find(g => g.id === selectedGoalId)
   const availableModels = useMemo(() => {
     const agentModels = agents.map(a => a.model).filter((model): model is string => Boolean(model))
@@ -327,6 +337,33 @@ function App({ initialPage, initialWorkspaceTab }: AppProps = {}) {
       : mainPage === 'settings'
         ? `${settingsTab} settings`
         : 'Automation jobs and recurring tasks'
+  const upsertChatTab = (pid: string, sid: string, title: string) => {
+    const project = projects.find(p => p.id === pid)
+    const tab: ChatTab = { id: `${pid}:${sid}`, projectId: pid, sessionId: sid, projectName: project?.name || pid, title: title || sid }
+    setOpenChatTabs(prev => prev.some(item => item.id === tab.id) ? prev.map(item => item.id === tab.id ? { ...item, ...tab } : item) : [...prev, tab])
+  }
+  const selectChatTab = async (tab: ChatTab) => {
+    setMainPage('chat')
+    await loadSession(tab.sessionId, tab.projectId)
+  }
+  const closeChatTab = (tabId: string) => {
+    setOpenChatTabs(prev => {
+      const next = prev.filter(tab => tab.id !== tabId)
+      if (tabId === activeChatTabId) {
+        const fallback = next[next.length - 1]
+        if (fallback) {
+          void loadSession(fallback.sessionId, fallback.projectId)
+        } else {
+          setSessionId('')
+          setMessages([])
+          setSummaries([])
+          setArchives([])
+          setSessionContext({})
+        }
+      }
+      return next
+    })
+  }
 
   const refresh = async () => {
     const [p, a, m, sa, sk, ms, ex] = await Promise.all([
@@ -433,7 +470,10 @@ function App({ initialPage, initialWorkspaceTab }: AppProps = {}) {
     if (!pid) { setStatus('Select a project first'); return }
     const id = `s-${Date.now()}`
     const s = await api<Session>(`/api/projects/${encodeURIComponent(pid)}/sessions`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ id }) })
-    setProjectId(pid); setSessionId(s.id); setMessages([]); setSummaries([]); setStatus(`New session ${s.id}`); await refresh()
+    setProjectId(pid); setSessionId(s.id); setMessages([]); setSummaries([]); setStatus(`New session ${s.id}`)
+    upsertChatTab(pid, s.id, s.title || s.id)
+    setMainPage('chat')
+    await refresh()
   }
   const loadSession = async (id: string, pid = projectId) => {
     if (!pid) return
@@ -443,6 +483,8 @@ function App({ initialPage, initialWorkspaceTab }: AppProps = {}) {
     setMessages(s.messages || [])
     const ctx = await api<SessionContext>(`/api/projects/${encodeURIComponent(pid)}/sessions/${encodeURIComponent(id)}/context`).catch((): SessionContext => ({}))
     setSessionContext(ctx); setSummaries(ctx.summaries || []); setArchives(ctx.archives || [])
+    upsertChatTab(pid, id, s.title || s.id)
+    setMainPage('chat')
     setStatus(`Loaded ${s.title || s.id}`)
   }
   const forkSession = async (id = sessionId, pid = projectId) => {
@@ -1146,6 +1188,15 @@ function App({ initialPage, initialWorkspaceTab }: AppProps = {}) {
             <div className="emptyState chatEmptyState"><MessageSquare size={42} /><h2>Choose or create a project</h2><p>Select a project from Projects before starting Chat.</p><button className="primaryButton" onClick={() => setMainPage('projects')}>Open Projects</button></div>
           </section>
         ) : <>
+          {isChatPage && openChatTabs.length > 0 && <div className="chatTabStrip" role="tablist" aria-label="Open chat sessions">
+            {openChatTabs.map(tab => <div key={tab.id} className={tab.id === activeChatTabId ? 'chatTab active' : 'chatTab'}>
+              <button type="button" role="tab" aria-selected={tab.id === activeChatTabId} className="chatTabButton" onClick={() => selectChatTab(tab).catch(err => setStatus(String(err)))}>
+                <span>{tab.projectName}</span>
+                <strong>{tab.title}</strong>
+              </button>
+              <button type="button" className="chatTabClose" aria-label={`Close ${tab.projectName} ${tab.title}`} onClick={() => closeChatTab(tab.id)}><X size={13} /></button>
+            </div>)}
+          </div>}
           {workspaceTab === 'goal' ? (
             <section className="goalWorkspace">
               <div className="goalPanel">

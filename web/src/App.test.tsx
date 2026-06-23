@@ -172,6 +172,107 @@ describe('App', () => {
     expect(within(workspace).queryByPlaceholderText('Ask UUAgent to inspect, edit or explain code... Ctrl+Enter to send')).toBeNull()
   })
 
+  it('opens a project session from Projects as an active Chat tab', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const fetchMock: typeof fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/projects') return Response.json({ projects: [{ id: 'project-a', name: 'Project A', workspace_path: 'C:/workspace-a', temporary: false }] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/subagents') return Response.json({ subagents: [] })
+      if (url === '/api/skills') return Response.json({ skills: [], diagnostics: [] })
+      if (url === '/api/memory' || url.startsWith('/api/memory?')) return Response.json({ memories: [] })
+      if (url === '/api/extensions') return Response.json({ extensions: [] })
+      if (url === '/api/models/settings') return Response.json({ proxy_url: '', proxy_api_key: '', fallback_tier: 'strong', routing_tiers: {}, model_ids: [] })
+      if (url === '/api/projects/project-a/sessions') return Response.json({ sessions: [{ id: 'session-a', title: 'Investigate bug', project_id: 'project-a', messages: [{ role: 'user', content: 'existing question' }, { role: 'assistant', content: 'existing answer' }] }] })
+      if (url === '/api/projects/project-a/sessions/session-a') return Response.json({ id: 'session-a', title: 'Investigate bug', project_id: 'project-a', messages: [{ role: 'user', content: 'existing question' }, { role: 'assistant', content: 'existing answer' }] })
+      if (url === '/api/projects/project-a/sessions/session-a/context') return Response.json({ summaries: [] })
+      if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
+      return Response.json({})
+    })
+    globalThis.fetch = fetchMock
+
+    render(<App />)
+    await waitFor(() => expect(screen.getAllByText('Project A').length).toBeGreaterThan(0))
+    expect(screen.queryByPlaceholderText(composerPlaceholder)).toBeNull()
+
+    fireEvent.click(await screen.findByText('Investigate bug'))
+
+    expect(await screen.findByPlaceholderText(composerPlaceholder)).toBeTruthy()
+    expect(await screen.findByRole('tab', { name: /Project A.*Investigate bug/ })).toBeTruthy()
+    expect(await screen.findByText('existing question')).toBeTruthy()
+    expect(await screen.findByText('existing answer')).toBeTruthy()
+  })
+
+  it('opens a newly created project session as a Chat tab', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const calls: string[] = []
+    const fetchMock: typeof fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      calls.push(`${init?.method || 'GET'} ${url}`)
+      if (url === '/api/projects') return Response.json({ projects: [{ id: 'project-a', name: 'Project A', workspace_path: 'C:/workspace-a', temporary: false }] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/subagents') return Response.json({ subagents: [] })
+      if (url === '/api/skills') return Response.json({ skills: [], diagnostics: [] })
+      if (url === '/api/memory' || url.startsWith('/api/memory?')) return Response.json({ memories: [] })
+      if (url === '/api/extensions') return Response.json({ extensions: [] })
+      if (url === '/api/models/settings') return Response.json({ proxy_url: '', proxy_api_key: '', fallback_tier: 'strong', routing_tiers: {}, model_ids: [] })
+      if (url === '/api/projects/project-a/sessions' && init?.method === 'POST') return Response.json({ id: 'new-session', title: 'New session', project_id: 'project-a', messages: [] })
+      if (url === '/api/projects/project-a/sessions') return Response.json({ sessions: [] })
+      if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
+      return Response.json({})
+    })
+    globalThis.fetch = fetchMock
+
+    render(<App />)
+    await waitFor(() => expect(screen.getAllByText('Project A').length).toBeGreaterThan(0))
+    expect(screen.queryByPlaceholderText(composerPlaceholder)).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'New session' }))
+
+    expect(await screen.findByPlaceholderText(composerPlaceholder)).toBeTruthy()
+    expect(await screen.findByRole('tab', { name: /Project A.*New session/ })).toBeTruthy()
+    expect(calls).toContain('POST /api/projects/project-a/sessions')
+  })
+
+  it('keeps multiple project sessions open as switchable Chat tabs', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const fetchMock: typeof fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/projects') return Response.json({ projects: [
+        { id: 'project-a', name: 'Project A', workspace_path: 'C:/workspace-a', temporary: false },
+        { id: 'project-b', name: 'Project B', workspace_path: 'C:/workspace-b', temporary: false },
+      ] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/subagents') return Response.json({ subagents: [] })
+      if (url === '/api/skills') return Response.json({ skills: [], diagnostics: [] })
+      if (url === '/api/memory' || url.startsWith('/api/memory?')) return Response.json({ memories: [] })
+      if (url === '/api/extensions') return Response.json({ extensions: [] })
+      if (url === '/api/models/settings') return Response.json({ proxy_url: '', proxy_api_key: '', fallback_tier: 'strong', routing_tiers: {}, model_ids: [] })
+      if (url === '/api/projects/project-a/sessions') return Response.json({ sessions: [{ id: 'session-a', title: 'Alpha work', project_id: 'project-a', messages: [{ role: 'user', content: 'alpha question' }] }] })
+      if (url === '/api/projects/project-b/sessions') return Response.json({ sessions: [{ id: 'session-b', title: 'Beta work', project_id: 'project-b', messages: [{ role: 'user', content: 'beta question' }] }] })
+      if (url === '/api/projects/project-a/sessions/session-a') return Response.json({ id: 'session-a', title: 'Alpha work', project_id: 'project-a', messages: [{ role: 'user', content: 'alpha question' }] })
+      if (url === '/api/projects/project-b/sessions/session-b') return Response.json({ id: 'session-b', title: 'Beta work', project_id: 'project-b', messages: [{ role: 'user', content: 'beta question' }] })
+      if (url.endsWith('/context')) return Response.json({ summaries: [] })
+      if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
+      return Response.json({})
+    })
+    globalThis.fetch = fetchMock
+
+    render(<App />)
+    await waitFor(() => expect(screen.getAllByText('Alpha work').length).toBeGreaterThan(0))
+    fireEvent.click(await screen.findByText('Alpha work'))
+    expect(await screen.findByText('alpha question')).toBeTruthy()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Projects' }))
+    fireEvent.click(await screen.findByText('Beta work'))
+    expect(await screen.findByText('beta question')).toBeTruthy()
+    expect(screen.getByRole('tab', { name: /Project A.*Alpha work/ })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: /Project B.*Beta work/ })).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('tab', { name: /Project A.*Alpha work/ }))
+    expect(await screen.findByText('alpha question')).toBeTruthy()
+  })
+
   it('uses accessible icon affordances for repeated utility actions', async () => {
     Element.prototype.scrollIntoView = vi.fn()
     const fetchMock: typeof fetch = vi.fn(async (input: RequestInfo | URL) => {

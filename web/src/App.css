@@ -68,6 +68,15 @@ button { cursor: pointer; }
   padding: 7px 10px; font-size: 12px; font-weight: 750;
 }
 .tab.active { background: #4c78ff; color: #fff; }
+.chatTabStrip { display: flex; gap: 8px; overflow-x: auto; padding: 0 20px 10px; border-bottom: 1px solid rgba(132,146,170,.14); }
+.chatTab { flex: 0 0 clamp(160px, 22vw, 240px); min-width: 0; max-width: 240px; border: 1px solid rgba(132,146,170,.2); border-radius: 14px; background: rgba(255,255,255,.72); color: #31415d; padding: 6px; display: grid; grid-template-columns: minmax(0, 1fr) 22px; gap: 7px; align-items: center; }
+.chatTabButton { min-width: 0; border: 0; background: transparent; color: inherit; padding: 2px 3px; display: grid; gap: 2px; text-align: left; }
+.chatTab span, .chatTab strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chatTab span { color: #62738f; font-size: 11px; font-weight: 780; }
+.chatTab strong { font-size: 12px; }
+.chatTab.active { border-color: #90a9ff; background: #eef4ff; color: #18315e; }
+.chatTabClose { width: 22px; height: 22px; border: 0; border-radius: 8px; padding: 0; display: grid; place-items: center; background: transparent; color: #62738f; }
+.chatTabClose:hover { background: rgba(76,120,255,.12); color: #18315e; }
 .sidebarBody { flex: 1; min-height: 0; overflow: auto; padding: 0 14px 14px; }
 .sideActions { display: flex; gap: 8px; margin-bottom: 8px; }
 .sideActions button, .projectPicker button, .softButton, .primaryButton, .sendButton, .iconButton {
