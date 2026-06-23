@@ -151,25 +151,34 @@ describe('App', () => {
     render(<App />)
     await waitFor(() => expect(screen.getAllByText('Project A').length).toBeGreaterThan(0))
 
-    const workspace = document.querySelector('.workspace') as HTMLElement
-    expect(workspace).toBeTruthy()
-    expect(within(workspace).queryByPlaceholderText('Ask UUAgent to inspect, edit or explain code... Ctrl+Enter to send')).toBeNull()
+    const workspace = screen.getByRole('main')
+    const expectNoChatChrome = () => {
+      expect(within(workspace).queryByPlaceholderText('Ask UUAgent to inspect, edit or explain code... Ctrl+Enter to send')).toBeNull()
+      expect(within(workspace).queryByText('Session Tokens')).toBeNull()
+      expect(within(workspace).queryByText('Compact')).toBeNull()
+      expect(screen.queryByRole('tablist', { name: /open chat sessions/i })).toBeNull()
+      expect(screen.queryByRole('button', { name: /more chat sessions/i })).toBeNull()
+      expect(screen.queryByRole('menu', { name: /chat tab actions/i })).toBeNull()
+    }
+
+    expectNoChatChrome()
 
     fireEvent.click(await screen.findByRole('button', { name: 'Extensions' }))
     expect(await within(workspace).findByRole('heading', { name: 'Extensions' })).toBeTruthy()
-    expect(within(workspace).queryByText('Session Tokens')).toBeNull()
-    expect(within(workspace).queryByText('Compact')).toBeNull()
-    expect(within(workspace).queryByPlaceholderText('Ask UUAgent to inspect, edit or explain code... Ctrl+Enter to send')).toBeNull()
+    expectNoChatChrome()
 
     fireEvent.click(await screen.findByRole('button', { name: 'Settings' }))
     expect(await within(workspace).findByRole('heading', { name: 'Settings' })).toBeTruthy()
     expect(within(workspace).queryByRole('button', { name: 'Chat' })).toBeNull()
-    expect(within(workspace).queryByText('Session Tokens')).toBeNull()
-    expect(within(workspace).queryByText('Compact')).toBeNull()
+    expectNoChatChrome()
 
     fireEvent.click(await screen.findByRole('button', { name: 'Schedules' }))
     expect(await within(workspace).findByRole('heading', { name: 'Schedules' })).toBeTruthy()
-    expect(within(workspace).queryByPlaceholderText('Ask UUAgent to inspect, edit or explain code... Ctrl+Enter to send')).toBeNull()
+    expectNoChatChrome()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Projects' }))
+    expect(await within(workspace).findByRole('heading', { name: 'Projects' })).toBeTruthy()
+    expectNoChatChrome()
   })
 
   it('opens a project session from Projects as an active Chat tab', async () => {
@@ -271,6 +280,372 @@ describe('App', () => {
 
     fireEvent.click(screen.getByRole('tab', { name: /Project A.*Alpha work/ }))
     expect(await screen.findByText('alpha question')).toBeTruthy()
+  })
+
+  it('keeps active and recent chat sessions visible and moves older tabs into More', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const sessions = Array.from({ length: 6 }, (_, index) => {
+      const number = index + 1
+      return { id: `session-${number}`, title: `Session ${number}`, project_id: 'project-a', messages: [{ role: 'user', content: `question ${number}` }] }
+    })
+    const fetchMock: typeof fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/projects') return Response.json({ projects: [{ id: 'project-a', name: 'Project A', workspace_path: 'C:/workspace-a', temporary: false }] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/subagents') return Response.json({ subagents: [] })
+      if (url === '/api/skills') return Response.json({ skills: [], diagnostics: [] })
+      if (url === '/api/memory' || url.startsWith('/api/memory?')) return Response.json({ memories: [] })
+      if (url === '/api/extensions') return Response.json({ extensions: [] })
+      if (url === '/api/models/settings') return Response.json({ proxy_url: '', proxy_api_key: '', fallback_tier: 'strong', routing_tiers: {}, model_ids: [] })
+      if (url === '/api/projects/project-a/sessions') return Response.json({ sessions })
+      const sessionMatch = url.match(/^\/api\/projects\/project-a\/sessions\/(session-\d)$/)
+      if (sessionMatch?.[1]) {
+        const found = sessions.find(session => session.id === sessionMatch[1])
+        return Response.json(found)
+      }
+      if (url.endsWith('/context')) return Response.json({ summaries: [] })
+      if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
+      return Response.json({})
+    })
+    globalThis.fetch = fetchMock
+
+    render(<App />)
+    await waitFor(() => expect(screen.getAllByText('Session 1').length).toBeGreaterThan(0))
+    for (const session of sessions) {
+      fireEvent.click(screen.getByRole('button', { name: 'Projects' }))
+      fireEvent.click(await screen.findByText(session.title))
+      expect(await screen.findByText(session.messages[0].content)).toBeTruthy()
+    }
+
+    expect(screen.getByRole('tablist', { name: /open chat sessions/i })).toBeTruthy()
+    expect(screen.getAllByRole('tab')).toHaveLength(5)
+    fireEvent.click(screen.getByRole('button', { name: /more chat sessions/i }))
+    expect(screen.getByRole('menu', { name: /overflow chat sessions/i })).toBeTruthy()
+    expect(screen.getByRole('menuitem', { name: /Session 1/i })).toBeTruthy()
+  })
+
+  it('promotes an overflow chat session when selected from More', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const sessions = Array.from({ length: 6 }, (_, index) => {
+      const number = index + 1
+      return { id: `session-${number}`, title: `Session ${number}`, project_id: 'project-a', messages: [{ role: 'user', content: `question ${number}` }] }
+    })
+    const fetchMock: typeof fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/projects') return Response.json({ projects: [{ id: 'project-a', name: 'Project A', workspace_path: 'C:/workspace-a', temporary: false }] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/subagents') return Response.json({ subagents: [] })
+      if (url === '/api/skills') return Response.json({ skills: [], diagnostics: [] })
+      if (url === '/api/memory' || url.startsWith('/api/memory?')) return Response.json({ memories: [] })
+      if (url === '/api/extensions') return Response.json({ extensions: [] })
+      if (url === '/api/models/settings') return Response.json({ proxy_url: '', proxy_api_key: '', fallback_tier: 'strong', routing_tiers: {}, model_ids: [] })
+      if (url === '/api/projects/project-a/sessions') return Response.json({ sessions })
+      const sessionMatch = url.match(/^\/api\/projects\/project-a\/sessions\/(session-\d)$/)
+      if (sessionMatch?.[1]) {
+        const found = sessions.find(session => session.id === sessionMatch[1])
+        return Response.json(found)
+      }
+      if (url.endsWith('/context')) return Response.json({ summaries: [] })
+      if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
+      return Response.json({})
+    })
+    globalThis.fetch = fetchMock
+
+    render(<App />)
+    await waitFor(() => expect(screen.getAllByText('Session 1').length).toBeGreaterThan(0))
+    for (const session of sessions) {
+      fireEvent.click(screen.getByRole('button', { name: 'Projects' }))
+      fireEvent.click(await screen.findByText(session.title))
+      expect(await screen.findByText(session.messages[0].content)).toBeTruthy()
+    }
+
+    fireEvent.click(screen.getByRole('button', { name: /more chat sessions/i }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /Session 1/i }))
+
+    expect((await screen.findByRole('tab', { name: /Session 1/i })).getAttribute('aria-selected')).toBe('true')
+    expect(screen.queryByRole('menu', { name: /overflow chat sessions/i })).toBeNull()
+  })
+
+  it('activates the next most recent tab when closing the active chat tab', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const sessions = [
+      { id: 'session-a', title: 'Session A', project_id: 'project-a', messages: [{ role: 'user', content: 'question a' }] },
+      { id: 'session-b', title: 'Session B', project_id: 'project-a', messages: [{ role: 'user', content: 'question b' }] },
+      { id: 'session-c', title: 'Session C', project_id: 'project-a', messages: [{ role: 'user', content: 'question c' }] },
+    ]
+    const fetchMock: typeof fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/projects') return Response.json({ projects: [{ id: 'project-a', name: 'Project A', workspace_path: 'C:/workspace-a', temporary: false }] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/subagents') return Response.json({ subagents: [] })
+      if (url === '/api/skills') return Response.json({ skills: [], diagnostics: [] })
+      if (url === '/api/memory' || url.startsWith('/api/memory?')) return Response.json({ memories: [] })
+      if (url === '/api/extensions') return Response.json({ extensions: [] })
+      if (url === '/api/models/settings') return Response.json({ proxy_url: '', proxy_api_key: '', fallback_tier: 'strong', routing_tiers: {}, model_ids: [] })
+      if (url === '/api/projects/project-a/sessions') return Response.json({ sessions })
+      const sessionMatch = url.match(/^\/api\/projects\/project-a\/sessions\/(session-[abc])$/)
+      if (sessionMatch?.[1]) {
+        return Response.json(sessions.find(session => session.id === sessionMatch[1]))
+      }
+      if (url.endsWith('/context')) return Response.json({ summaries: [] })
+      if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
+      return Response.json({})
+    })
+    globalThis.fetch = fetchMock
+
+    render(<App />)
+    await waitFor(() => expect(screen.getAllByText('Session A').length).toBeGreaterThan(0))
+    for (const session of sessions) {
+      fireEvent.click(screen.getByRole('button', { name: 'Projects' }))
+      fireEvent.click(await screen.findByText(session.title))
+      expect(await screen.findByText(session.messages[0].content)).toBeTruthy()
+    }
+    fireEvent.click(screen.getByRole('tab', { name: /Session A/i }))
+    expect(await screen.findByText('question a')).toBeTruthy()
+    fireEvent.click(screen.getByRole('tab', { name: /Session C/i }))
+    expect(await screen.findByText('question c')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: /Close Project A Session C/i }))
+
+    expect((await screen.findByRole('tab', { name: /Session A/i })).getAttribute('aria-selected')).toBe('true')
+  })
+
+  it('shows a running indicator on the active chat tab while streaming', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const encoder = new TextEncoder()
+    let closeStream = () => {}
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        closeStream = () => controller.close()
+        controller.enqueue(encoder.encode('data: {"type":"content","text":"working"}\n\n'))
+      },
+    })
+    const fetchMock: typeof fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/projects') return Response.json({ projects: [{ id: 'project-a', name: 'Project A', workspace_path: 'C:/workspace-a', temporary: false }] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/subagents') return Response.json({ subagents: [] })
+      if (url === '/api/skills') return Response.json({ skills: [], diagnostics: [] })
+      if (url === '/api/memory' || url.startsWith('/api/memory?')) return Response.json({ memories: [] })
+      if (url === '/api/extensions') return Response.json({ extensions: [] })
+      if (url === '/api/models/settings') return Response.json({ proxy_url: '', proxy_api_key: '', fallback_tier: 'strong', routing_tiers: {}, model_ids: [] })
+      if (url === '/api/projects/project-a/sessions') return Response.json({ sessions: [{ id: 'session-a', title: 'Session A', project_id: 'project-a', messages: [] }] })
+      if (url === '/api/projects/project-a/sessions/session-a') return Response.json({ id: 'session-a', title: 'Session A', project_id: 'project-a', messages: [] })
+      if (url === '/api/chat') return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } })
+      if (url.endsWith('/context')) return Response.json({ summaries: [] })
+      if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
+      return Response.json({})
+    })
+    globalThis.fetch = fetchMock
+
+    render(<App />)
+    await waitFor(() => expect(screen.getAllByText('Session A').length).toBeGreaterThan(0))
+    fireEvent.click(await screen.findByText('Session A'))
+    const input = await screen.findByPlaceholderText('Ask UUAgent to inspect, edit or explain code... Ctrl+Enter to send')
+    fireEvent.change(input, { target: { value: 'run a long task' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+    expect(await screen.findByLabelText('Session is running')).toBeTruthy()
+    closeStream()
+  })
+
+  it('opens a chat tab context menu with session actions', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const fetchMock: typeof fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/projects') return Response.json({ projects: [{ id: 'project-a', name: 'Project A', workspace_path: 'C:/workspace-a', temporary: false }] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/subagents') return Response.json({ subagents: [] })
+      if (url === '/api/skills') return Response.json({ skills: [], diagnostics: [] })
+      if (url === '/api/memory' || url.startsWith('/api/memory?')) return Response.json({ memories: [] })
+      if (url === '/api/extensions') return Response.json({ extensions: [] })
+      if (url === '/api/models/settings') return Response.json({ proxy_url: '', proxy_api_key: '', fallback_tier: 'strong', routing_tiers: {}, model_ids: [] })
+      if (url === '/api/projects/project-a/sessions') return Response.json({ sessions: [{ id: 'session-a', title: 'Session A', project_id: 'project-a', messages: [] }] })
+      if (url === '/api/projects/project-a/sessions/session-a') return Response.json({ id: 'session-a', title: 'Session A', project_id: 'project-a', messages: [] })
+      if (url.endsWith('/context')) return Response.json({ summaries: [] })
+      if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
+      return Response.json({})
+    })
+    globalThis.fetch = fetchMock
+
+    render(<App />)
+    await waitFor(() => expect(screen.getAllByText('Session A').length).toBeGreaterThan(0))
+    fireEvent.click(screen.getByRole('button', { name: /Session A 0 messages/i }))
+    fireEvent.contextMenu(await screen.findByRole('tab', { name: /Session A/i }))
+
+    expect(screen.getByRole('menu', { name: /chat tab actions/i })).toBeTruthy()
+    expect(screen.getByRole('menuitem', { name: /rename/i })).toBeTruthy()
+    expect(screen.getByRole('menuitem', { name: /fork/i })).toBeTruthy()
+    expect(screen.getByRole('menuitem', { name: /compact/i })).toBeTruthy()
+    expect(screen.getByRole('menuitem', { name: /export context/i })).toBeTruthy()
+    expect(screen.getByRole('menuitem', { name: /close tab/i })).toBeTruthy()
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+
+    expect(screen.queryByRole('menu', { name: /chat tab actions/i })).toBeNull()
+  })
+
+  it('renames a chat tab after session rename succeeds', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    let sessionTitle = 'Session A'
+    const fetchMock: typeof fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/projects') return Response.json({ projects: [{ id: 'project-a', name: 'Project A', workspace_path: 'C:/workspace-a', temporary: false }] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/subagents') return Response.json({ subagents: [] })
+      if (url === '/api/skills') return Response.json({ skills: [], diagnostics: [] })
+      if (url === '/api/memory' || url.startsWith('/api/memory?')) return Response.json({ memories: [] })
+      if (url === '/api/extensions') return Response.json({ extensions: [] })
+      if (url === '/api/models/settings') return Response.json({ proxy_url: '', proxy_api_key: '', fallback_tier: 'strong', routing_tiers: {}, model_ids: [] })
+      if (url === '/api/projects/project-a/sessions') return Response.json({ sessions: [{ id: 'session-a', title: sessionTitle, project_id: 'project-a', messages: [] }] })
+      if (url === '/api/projects/project-a/sessions/session-a' && init?.method === 'PATCH') {
+        const body = JSON.parse(String(init.body)) as { title?: string }
+        sessionTitle = body.title || sessionTitle
+        return Response.json({ id: 'session-a', title: sessionTitle, project_id: 'project-a', messages: [] })
+      }
+      if (url === '/api/projects/project-a/sessions/session-a') return Response.json({ id: 'session-a', title: sessionTitle, project_id: 'project-a', messages: [] })
+      if (url.endsWith('/context')) return Response.json({ summaries: [] })
+      if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
+      return Response.json({})
+    })
+    globalThis.fetch = fetchMock
+
+    render(<App />)
+    await waitFor(() => expect(screen.getAllByText('Session A').length).toBeGreaterThan(0))
+    fireEvent.click(screen.getByRole('button', { name: /Session A 0 messages/i }))
+    fireEvent.contextMenu(await screen.findByRole('tab', { name: /Session A/i }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /rename/i }))
+    const titleInput = screen.getByRole('textbox', { name: /session title/i })
+    fireEvent.change(titleInput, { target: { value: 'Renamed tab' } })
+    fireEvent.keyDown(titleInput, { key: 'Enter' })
+
+    expect(await screen.findByRole('tab', { name: /Renamed tab/i })).toBeTruthy()
+  })
+
+  it('opens a forked session as a chat tab from the chat tab context menu', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const fetchMock: typeof fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/projects') return Response.json({ projects: [{ id: 'project-a', name: 'Project A', workspace_path: 'C:/workspace-a', temporary: false }] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/subagents') return Response.json({ subagents: [] })
+      if (url === '/api/skills') return Response.json({ skills: [], diagnostics: [] })
+      if (url === '/api/memory' || url.startsWith('/api/memory?')) return Response.json({ memories: [] })
+      if (url === '/api/extensions') return Response.json({ extensions: [] })
+      if (url === '/api/models/settings') return Response.json({ proxy_url: '', proxy_api_key: '', fallback_tier: 'strong', routing_tiers: {}, model_ids: [] })
+      if (url === '/api/projects/project-a/sessions') return Response.json({ sessions: [{ id: 'session-a', title: 'Session A', project_id: 'project-a', messages: [] }] })
+      if (url === '/api/projects/project-a/sessions/session-a/fork' && init?.method === 'POST') return Response.json({ id: 'session-child', title: 'Session A fork', project_id: 'project-a', messages: [] })
+      if (url === '/api/projects/project-a/sessions/session-a') return Response.json({ id: 'session-a', title: 'Session A', project_id: 'project-a', messages: [] })
+      if (url.endsWith('/context')) return Response.json({ summaries: [] })
+      if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
+      return Response.json({})
+    })
+    globalThis.fetch = fetchMock
+
+    render(<App />)
+    await waitFor(() => expect(screen.getAllByText('Session A').length).toBeGreaterThan(0))
+    fireEvent.click(screen.getByRole('button', { name: /Session A 0 messages/i }))
+    fireEvent.contextMenu(await screen.findByRole('tab', { name: /Session A/i }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /fork/i }))
+
+    expect(await screen.findByRole('tab', { name: /Session A fork/i })).toBeTruthy()
+  })
+
+  it('compacts a chat tab from the chat tab context menu', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    const fetchMock: typeof fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      calls.push({ url, init })
+      if (url === '/api/projects') return Response.json({ projects: [{ id: 'project-a', name: 'Project A', workspace_path: 'C:/workspace-a', temporary: false }] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/subagents') return Response.json({ subagents: [] })
+      if (url === '/api/skills') return Response.json({ skills: [], diagnostics: [] })
+      if (url === '/api/memory' || url.startsWith('/api/memory?')) return Response.json({ memories: [] })
+      if (url === '/api/extensions') return Response.json({ extensions: [] })
+      if (url === '/api/models/settings') return Response.json({ proxy_url: '', proxy_api_key: '', fallback_tier: 'strong', routing_tiers: {}, model_ids: [] })
+      if (url === '/api/projects/project-a/sessions') return Response.json({ sessions: [{ id: 'session-a', title: 'Session A', project_id: 'project-a', messages: [] }] })
+      if (url === '/api/projects/project-a/sessions/session-a') return Response.json({ id: 'session-a', title: 'Session A', project_id: 'project-a', messages: [] })
+      if (url === '/api/projects/project-a/sessions/session-a/compact' && init?.method === 'POST') return Response.json({ summaries: [{ id: 'sum-1', summary: 'Compacted', token_before: 100, token_after: 20, created_at: Date.now() }] })
+      if (url.endsWith('/context')) return Response.json({ summaries: [] })
+      if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
+      return Response.json({})
+    })
+    globalThis.fetch = fetchMock
+
+    render(<App />)
+    await waitFor(() => expect(screen.getAllByText('Session A').length).toBeGreaterThan(0))
+    fireEvent.click(screen.getByRole('button', { name: /Session A 0 messages/i }))
+    fireEvent.contextMenu(await screen.findByRole('tab', { name: /Session A/i }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /compact/i }))
+
+    await waitFor(() => expect(calls.some(call => call.url === '/api/projects/project-a/sessions/session-a/compact' && call.init?.method === 'POST')).toBe(true))
+  })
+
+  it('exports chat tab context from the chat tab context menu', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const createObjectURL = vi.fn(() => 'blob:session-context')
+    const revokeObjectURL = vi.fn()
+    const clickDownload = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined)
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL })
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectURL })
+    const fetchMock: typeof fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/projects') return Response.json({ projects: [{ id: 'project-a', name: 'Project A', workspace_path: 'C:/workspace-a', temporary: false }] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/subagents') return Response.json({ subagents: [] })
+      if (url === '/api/skills') return Response.json({ skills: [], diagnostics: [] })
+      if (url === '/api/memory' || url.startsWith('/api/memory?')) return Response.json({ memories: [] })
+      if (url === '/api/extensions') return Response.json({ extensions: [] })
+      if (url === '/api/models/settings') return Response.json({ proxy_url: '', proxy_api_key: '', fallback_tier: 'strong', routing_tiers: {}, model_ids: [] })
+      if (url === '/api/projects/project-a/sessions') return Response.json({ sessions: [{ id: 'session-a', title: 'Session A', project_id: 'project-a', messages: [] }] })
+      if (url === '/api/projects/project-a/sessions/session-a') return Response.json({ id: 'session-a', title: 'Session A', project_id: 'project-a', messages: [] })
+      if (url === '/api/projects/project-a/sessions/session-a/context') return Response.json({ usage: { total_tokens: 42 }, summaries: [] })
+      if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
+      return Response.json({})
+    })
+    globalThis.fetch = fetchMock
+
+    render(<App />)
+    await waitFor(() => expect(screen.getAllByText('Session A').length).toBeGreaterThan(0))
+    fireEvent.click(screen.getByRole('button', { name: /Session A 0 messages/i }))
+    fireEvent.contextMenu(await screen.findByRole('tab', { name: /Session A/i }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /export context/i }))
+
+    await waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(1))
+    expect(clickDownload).toHaveBeenCalledTimes(1)
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:session-context')
+  })
+
+  it('resizes the context sidebar with the drag handle', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const fetchMock: typeof fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/projects') return Response.json({ projects: [{ id: 'project-a', name: 'Project A', workspace_path: 'C:/workspace', temporary: false }] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/subagents') return Response.json({ subagents: [] })
+      if (url === '/api/skills') return Response.json({ skills: [], diagnostics: [] })
+      if (url === '/api/memory' || url.startsWith('/api/memory?')) return Response.json({ memories: [] })
+      if (url === '/api/extensions') return Response.json({ extensions: [] })
+      if (url === '/api/models/settings') return Response.json({ proxy_url: '', proxy_api_key: '', fallback_tier: 'strong', routing_tiers: {}, model_ids: [] })
+      if (url === '/api/projects/project-a/sessions') return Response.json({ sessions: [] })
+      if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
+      return Response.json({})
+    })
+    globalThis.fetch = fetchMock
+
+    render(<App />)
+
+    const sidebar = await screen.findByLabelText(/^context sidebar$/i)
+    const handle = screen.getByRole('separator', { name: /resize context sidebar/i })
+
+    expect(sidebar.style.width).toBe('320px')
+
+    fireEvent(handle, new MouseEvent('pointerdown', { bubbles: true, clientX: 320 }))
+    fireEvent(handle, new MouseEvent('pointermove', { bubbles: true, clientX: 400 }))
+    fireEvent(handle, new MouseEvent('pointerup', { bubbles: true }))
+
+    expect(sidebar.style.width).toBe('400px')
   })
 
   it('uses accessible icon affordances for repeated utility actions', async () => {

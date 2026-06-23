@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type MouseEvent, type PointerEvent, type ReactNode } from 'react'
 import './App.css'
 import { AgentsSettings } from './components/AgentsSettings'
 import { SubagentsSettings } from './components/SubagentsSettings'
@@ -215,6 +215,28 @@ interface ChatTab {
   sessionId: string
   projectName: string
   title: string
+  lastActiveAt: number
+  isStreaming?: boolean
+}
+
+interface ChatTabMenu {
+  tabId: string
+  x: number
+  y: number
+}
+
+function getVisibleChatTabs(tabs: ChatTab[], activeTabId: string): { visibleTabs: ChatTab[]; overflowTabs: ChatTab[] } {
+  const active = tabs.find(tab => tab.id === activeTabId)
+  const ordered = [
+    ...(active ? [active] : []),
+    ...tabs
+      .filter(tab => tab.id !== activeTabId)
+      .sort((left, right) => right.lastActiveAt - left.lastActiveAt),
+  ]
+  return {
+    visibleTabs: ordered.slice(0, 5),
+    overflowTabs: ordered.slice(5),
+  }
 }
 
 interface AppProps {
@@ -244,6 +266,11 @@ function App({ initialPage, initialWorkspaceTab }: AppProps = {}) {
   const [agentId, setAgentId] = useState('default')
   const [sessionId, setSessionId] = useState('default')
   const [openChatTabs, setOpenChatTabs] = useState<ChatTab[]>([])
+  const [showChatTabOverflow, setShowChatTabOverflow] = useState(false)
+  const [chatTabMenu, setChatTabMenu] = useState<ChatTabMenu | null>(null)
+  const [renamingChatTabId, setRenamingChatTabId] = useState('')
+  const [renameChatTabTitle, setRenameChatTabTitle] = useState('')
+  const [contextSidebarWidth, setContextSidebarWidth] = useState(320)
   const [modelOverride, setModelOverride] = useState('auto')
   const [newProjectName, setNewProjectName] = useState('')
   const [newProjectPath, setNewProjectPath] = useState('')
@@ -293,6 +320,7 @@ function App({ initialPage, initialWorkspaceTab }: AppProps = {}) {
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const abortRef = useRef<AbortController | null>(null)
+  const sidebarDragRef = useRef<{ startX: number; startWidth: number } | null>(null)
 
   const activeProject = projects.find(p => p.id === projectId)
   const activeAgent = agents.find(a => a.id === agentId)
@@ -301,6 +329,26 @@ function App({ initialPage, initialWorkspaceTab }: AppProps = {}) {
   const activeSession = activeProjectSessions.find(s => s.id === sessionId)
   const activeSessionLocked = !!activeSession && ((activeSession.messages?.length || 0) > 0 || !!activeSession.project_id)
   const activeChatTabId = projectId && sessionId ? `${projectId}:${sessionId}` : ''
+  const { visibleTabs, overflowTabs } = useMemo(
+    () => getVisibleChatTabs(openChatTabs, activeChatTabId),
+    [activeChatTabId, openChatTabs],
+  )
+  const activeChatTabMenuTab = chatTabMenu ? openChatTabs.find(tab => tab.id === chatTabMenu.tabId) : undefined
+
+  useEffect(() => {
+    if (!chatTabMenu) return
+    const closeChatTabMenu = () => setChatTabMenu(null)
+    const closeChatTabMenuOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setChatTabMenu(null)
+    }
+    document.addEventListener('click', closeChatTabMenu)
+    document.addEventListener('keydown', closeChatTabMenuOnEscape)
+    return () => {
+      document.removeEventListener('click', closeChatTabMenu)
+      document.removeEventListener('keydown', closeChatTabMenuOnEscape)
+    }
+  }, [chatTabMenu])
+
   const activeGoal = goals.find(g => g.id === selectedGoalId)
   const availableModels = useMemo(() => {
     const agentModels = agents.map(a => a.model).filter((model): model is string => Boolean(model))
@@ -339,18 +387,30 @@ function App({ initialPage, initialWorkspaceTab }: AppProps = {}) {
         : 'Automation jobs and recurring tasks'
   const upsertChatTab = (pid: string, sid: string, title: string) => {
     const project = projects.find(p => p.id === pid)
-    const tab: ChatTab = { id: `${pid}:${sid}`, projectId: pid, sessionId: sid, projectName: project?.name || pid, title: title || sid }
-    setOpenChatTabs(prev => prev.some(item => item.id === tab.id) ? prev.map(item => item.id === tab.id ? { ...item, ...tab } : item) : [...prev, tab])
+    const tabId = `${pid}:${sid}`
+    const now = Date.now()
+    setOpenChatTabs(prev => {
+      const existing = prev.find(item => item.id === tabId)
+      if (existing) {
+        return prev.map(item => item.id === tabId
+          ? { ...item, projectName: project?.name || pid, title: title || sid, lastActiveAt: now }
+          : item)
+      }
+      return [...prev, { id: tabId, projectId: pid, sessionId: sid, projectName: project?.name || pid, title: title || sid, lastActiveAt: now }]
+    })
   }
   const selectChatTab = async (tab: ChatTab) => {
+    setShowChatTabOverflow(false)
     setMainPage('chat')
     await loadSession(tab.sessionId, tab.projectId)
   }
   const closeChatTab = (tabId: string) => {
+    setChatTabMenu(current => current?.tabId === tabId ? null : current)
+    setRenamingChatTabId(current => current === tabId ? '' : current)
     setOpenChatTabs(prev => {
       const next = prev.filter(tab => tab.id !== tabId)
       if (tabId === activeChatTabId) {
-        const fallback = next[next.length - 1]
+        const fallback = [...next].sort((left, right) => right.lastActiveAt - left.lastActiveAt)[0]
         if (fallback) {
           void loadSession(fallback.sessionId, fallback.projectId)
         } else {
@@ -363,6 +423,51 @@ function App({ initialPage, initialWorkspaceTab }: AppProps = {}) {
       }
       return next
     })
+  }
+
+  const openChatTabMenu = (event: MouseEvent, tab: ChatTab) => {
+    event.preventDefault()
+    setShowChatTabOverflow(false)
+    setChatTabMenu({ tabId: tab.id, x: event.clientX, y: event.clientY })
+  }
+
+  const startRenamingChatTab = (tab: ChatTab) => {
+    setChatTabMenu(null)
+    setRenamingChatTabId(tab.id)
+    setRenameChatTabTitle(tab.title)
+  }
+
+  const submitChatTabRename = async (tab: ChatTab) => {
+    const title = renameChatTabTitle.trim()
+    if (!title) return
+    const renamed = await api<Session>(`/api/projects/${encodeURIComponent(tab.projectId)}/sessions/${encodeURIComponent(tab.sessionId)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title }) })
+    const nextTitle = renamed.title || title
+    setOpenChatTabs(prev => prev.map(item => item.id === tab.id ? { ...item, title: nextTitle } : item))
+    setProjectSessions(prev => ({
+      ...prev,
+      [tab.projectId]: (prev[tab.projectId] || []).map(session => session.id === tab.sessionId ? { ...session, title: nextTitle } : session),
+    }))
+    setRenamingChatTabId('')
+    setRenameChatTabTitle('')
+    setStatus(`Renamed session ${nextTitle}`)
+  }
+
+  const startContextSidebarResize = (event: PointerEvent<HTMLDivElement>) => {
+    if (!Number.isFinite(event.clientX)) return
+    sidebarDragRef.current = { startX: event.clientX, startWidth: contextSidebarWidth }
+    if (typeof event.currentTarget.setPointerCapture === 'function') {
+      event.currentTarget.setPointerCapture(event.pointerId)
+    }
+  }
+
+  const moveContextSidebarResize = (event: PointerEvent<HTMLDivElement>) => {
+    if (!sidebarDragRef.current || !Number.isFinite(event.clientX)) return
+    const nextWidth = sidebarDragRef.current.startWidth + event.clientX - sidebarDragRef.current.startX
+    setContextSidebarWidth(Math.min(480, Math.max(240, nextWidth)))
+  }
+
+  const stopContextSidebarResize = () => {
+    sidebarDragRef.current = null
   }
 
   const refresh = async () => {
@@ -490,7 +595,13 @@ function App({ initialPage, initialWorkspaceTab }: AppProps = {}) {
   const forkSession = async (id = sessionId, pid = projectId) => {
     if (!pid || !id) return
     const child = await api<Session>(`/api/projects/${encodeURIComponent(pid)}/sessions/${encodeURIComponent(id)}/fork`, { method: 'POST' })
-    setProjectId(pid); setSessionId(child.id); setMessages(child.messages || []); setStatus(`Forked ${child.id}`); await refresh()
+    setProjectId(pid)
+    setSessionId(child.id)
+    setMessages(child.messages || [])
+    setMainPage('chat')
+    upsertChatTab(pid, child.id, child.title || child.id)
+    setStatus(`Forked ${child.id}`)
+    await refresh()
   }
   const renameSession = async (id = sessionId, pid = projectId) => {
     if (!pid || !id) return
@@ -506,15 +617,37 @@ function App({ initialPage, initialWorkspaceTab }: AppProps = {}) {
     if (id === sessionId) { setSessionId(''); setMessages([]) }
     setStatus(`Deleted session ${id}`); await refresh()
   }
-  const compactSession = async () => {
-    if (!projectId || !sessionId) return
+  const compactChatTab = async (tab: ChatTab) => {
+    setChatTabMenu(null)
+    if (tab.projectId !== projectId || tab.sessionId !== sessionId) {
+      await loadSession(tab.sessionId, tab.projectId)
+    }
     setStatus('Compacting...')
-    const result = await api<SessionContext>(`/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/compact`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) })
+    const result = await api<SessionContext>(`/api/projects/${encodeURIComponent(tab.projectId)}/sessions/${encodeURIComponent(tab.sessionId)}/compact`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) })
     setSessionContext(result)
     setSummaries(result.summaries || [])
     setArchives(result.archives || [])
     setStatus('Compacted')
     await refresh()
+  }
+
+  const compactSession = async () => {
+    if (!projectId || !sessionId) return
+    const tab = openChatTabs.find(item => item.projectId === projectId && item.sessionId === sessionId) || { id: `${projectId}:${sessionId}`, projectId, sessionId, projectName: activeProject?.name || projectId, title: activeSession?.title || sessionId, lastActiveAt: Date.now() }
+    await compactChatTab(tab)
+  }
+
+  const exportChatTabContext = async (tab: ChatTab) => {
+    setChatTabMenu(null)
+    const context = await api<SessionContext>(`/api/projects/${encodeURIComponent(tab.projectId)}/sessions/${encodeURIComponent(tab.sessionId)}/context`)
+    const blob = new Blob([JSON.stringify({ projectId: tab.projectId, sessionId: tab.sessionId, title: tab.title, context }, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `${tab.title || tab.sessionId}-context.json`
+    link.click()
+    URL.revokeObjectURL(url)
+    setStatus(`Exported context for ${tab.title}`)
   }
 
   const restoreArchive = async (archiveId: string) => {
@@ -844,11 +977,16 @@ function App({ initialPage, initialWorkspaceTab }: AppProps = {}) {
     const messageAttachments = attachments
     const controller = new AbortController()
     abortRef.current = controller
+    let streamingTabId = activeChatTabId
     setMessages(prev => [...prev, { role: 'user', content: prompt, attachments: messageAttachments }])
     setInput(''); setAttachments([]); setAttachmentNotice(''); setIsStreaming(true); setCurrentRunId(''); setRouteInfo(null); setStatus('Thinking...')
     try {
       const sid = sessionId || `s-${Date.now()}`
       if (!sessionId) setSessionId(sid)
+      streamingTabId = projectId ? `${projectId}:${sid}` : ''
+      if (streamingTabId) {
+        setOpenChatTabs(prev => prev.map(tab => tab.id === streamingTabId ? { ...tab, isStreaming: true } : tab))
+      }
       const imageURLs = messageAttachments.map(item => item.dataURL)
       const body = JSON.stringify({
         prompt,
@@ -870,7 +1008,14 @@ function App({ initialPage, initialWorkspaceTab }: AppProps = {}) {
       if ((err as Error)?.name === 'AbortError') setStatus('Stopped')
       else { setMessages(prev => [...prev, { role: 'system', content: `Error: ${err}` }]); setStatus(String(err)) }
     }
-    finally { setIsStreaming(false); setCurrentRunId(''); abortRef.current = null }
+    finally {
+      setIsStreaming(false)
+      setCurrentRunId('')
+      abortRef.current = null
+      if (streamingTabId) {
+        setOpenChatTabs(prev => prev.map(tab => tab.id === streamingTabId ? { ...tab, isStreaming: false } : tab))
+      }
+    }
   }
 
   const stopRun = async () => {
@@ -1134,7 +1279,7 @@ function App({ initialPage, initialWorkspaceTab }: AppProps = {}) {
         </nav>
       </aside>
 
-      <aside className="contextSidebar">
+      <aside className="contextSidebar" aria-label="Context sidebar" style={{ width: contextSidebarWidth }}>
         <div className="sidebarHeader">
           <h2>{mainPage === 'projects' ? 'Project' : navItems.find(n => n.id === mainPage)?.label}</h2>
           <p>{sidebarSubtitle}</p>
@@ -1150,6 +1295,16 @@ function App({ initialPage, initialWorkspaceTab }: AppProps = {}) {
         <div className="sidebarBody">{renderSidebarBody()}</div>
         <div className="statusStrip"><span className="pulse" />{status}</div>
       </aside>
+      <div
+        className="contextSidebarResizeHandle"
+        role="separator"
+        aria-label="Resize context sidebar"
+        aria-orientation="vertical"
+        onPointerDown={startContextSidebarResize}
+        onPointerMove={moveContextSidebarResize}
+        onPointerUp={stopContextSidebarResize}
+        onPointerCancel={stopContextSidebarResize}
+      />
 
       <main className="workspace">
         <header className="workspaceHeader">
@@ -1189,13 +1344,41 @@ function App({ initialPage, initialWorkspaceTab }: AppProps = {}) {
           </section>
         ) : <>
           {isChatPage && openChatTabs.length > 0 && <div className="chatTabStrip" role="tablist" aria-label="Open chat sessions">
-            {openChatTabs.map(tab => <div key={tab.id} className={tab.id === activeChatTabId ? 'chatTab active' : 'chatTab'}>
-              <button type="button" role="tab" aria-selected={tab.id === activeChatTabId} className="chatTabButton" onClick={() => selectChatTab(tab).catch(err => setStatus(String(err)))}>
+            {visibleTabs.map(tab => <div key={tab.id} className={tab.id === activeChatTabId ? 'chatTab active' : 'chatTab'} onContextMenu={event => openChatTabMenu(event, tab)}>
+              {renamingChatTabId === tab.id ? <input
+                className="chatTabRenameInput"
+                aria-label="Session title"
+                value={renameChatTabTitle}
+                onChange={event => setRenameChatTabTitle(event.target.value)}
+                onKeyDown={event => {
+                  if (event.key === 'Enter') submitChatTabRename(tab).catch(err => setStatus(String(err)))
+                  if (event.key === 'Escape') setRenamingChatTabId('')
+                }}
+                autoFocus
+              /> : <button type="button" role="tab" aria-selected={tab.id === activeChatTabId} className="chatTabButton" onClick={() => selectChatTab(tab).catch(err => setStatus(String(err)))}>
                 <span>{tab.projectName}</span>
                 <strong>{tab.title}</strong>
-              </button>
+                {tab.isStreaming && <i className="chatTabRunningDot" aria-label="Session is running" />}
+              </button>}
               <button type="button" className="chatTabClose" aria-label={`Close ${tab.projectName} ${tab.title}`} onClick={() => closeChatTab(tab.id)}><X size={13} /></button>
             </div>)}
+            {overflowTabs.length > 0 && <div className="chatTabOverflow">
+              <button type="button" className="chatTabMore" aria-label="More chat sessions" onClick={() => setShowChatTabOverflow(value => !value)}>More</button>
+              {showChatTabOverflow && <div className="chatTabOverflowMenu" role="menu" aria-label="Overflow chat sessions">
+                {overflowTabs.map(tab => <button key={tab.id} type="button" role="menuitem" className="chatTabOverflowItem" onClick={() => selectChatTab(tab).catch(err => setStatus(String(err)))}>
+                  <span>{tab.projectName}</span>
+                  <strong>{tab.title}</strong>
+                  {tab.isStreaming && <i className="chatTabRunningDot" aria-hidden="true" />}
+                </button>)}
+              </div>}
+            </div>}
+            {activeChatTabMenuTab && chatTabMenu && <div className="chatTabContextMenu" role="menu" aria-label="Chat tab actions" style={{ left: chatTabMenu.x, top: chatTabMenu.y }}>
+              <button type="button" role="menuitem" onClick={() => startRenamingChatTab(activeChatTabMenuTab)}>Rename</button>
+              <button type="button" role="menuitem" onClick={() => { setChatTabMenu(null); forkSession(activeChatTabMenuTab.sessionId, activeChatTabMenuTab.projectId).catch(err => setStatus(String(err))) }}>Fork</button>
+              <button type="button" role="menuitem" onClick={() => compactChatTab(activeChatTabMenuTab).catch(err => setStatus(String(err)))}>Compact</button>
+              <button type="button" role="menuitem" onClick={() => exportChatTabContext(activeChatTabMenuTab).catch(err => setStatus(String(err)))}>Export Context</button>
+              <button type="button" role="menuitem" onClick={() => closeChatTab(activeChatTabMenuTab.id)}>Close Tab</button>
+            </div>}
           </div>}
           {workspaceTab === 'goal' ? (
             <section className="goalWorkspace">
