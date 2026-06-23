@@ -7,22 +7,33 @@ afterEach(() => {
   cleanup()
 })
 
+const composerPlaceholder = 'Ask UUAgent to inspect, edit or explain code... Ctrl+Enter to send'
+const testProject = { id: 'proj-1', name: 'Repo', workspace_path: 'C:/repo', temporary: false }
+
+const openRepoChat = async () => {
+  await waitFor(() => expect(screen.getAllByText('Repo').length).toBeGreaterThan(0))
+  fireEvent.click(screen.getByRole('button', { name: /Repo/ }))
+  expect(await screen.findByPlaceholderText(composerPlaceholder)).toBeTruthy()
+}
+
 describe('App', () => {
   it('renders rail navigation and opens agent settings from Settings page', async () => {
     Element.prototype.scrollIntoView = vi.fn()
     globalThis.fetch = vi.fn(async (url: string) => {
-      if (url === '/api/projects') return Response.json({ projects: [] })
-      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent', system_prompt: 'test system', enabled_tools: ['read'] }] })
+      if (url === '/api/projects') return Response.json({ projects: [testProject] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent', system_prompt: 'test system' }] })
+      if (url === '/api/projects/proj-1/open') return Response.json({ config_sources: [] })
+      if (url === '/api/projects/proj-1/sessions') return Response.json({ sessions: [] })
       if (url === '/api/sessions') return Response.json({ sessions: [] })
       if (url === '/api/memory') return Response.json({ memories: [] })
       if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
       return Response.json({})
     }) as any
-    render(<App />)
+    render(<App initialPage="chat" />)
     expect(await screen.findByText('Projects')).toBeTruthy()
     expect(await screen.findByText('Extensions')).toBeTruthy()
-    expect(await screen.findByPlaceholderText('Ask UUAgent to inspect, edit or explain code... Ctrl+Enter to send')).toBeTruthy()
-    expect(screen.getByText('Start a coding session')).toBeTruthy()
+    expect(await screen.findByText('Choose or create a project')).toBeTruthy()
+    expect(screen.queryByPlaceholderText(composerPlaceholder)).toBeNull()
     expect(screen.queryByText('Agent Settings')).toBeNull()
     fireEvent.click(await screen.findByText('Settings'))
     fireEvent.click(await screen.findByRole('button', { name: 'Agents' }))
@@ -37,8 +48,10 @@ describe('App', () => {
     const calls: string[] = []
     globalThis.fetch = vi.fn(async (url: string, init?: RequestInit) => {
       calls.push(`${init?.method || 'GET'} ${url}`)
-      if (url === '/api/projects') return Response.json({ projects: [] })
+      if (url === '/api/projects') return Response.json({ projects: [testProject] })
       if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/projects/proj-1/open') return Response.json({ config_sources: [] })
+      if (url === '/api/projects/proj-1/sessions') return Response.json({ sessions: [] })
       if (url === '/api/sessions') return Response.json({ sessions: [] })
       if (url === '/api/memory') return Response.json({ memories: [] })
       if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
@@ -58,8 +71,9 @@ describe('App', () => {
       return Response.json({})
     }) as any
 
-    render(<App />)
-    const input = await screen.findByPlaceholderText('Ask UUAgent to inspect, edit or explain code... Ctrl+Enter to send')
+    render(<App initialPage="chat" />)
+    await openRepoChat()
+    const input = await screen.findByPlaceholderText(composerPlaceholder)
     fireEvent.change(input, { target: { value: 'run a long task' } })
     fireEvent.click(screen.getByText('Send'))
     fireEvent.click(await screen.findByText('Stop'))
@@ -73,8 +87,10 @@ describe('App', () => {
     const calls: string[] = []
     globalThis.fetch = vi.fn(async (url: string, init?: RequestInit) => {
       calls.push(`${init?.method || 'GET'} ${url}`)
-      if (url === '/api/projects') return Response.json({ projects: [] })
+      if (url === '/api/projects') return Response.json({ projects: [testProject] })
       if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/projects/proj-1/open') return Response.json({ config_sources: [] })
+      if (url === '/api/projects/proj-1/sessions') return Response.json({ sessions: [] })
       if (url === '/api/subagents') return Response.json({ subagents: [] })
       if (url === '/api/skills') return Response.json({ skills: [{ name: 'review', description: 'Review code', enabled: true, scope: 'global' }], diagnostics: [] })
       if (url === '/api/memory') return Response.json({ memories: [] })
@@ -95,8 +111,9 @@ describe('App', () => {
       return Response.json({})
     }) as any
 
-    render(<App />)
-    const input = await screen.findByPlaceholderText('Ask UUAgent to inspect, edit or explain code... Ctrl+Enter to send')
+    render(<App initialPage="chat" />)
+    await openRepoChat()
+    const input = await screen.findByPlaceholderText(composerPlaceholder)
     fireEvent.change(input, { target: { value: 'keep streaming while configuring' } })
     fireEvent.click(screen.getByText('Send'))
     expect(await screen.findByText('partial answer')).toBeTruthy()
@@ -113,14 +130,86 @@ describe('App', () => {
     await waitFor(() => expect(calls).toContain('POST /api/runs/run-overlay/stop'))
   })
 
+  it('keeps Chat-only chrome out of Extensions, Settings, Schedules, and Projects', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const fetchMock: typeof fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/projects') return Response.json({ projects: [{ id: 'project-a', name: 'Project A', workspace_path: 'C:/workspace', temporary: false }] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/subagents') return Response.json({ subagents: [] })
+      if (url === '/api/skills') return Response.json({ skills: [], diagnostics: [] })
+      if (url === '/api/memory' || url.startsWith('/api/memory?')) return Response.json({ memories: [] })
+      if (url === '/api/models/settings') return Response.json({ proxy_url: '', proxy_api_key: '', fallback_tier: 'strong', routing_tiers: {}, model_ids: [] })
+      if (url === '/api/extensions') return Response.json({ extensions: [{ id: 'cliproxyapi', name: 'CLIProxyAPI', built_in: true, installed: true, status: 'running', proxy_url: 'http://127.0.0.1:8317/v1', proxy_api_token: 'sk-local' }] })
+      if (url === '/api/projects/project-a/sessions') return Response.json({ sessions: [{ id: 'session-a', title: 'Active Session', project_id: 'project-a', messages: [{ role: 'user', content: 'hello' }] }] })
+      if (url === '/api/projects/project-a/sessions/session-a/context') return Response.json({ usage: { input_tokens: 1200, output_tokens: 300, total_tokens: 1500 }, summaries: [] })
+      if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
+      return Response.json({})
+    })
+    globalThis.fetch = fetchMock
+
+    render(<App />)
+    await waitFor(() => expect(screen.getAllByText('Project A').length).toBeGreaterThan(0))
+
+    const workspace = document.querySelector('.workspace') as HTMLElement
+    expect(workspace).toBeTruthy()
+    expect(within(workspace).queryByPlaceholderText('Ask UUAgent to inspect, edit or explain code... Ctrl+Enter to send')).toBeNull()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Extensions' }))
+    expect(await within(workspace).findByRole('heading', { name: 'Extensions' })).toBeTruthy()
+    expect(within(workspace).queryByText('Session Tokens')).toBeNull()
+    expect(within(workspace).queryByText('Compact')).toBeNull()
+    expect(within(workspace).queryByPlaceholderText('Ask UUAgent to inspect, edit or explain code... Ctrl+Enter to send')).toBeNull()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Settings' }))
+    expect(await within(workspace).findByRole('heading', { name: 'Settings' })).toBeTruthy()
+    expect(within(workspace).queryByRole('button', { name: 'Chat' })).toBeNull()
+    expect(within(workspace).queryByText('Session Tokens')).toBeNull()
+    expect(within(workspace).queryByText('Compact')).toBeNull()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Schedules' }))
+    expect(await within(workspace).findByRole('heading', { name: 'Schedules' })).toBeTruthy()
+    expect(within(workspace).queryByPlaceholderText('Ask UUAgent to inspect, edit or explain code... Ctrl+Enter to send')).toBeNull()
+  })
+
+  it('uses accessible icon affordances for repeated utility actions', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const fetchMock: typeof fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/projects') return Response.json({ projects: [{ id: 'project-a', name: 'Project A', workspace_path: 'C:/workspace', temporary: false }] })
+      if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/subagents') return Response.json({ subagents: [] })
+      if (url === '/api/skills') return Response.json({ skills: [], diagnostics: [] })
+      if (url === '/api/memory' || url.startsWith('/api/memory?')) return Response.json({ memories: [] })
+      if (url === '/api/extensions') return Response.json({ extensions: [] })
+      if (url === '/api/models/settings') return Response.json({ proxy_url: '', proxy_api_key: '', fallback_tier: 'strong', routing_tiers: {}, model_ids: [] })
+      if (url === '/api/projects/project-a/sessions') return Response.json({ sessions: [{ id: 'session-a', title: 'Active Session', project_id: 'project-a', messages: [] }] })
+      if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
+      return Response.json({})
+    })
+    globalThis.fetch = fetchMock
+
+    render(<App initialPage="chat" />)
+    await waitFor(() => expect(screen.getAllByText('Project A').length).toBeGreaterThan(0))
+    fireEvent.click(screen.getByRole('button', { name: /Project A/ }))
+    expect(await screen.findByRole('button', { name: 'Attach file' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'New session' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Project settings' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Fork session' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Rename session' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Delete session' })).toBeTruthy()
+  })
+
   it('shows approval-required tool results in the chat', async () => {
     Element.prototype.scrollIntoView = vi.fn()
     const encoder = new TextEncoder()
     const calls: Array<{ url: string; init?: RequestInit }> = []
     globalThis.fetch = vi.fn(async (url: string, init?: RequestInit) => {
       calls.push({ url, init })
-      if (url === '/api/projects') return Response.json({ projects: [] })
+      if (url === '/api/projects') return Response.json({ projects: [testProject] })
       if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/projects/proj-1/open') return Response.json({ config_sources: [] })
+      if (url === '/api/projects/proj-1/sessions') return Response.json({ sessions: [] })
       if (url === '/api/sessions') return Response.json({ sessions: [] })
       if (url === '/api/memory') return Response.json({ memories: [] })
       if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
@@ -154,8 +243,9 @@ describe('App', () => {
       return Response.json({})
     }) as any
 
-    render(<App />)
-    const input = await screen.findByPlaceholderText('Ask UUAgent to inspect, edit or explain code... Ctrl+Enter to send')
+    render(<App initialPage="chat" />)
+    await openRepoChat()
+    const input = await screen.findByPlaceholderText(composerPlaceholder)
     fireEvent.change(input, { target: { value: 'read outside file' } })
     fireEvent.click(screen.getByText('Send'))
 
@@ -180,8 +270,10 @@ describe('App', () => {
     Element.prototype.scrollIntoView = vi.fn()
     const encoder = new TextEncoder()
     globalThis.fetch = vi.fn(async (url: string) => {
-      if (url === '/api/projects') return Response.json({ projects: [] })
+      if (url === '/api/projects') return Response.json({ projects: [testProject] })
       if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/projects/proj-1/open') return Response.json({ config_sources: [] })
+      if (url === '/api/projects/proj-1/sessions') return Response.json({ sessions: [] })
       if (url === '/api/sessions') return Response.json({ sessions: [] })
       if (url === '/api/memory') return Response.json({ memories: [] })
       if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
@@ -199,8 +291,9 @@ describe('App', () => {
       return Response.json({})
     }) as any
 
-    render(<App />)
-    const input = await screen.findByPlaceholderText('Ask UUAgent to inspect, edit or explain code... Ctrl+Enter to send')
+    render(<App initialPage="chat" />)
+    await openRepoChat()
+    const input = await screen.findByPlaceholderText(composerPlaceholder)
     fireEvent.change(input, { target: { value: 'show markdown' } })
     fireEvent.click(screen.getByText('Send'))
     expect(await screen.findByText('Thinking')).toBeTruthy()
@@ -215,8 +308,10 @@ describe('App', () => {
     Element.prototype.scrollIntoView = vi.fn()
     const encoder = new TextEncoder()
     globalThis.fetch = vi.fn(async (url: string) => {
-      if (url === '/api/projects') return Response.json({ projects: [] })
+      if (url === '/api/projects') return Response.json({ projects: [testProject] })
       if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/projects/proj-1/open') return Response.json({ config_sources: [] })
+      if (url === '/api/projects/proj-1/sessions') return Response.json({ sessions: [] })
       if (url === '/api/sessions') return Response.json({ sessions: [] })
       if (url === '/api/memory') return Response.json({ memories: [] })
       if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
@@ -234,8 +329,9 @@ describe('App', () => {
       return Response.json({})
     }) as any
 
-    render(<App />)
-    const input = await screen.findByPlaceholderText('Ask UUAgent to inspect, edit or explain code... Ctrl+Enter to send')
+    render(<App initialPage="chat" />)
+    await openRepoChat()
+    const input = await screen.findByPlaceholderText(composerPlaceholder)
     fireEvent.change(input, { target: { value: 'stream split test' } })
     fireEvent.click(screen.getByText('Send'))
     expect(await screen.findByText('split streamed answer')).toBeTruthy()
@@ -265,7 +361,7 @@ describe('App', () => {
       return Response.json({})
     }) as any
 
-    render(<App />)
+    render(<App initialPage="chat" />)
     await waitFor(() => expect(screen.getAllByText('Repo').length).toBeGreaterThan(0))
     fireEvent.click((await screen.findAllByText('Analyze repo'))[0])
     await waitFor(() => expect(screen.getAllByText('Analyze repo').length).toBeGreaterThanOrEqual(2))
@@ -296,7 +392,7 @@ describe('App', () => {
     }) as any
 
     render(<App />)
-    fireEvent.change(await screen.findByDisplayValue('None'), { target: { value: 'proj-1' } })
+    await waitFor(() => expect(screen.getAllByText('Repo').length).toBeGreaterThan(0))
     fireEvent.click(await screen.findByTitle('Project settings'))
     fireEvent.click(await screen.findByText('memory'))
     expect(await screen.findByText('Existing project memory')).toBeTruthy()
@@ -428,8 +524,10 @@ describe('App', () => {
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
       calls.push({ url, init })
-      if (url === '/api/projects') return Response.json({ projects: [] })
+      if (url === '/api/projects') return Response.json({ projects: [testProject] })
       if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/projects/proj-1/open') return Response.json({ config_sources: [] })
+      if (url === '/api/projects/proj-1/sessions') return Response.json({ sessions: [] })
       if (url === '/api/subagents') return Response.json({ subagents: [] })
       if (url === '/api/skills') return Response.json({ skills: [{ name: 'review', description: 'Review code', enabled: true, scope: 'global' }], diagnostics: [] })
       if (url === '/api/memory') return Response.json({ memories: [] })
@@ -441,9 +539,10 @@ describe('App', () => {
       return Response.json({})
     }) as any
 
-    render(<App />)
+    render(<App initialPage="chat" />)
+    await openRepoChat()
     fireEvent.change(await screen.findByLabelText('Skill'), { target: { value: 'review' } })
-    const input = await screen.findByPlaceholderText('Ask UUAgent to inspect, edit or explain code... Ctrl+Enter to send')
+    const input = await screen.findByPlaceholderText(composerPlaceholder)
     fireEvent.change(input, { target: { value: 'inspect code' } })
     fireEvent.click(screen.getByText('Send'))
     await waitFor(() => {
@@ -645,7 +744,7 @@ describe('App', () => {
     })
     globalThis.fetch = fetchMock
 
-    render(<App />)
+    render(<App initialPage="chat" />)
     fireEvent.click(await screen.findByText('Token session'))
 
     expect(await screen.findByText('Session Tokens')).toBeTruthy()
@@ -779,8 +878,10 @@ describe('App', () => {
     Element.prototype.scrollIntoView = vi.fn()
     const fetchMock: typeof fetch = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
-      if (url === '/api/projects') return Response.json({ projects: [] })
+      if (url === '/api/projects') return Response.json({ projects: [testProject] })
       if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent', model: 'gpt-4o' }] })
+      if (url === '/api/projects/proj-1/open') return Response.json({ config_sources: [] })
+      if (url === '/api/projects/proj-1/sessions') return Response.json({ sessions: [] })
       if (url === '/api/subagents') return Response.json({ subagents: [] })
       if (url === '/api/skills') return Response.json({ skills: [], diagnostics: [] })
       if (url === '/api/memory') return Response.json({ memories: [] })
@@ -795,7 +896,8 @@ describe('App', () => {
     })
     globalThis.fetch = fetchMock
 
-    render(<App />)
+    render(<App initialPage="chat" />)
+    await openRepoChat()
     await waitFor(() => expect(screen.getAllByText('gpt-4o-mini').length).toBeGreaterThan(0))
     expect(screen.getAllByText('claude-sonnet-4').length).toBeGreaterThan(0)
   })
@@ -804,8 +906,10 @@ describe('App', () => {
     Element.prototype.scrollIntoView = vi.fn()
     const fetchMock: typeof fetch = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
-      if (url === '/api/projects') return Response.json({ projects: [] })
+      if (url === '/api/projects') return Response.json({ projects: [testProject] })
       if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/projects/proj-1/open') return Response.json({ config_sources: [] })
+      if (url === '/api/projects/proj-1/sessions') return Response.json({ sessions: [] })
       if (url === '/api/sessions') return Response.json({ sessions: [] })
       if (url === '/api/memory') return Response.json({ memories: [] })
       if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
@@ -813,7 +917,8 @@ describe('App', () => {
     })
     globalThis.fetch = fetchMock
 
-    render(<App />)
+    render(<App initialPage="chat" />)
+    await openRepoChat()
     const fileInput = await screen.findByLabelText('Attach image or file')
     const file = new File(['test'], 'test-image.png', { type: 'image/png' })
     fireEvent.change(fileInput, { target: { files: [file] } })
@@ -827,8 +932,10 @@ describe('App', () => {
     Element.prototype.scrollIntoView = vi.fn()
     const fetchMock: typeof fetch = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
-      if (url === '/api/projects') return Response.json({ projects: [] })
+      if (url === '/api/projects') return Response.json({ projects: [testProject] })
       if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/projects/proj-1/open') return Response.json({ config_sources: [] })
+      if (url === '/api/projects/proj-1/sessions') return Response.json({ sessions: [] })
       if (url === '/api/sessions') return Response.json({ sessions: [] })
       if (url === '/api/memory') return Response.json({ memories: [] })
       if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
@@ -836,7 +943,8 @@ describe('App', () => {
     })
     globalThis.fetch = fetchMock
 
-    render(<App />)
+    render(<App initialPage="chat" />)
+    await openRepoChat()
     const fileInput = await screen.findByLabelText('Attach image or file')
     const file = new File(['test'], 'test-image.png', { type: 'image/png' })
     fireEvent.change(fileInput, { target: { files: [file] } })
@@ -854,8 +962,10 @@ describe('App', () => {
     const fetchMock: typeof fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
       calls.push({ url, init })
-      if (url === '/api/projects') return Response.json({ projects: [] })
+      if (url === '/api/projects') return Response.json({ projects: [testProject] })
       if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/projects/proj-1/open') return Response.json({ config_sources: [] })
+      if (url === '/api/projects/proj-1/sessions') return Response.json({ sessions: [] })
       if (url === '/api/sessions') return Response.json({ sessions: [] })
       if (url === '/api/memory') return Response.json({ memories: [] })
       if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
@@ -872,13 +982,14 @@ describe('App', () => {
     })
     globalThis.fetch = fetchMock
 
-    render(<App />)
+    render(<App initialPage="chat" />)
+    await openRepoChat()
     const fileInput = await screen.findByLabelText('Attach image or file')
     const file = new File(['test'], 'test-image.png', { type: 'image/png' })
     fireEvent.change(fileInput, { target: { files: [file] } })
     expect(await screen.findByText('test-image.png')).toBeTruthy()
 
-    const input = await screen.findByPlaceholderText('Ask UUAgent to inspect, edit or explain code... Ctrl+Enter to send')
+    const input = await screen.findByPlaceholderText(composerPlaceholder)
     fireEvent.change(input, { target: { value: 'What is in this image?' } })
     fireEvent.click(screen.getByText('Send'))
 
@@ -898,8 +1009,10 @@ describe('App', () => {
     Element.prototype.scrollIntoView = vi.fn()
     const fetchMock: typeof fetch = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
-      if (url === '/api/projects') return Response.json({ projects: [] })
+      if (url === '/api/projects') return Response.json({ projects: [testProject] })
       if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
+      if (url === '/api/projects/proj-1/open') return Response.json({ config_sources: [] })
+      if (url === '/api/projects/proj-1/sessions') return Response.json({ sessions: [] })
       if (url === '/api/sessions') return Response.json({ sessions: [] })
       if (url === '/api/memory') return Response.json({ memories: [] })
       if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
@@ -907,8 +1020,9 @@ describe('App', () => {
     })
     globalThis.fetch = fetchMock
 
-    render(<App />)
-    const textarea = await screen.findByPlaceholderText('Ask UUAgent to inspect, edit or explain code... Ctrl+Enter to send')
+    render(<App initialPage="chat" />)
+    await openRepoChat()
+    const textarea = await screen.findByPlaceholderText(composerPlaceholder)
     const file = new File(['test'], 'pasted-image.png', { type: 'image/png' })
     const clipboardData = { files: [file], getData: () => '', items: [{ kind: 'file', type: 'image/png', getAsFile: () => file }] }
     fireEvent.paste(textarea, { clipboardData })
@@ -944,7 +1058,7 @@ describe('App', () => {
     })
     globalThis.fetch = fetchMock
 
-    render(<App />)
+    render(<App initialPage="chat" />)
     fireEvent.click(await screen.findByText('Session to compact'))
     await waitFor(() => expect(calls.some(c => c.url === '/api/projects/proj-1/sessions/s1')).toBe(true))
 
@@ -1141,6 +1255,8 @@ describe('App', () => {
       if (url === '/api/projects') return Response.json({ projects: [{ id: 'proj-1', name: 'Test Project', workspace_path: 'C:/test', temporary: false }] })
       if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
       if (url === '/api/sessions') return Response.json({ sessions: [] })
+      if (url === '/api/projects/proj-1/open') return Response.json({ config_sources: [] })
+      if (url === '/api/projects/proj-1/sessions') return Response.json({ sessions: [] })
       if (url === '/api/memory') return Response.json({ memories: [] })
       if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
       if (url === '/api/projects/proj-1/goals' && init?.method === 'POST') {
@@ -1203,16 +1319,10 @@ describe('App', () => {
 
     render(<App initialWorkspaceTab="chat" />)
     await waitFor(() => expect(screen.getAllByText('Test Project').length).toBeGreaterThan(0))
+    fireEvent.click(screen.getByRole('button', { name: /Test Project/ }))
 
-    const projectSelect = screen.queryByDisplayValue('None')
-    if (projectSelect) {
-      fireEvent.change(projectSelect, { target: { value: 'proj-1' } })
-    }
-
-    const goalModeButton = screen.queryByText('Goal mode')
-    if (goalModeButton) {
-      fireEvent.click(goalModeButton)
-    }
+    const goalModeButton = await screen.findByText('Goal mode')
+    fireEvent.click(goalModeButton)
 
     const goalInput = await screen.findByPlaceholderText('Enter your goal...')
     fireEvent.change(goalInput, { target: { value: 'Implement Goal Mode' } })
@@ -1281,16 +1391,10 @@ describe('App', () => {
 
     render(<App initialWorkspaceTab="chat" />)
     await waitFor(() => expect(screen.getAllByText('Test Project').length).toBeGreaterThan(0))
+    fireEvent.click(screen.getByRole('button', { name: /Test Project/ }))
 
-    const projectSelect2 = screen.queryByDisplayValue('None')
-    if (projectSelect2) {
-      fireEvent.change(projectSelect2, { target: { value: 'proj-1' } })
-    }
-
-    const goalModeButton2 = screen.queryByText('Goal mode')
-    if (goalModeButton2) {
-      fireEvent.click(goalModeButton2)
-    }
+    const goalModeButton2 = await screen.findByText('Goal mode')
+    fireEvent.click(goalModeButton2)
 
     fireEvent.click(await screen.findByText('Implement feature'))
 
@@ -1340,16 +1444,10 @@ describe('App', () => {
 
     render(<App initialWorkspaceTab="chat" />)
     await waitFor(() => expect(screen.getAllByText('Test Project').length).toBeGreaterThan(0))
+    fireEvent.click(screen.getByRole('button', { name: /Test Project/ }))
 
-    const projectSelect3 = screen.queryByDisplayValue('None')
-    if (projectSelect3) {
-      fireEvent.change(projectSelect3, { target: { value: 'proj-1' } })
-    }
-
-    const goalModeButton3 = screen.queryByText('Goal mode')
-    if (goalModeButton3) {
-      fireEvent.click(goalModeButton3)
-    }
+    const goalModeButton3 = await screen.findByText('Goal mode')
+    fireEvent.click(goalModeButton3)
 
     fireEvent.click(await screen.findByText('Long running task'))
 
@@ -1545,9 +1643,11 @@ describe('App', () => {
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
       calls.push({ url, init })
-      if (url === '/api/projects') return Response.json({ projects: [] })
+      if (url === '/api/projects') return Response.json({ projects: [{ id: 'project-a', name: 'Project A', workspace_path: 'C:/workspace', temporary: false }] })
       if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
       if (url === '/api/sessions') return Response.json({ sessions: [] })
+      if (url === '/api/projects/project-a/open') return Response.json({ config_sources: [] })
+      if (url === '/api/projects/project-a/sessions') return Response.json({ sessions: [] })
       if (url === '/api/memory') return Response.json({ memories: [] })
       if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
       if (url === '/api/models/settings') return Response.json({ proxy_url: 'http://localhost:18463/v1', fallback_tier: 'strong', routing_tiers: {}, model_ids: ['gpt-4o', 'claude-sonnet-4'] })
@@ -1563,7 +1663,9 @@ describe('App', () => {
       return Response.json({})
     }) as any
 
-    render(<App />)
+    render(<App initialPage="chat" />)
+    await waitFor(() => expect(screen.getAllByText('Project A').length).toBeGreaterThan(0))
+    fireEvent.click(screen.getByRole('button', { name: /Project A/ }))
     await waitFor(() => expect(screen.getAllByText('gpt-4o').length).toBeGreaterThan(0))
 
     const modelSelect = screen.getAllByRole('combobox').find(el => el.getAttribute('aria-label')?.toLowerCase().includes('model'))
@@ -1590,9 +1692,11 @@ describe('App', () => {
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
       calls.push({ url, init })
-      if (url === '/api/projects') return Response.json({ projects: [] })
+      if (url === '/api/projects') return Response.json({ projects: [{ id: 'project-a', name: 'Project A', workspace_path: 'C:/workspace', temporary: false }] })
       if (url === '/api/agents') return Response.json({ agents: [{ id: 'default', name: 'Default Agent' }] })
       if (url === '/api/sessions') return Response.json({ sessions: [] })
+      if (url === '/api/projects/project-a/open') return Response.json({ config_sources: [] })
+      if (url === '/api/projects/project-a/sessions') return Response.json({ sessions: [] })
       if (url === '/api/memory') return Response.json({ memories: [] })
       if (url.startsWith('/api/sessions/')) return Response.json({ summaries: [] })
       if (url === '/api/models/settings') return Response.json({ proxy_url: 'http://localhost:18463/v1', fallback_tier: 'strong', routing_tiers: {}, model_ids: ['gpt-4o', 'claude-sonnet-4'] })
@@ -1608,7 +1712,9 @@ describe('App', () => {
       return Response.json({})
     }) as any
 
-    render(<App />)
+    render(<App initialPage="chat" />)
+    await waitFor(() => expect(screen.getAllByText('Project A').length).toBeGreaterThan(0))
+    fireEvent.click(screen.getByRole('button', { name: /Project A/ }))
     await waitFor(() => expect(screen.getAllByText('Auto').length).toBeGreaterThan(0))
 
     const modelSelect = screen.getAllByRole('combobox').find(el => el.getAttribute('aria-label')?.toLowerCase().includes('model'))

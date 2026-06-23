@@ -5,7 +5,7 @@ import { SubagentsSettings } from './components/SubagentsSettings'
 import { ExtensionsPanel } from './components/ExtensionsPanel'
 import { ModelsSettingsPanel } from './components/ModelsSettingsPanel'
 import type { ExtensionStatus, ModelsSettings, ModelsTestResult, RoutePreviewResult } from './types'
-import { Folder, MessageSquare, Puzzle, Clock, Settings } from 'lucide-react'
+import { ChevronDown, ChevronRight, Clock, Folder, GitFork, MessageSquare, Paperclip, Pencil, Plus, Puzzle, Settings, Trash2 } from 'lucide-react'
 
 interface ToolCallRecord { id?: string; function?: { name?: string; arguments?: string }; name?: string; args?: string }
 interface ChatEvent { type: string; run_id?: string; model?: string; tier?: string; text?: string; tool_name?: string; tool_id?: string; args?: string }
@@ -210,11 +210,12 @@ const toolEventFromMessage = (message: Message, toolArgs: Record<string, string>
 }
 
 interface AppProps {
+  initialPage?: MainPage
   initialWorkspaceTab?: 'chat' | 'goal'
 }
 
-function App({ initialWorkspaceTab }: AppProps = {}) {
-  const [mainPage, setMainPage] = useState<MainPage>('projects')
+function App({ initialPage, initialWorkspaceTab }: AppProps = {}) {
+  const [mainPage, setMainPage] = useState<MainPage>(initialPage ?? (initialWorkspaceTab ? 'chat' : 'projects'))
   const [workspaceMode, setWorkspaceMode] = useState<'chat' | 'settings'>('chat')
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
@@ -306,6 +307,26 @@ function App({ initialWorkspaceTab }: AppProps = {}) {
   const usageOutputTokens = sessionContext.usage?.output_tokens || sessionContext.usage?.estimated_output_tokens
   const usageTotalTokens = sessionContext.usage?.total_tokens
   const hasSessionUsage = !!(usageInputTokens || usageOutputTokens || usageTotalTokens)
+  const isChatPage = mainPage === 'chat'
+  const workspaceTitle = mainPage === 'chat'
+    ? (activeSession?.title || sessionId)
+    : navItems.find(n => n.id === mainPage)?.label || 'Workspace'
+  const workspaceSubtitle = mainPage === 'chat'
+    ? `${activeProject?.workspace_path || 'Local workspace'} · ${activeAgent?.name || agentId}`
+    : mainPage === 'projects'
+      ? 'Browse projects and session history without opening chat controls.'
+      : mainPage === 'extensions'
+        ? 'Manage local extensions, sidecars, panels and generated credentials.'
+        : mainPage === 'schedules'
+          ? 'Plan recurring scans, tests, reports and knowledge refresh jobs.'
+          : `${settingsTab} configuration`
+  const sidebarSubtitle = mainPage === 'projects' || mainPage === 'chat'
+    ? (activeProject?.name || 'No project selected')
+    : mainPage === 'extensions'
+      ? 'Plugins, sidecars and local runtime status'
+      : mainPage === 'settings'
+        ? `${settingsTab} settings`
+        : 'Automation jobs and recurring tasks'
 
   const refresh = async () => {
     const [p, a, m, sa, sk, ms, ex] = await Promise.all([
@@ -1025,17 +1046,17 @@ function App({ initialWorkspaceTab }: AppProps = {}) {
       const expanded = p.id === projectId || list.length > 0
       return <section key={p.id} className="projectDrawer">
         <div className={p.id === projectId ? 'projectDrawerHead active' : 'projectDrawerHead'}>
-          <button className="projectToggle" onClick={() => openProject(p.id).catch(err=>setStatus(String(err)))}><span>{expanded ? '▾' : '▸'}</span><strong>{p.name}</strong><small>{p.workspace_path}</small></button>
-          <button className="miniButton" title="New session" onClick={() => createSession(p.id).catch(err=>setStatus(String(err)))}>＋</button>
-          <button className="miniButton" title="Project settings" onClick={() => { setProjectId(p.id); setSettingsProjectId(p.id); setProjectSettingsTab('memory') }}>⚙</button>
+          <button className="projectToggle" onClick={() => openProject(p.id).catch(err=>setStatus(String(err)))}><span>{expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</span><strong>{p.name}</strong><small>{p.workspace_path}</small></button>
+          <button className="miniButton" aria-label="New session" title="New session" onClick={() => createSession(p.id).catch(err=>setStatus(String(err)))}><Plus size={15} /></button>
+          <button className="miniButton" aria-label="Project settings" title="Project settings" onClick={() => { setProjectId(p.id); setSettingsProjectId(p.id); setProjectSettingsTab('memory') }}><Settings size={15} /></button>
         </div>
         {expanded && <div className="sessionList">
           {list.length === 0 && <div className="emptyMini">No sessions</div>}
           {list.map(s => <div key={s.id} className={s.id === sessionId ? 'sessionRow active' : 'sessionRow'}>
             <button className="sessionTitle" onClick={() => loadSession(s.id, p.id).catch(err=>setStatus(String(err)))}><span>{s.title || s.id}</span><small>{s.messages?.length || 0} messages</small></button>
-            <button className="miniButton" title="Fork" onClick={() => forkSession(s.id, p.id).catch(err=>setStatus(String(err)))}>⎇</button>
-            <button className="miniButton" title="Rename" onClick={() => renameSession(s.id, p.id).catch(err=>setStatus(String(err)))}>✎</button>
-            <button className="miniButton" title="Delete" onClick={() => deleteSession(s.id, p.id).catch(err=>setStatus(String(err)))}>×</button>
+            <button className="miniButton" aria-label="Fork session" title="Fork session" onClick={() => forkSession(s.id, p.id).catch(err=>setStatus(String(err)))}><GitFork size={14} /></button>
+            <button className="miniButton" aria-label="Rename session" title="Rename session" onClick={() => renameSession(s.id, p.id).catch(err=>setStatus(String(err)))}><Pencil size={14} /></button>
+            <button className="miniButton dangerIcon" aria-label="Delete session" title="Delete session" onClick={() => deleteSession(s.id, p.id).catch(err=>setStatus(String(err)))}><Trash2 size={14} /></button>
           </div>)}
         </div>}
       </section>
@@ -1059,7 +1080,7 @@ function App({ initialWorkspaceTab }: AppProps = {}) {
       )
     }
     const text = 'Create recurring project scans, tests, reports and knowledge refresh jobs.'
-    return <div className="sidePlaceholder"><h3>{navItems.find(n => n.id === mainPage)?.label}</h3><p>{text}</p><button className="softButton">Coming soon</button></div>
+    return <div className="sidePlaceholder"><h3>{navItems.find(n => n.id === mainPage)?.label}</h3><p>{text}</p><span className="statusBadge">Coming soon</span></div>
   }
 
   return <div className="appDesktop">
@@ -1074,7 +1095,7 @@ function App({ initialWorkspaceTab }: AppProps = {}) {
       <aside className="contextSidebar">
         <div className="sidebarHeader">
           <h2>{mainPage === 'projects' ? 'Project' : navItems.find(n => n.id === mainPage)?.label}</h2>
-          <p>{activeProject?.name || 'No project selected'}</p>
+          <p>{sidebarSubtitle}</p>
         </div>
         {mainPage === 'projects' && <>
           <div className="projectPicker">
@@ -1090,17 +1111,16 @@ function App({ initialWorkspaceTab }: AppProps = {}) {
 
       <main className="workspace">
         <header className="workspaceHeader">
-          <div><h1>{workspaceMode === 'settings' ? 'Settings' : (activeSession?.title || sessionId)}</h1><p>{activeProject?.workspace_path || 'Local workspace'} · {activeAgent?.name || agentId}</p></div>
+          <div><h1>{workspaceTitle}</h1><p>{workspaceSubtitle}</p></div>
           <div className="workspaceActions">
-            {workspaceMode !== 'settings' && hasSessionUsage && <div className="routePill"><strong>Session Tokens</strong><span>Input {formatTokens(usageInputTokens)}</span><span>Output {formatTokens(usageOutputTokens)}</span><span>Total {formatTokens(usageTotalTokens)}</span></div>}
-            {workspaceMode !== 'settings' && projectId && sessionId && <button className="softButton" onClick={compactSession}>Compact</button>}
-            {workspaceMode === 'settings' && <button className="softButton" onClick={()=>setWorkspaceMode('chat')}>Chat</button>}
-            {workspaceMode === 'settings' && isStreaming && <button className="sendButton" onClick={stopRun}>Stop</button>}
-            {routeInfo && <div className="routePill">{routeInfo.model}<span>{routeInfo.tier}</span></div>}
+            {isChatPage && hasSessionUsage && <div className="routePill"><strong>Session Tokens</strong><span>Input {formatTokens(usageInputTokens)}</span><span>Output {formatTokens(usageOutputTokens)}</span><span>Total {formatTokens(usageTotalTokens)}</span></div>}
+            {isChatPage && projectId && sessionId && <button className="softButton" onClick={compactSession}>Compact</button>}
+            {mainPage === 'settings' && isStreaming && <button className="sendButton" onClick={stopRun}>Stop</button>}
+            {isChatPage && routeInfo && <div className="routePill">{routeInfo.model}<span>{routeInfo.tier}</span></div>}
           </div>
         </header>
 
-        {workspaceMode === 'settings' ? <section className="settingsWorkspace">{renderSettingsBody()}</section> : mainPage === 'extensions' ? (
+        {mainPage === 'settings' ? <section className="settingsWorkspace">{renderSettingsBody()}</section> : mainPage === 'extensions' ? (
           <section className="extensionsWorkspace">
             <ExtensionsPanel
               extensions={extensions}
@@ -1113,9 +1133,17 @@ function App({ initialWorkspaceTab }: AppProps = {}) {
               onUseForModels={useExtensionForModels}
             />
           </section>
+        ) : mainPage === 'schedules' ? (
+          <section className="messagesPane pageWorkspace">
+            <div className="emptyState pageEmptyState"><Clock size={42} /><h2>Schedules are coming soon</h2><p>Create recurring project scans, tests, reports and knowledge refresh jobs from one place.</p><span className="statusBadge">Coming soon</span></div>
+          </section>
+        ) : mainPage === 'projects' ? (
+          <section className="messagesPane pageWorkspace">
+            <div className="emptyState pageEmptyState"><Folder size={42} /><h2>Project overview</h2><p>Select a project or session from the sidebar. Chat controls stay in the Chat workspace.</p><button className="primaryButton" onClick={() => setMainPage('chat')}>Open Chat</button></div>
+          </section>
         ) : mainPage === 'chat' && !projectId && messages.length === 0 && !isStreaming ? (
           <section className="messagesPane">
-            <div className="emptyState chatEmptyState"><div>Chat</div><h2>Choose or create a project</h2><p>Select a project from Projects before starting Chat.</p><button className="primaryButton" onClick={() => setMainPage('projects')}>Open Projects</button></div>
+            <div className="emptyState chatEmptyState"><MessageSquare size={42} /><h2>Choose or create a project</h2><p>Select a project from Projects before starting Chat.</p><button className="primaryButton" onClick={() => setMainPage('projects')}>Open Projects</button></div>
           </section>
         ) : <>
           {workspaceTab === 'goal' ? (
@@ -1222,7 +1250,7 @@ function App({ initialWorkspaceTab }: AppProps = {}) {
                 </div>}
                 <div className="composerBox">
                   <textarea value={input} onChange={e=>setInput(e.target.value)} onPaste={onComposerPaste} onKeyDown={e=>{ if(e.key==='Enter' && (e.ctrlKey || e.metaKey)){ e.preventDefault(); sendMessage() } }} placeholder="Ask UUAgent to inspect, edit or explain code... Ctrl+Enter to send" />
-                  <button className="attachButton" onClick={onAttachClick} title="Attach image or file">＋</button>
+                  <button className="attachButton" aria-label="Attach file" onClick={onAttachClick} title="Attach file"><Paperclip size={18} /></button>
                   {isStreaming ? <button className="sendButton" onClick={stopRun}>Stop</button> : <button className="sendButton" onClick={sendMessage} disabled={!input.trim() && attachments.length === 0}>Send</button>}
                   <input ref={fileInputRef} aria-label="Attach image or file" type="file" multiple accept="image/*,.txt,.md,.json,.yaml,.yml,.go,.ts,.tsx" hidden onChange={e=>{ onFilesSelected(e.target.files); e.currentTarget.value = '' }} />
                 </div>

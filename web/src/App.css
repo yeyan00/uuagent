@@ -91,6 +91,9 @@ button:hover:not(:disabled) { filter: brightness(.985); transform: translateY(-1
 .sessionTitle span { font-weight: 760; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sessionTitle small, .emptyMini { color: #62738f; font-size: 11px; }
 .miniButton { width: 28px; height: 28px; border: 0; border-radius: 9px; padding: 0; display: grid; place-items: center; background: #edf2fb; color: #31415d; }
+.miniButton svg, .attachButton svg, .projectToggle svg { display: block; }
+.miniButton.dangerIcon { color: #b42318; background: #fff1f0; }
+.statusBadge { width: fit-content; border-radius: 999px; padding: 5px 9px; background: #eef4ff; color: #3157d5; font-size: 12px; font-weight: 850; }
 .settingsPanel { display: grid; gap: 10px; padding-top: 12px; }
 .settingsSideMenu { display: grid; gap: 8px; }
 .settingsWorkspacePanel { max-width: 1120px; width: 100%; margin: 0 auto; }
