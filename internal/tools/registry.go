@@ -96,6 +96,10 @@ func (r *Registry) DefinitionsFor(allowed map[string]bool) []map[string]any {
 			"function": map[string]any{
 				"name":        name,
 				"description": t.Description,
+				"parameters": map[string]any{
+					"type":       "object",
+					"properties": map[string]any{},
+				},
 			},
 		})
 	}

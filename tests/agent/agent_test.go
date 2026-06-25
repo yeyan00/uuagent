@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -12,21 +13,51 @@ import (
 	"github.com/yeyan00/uuagent/internal/config"
 )
 
-func TestConfigFromModelFileDoesNotExposeAPIKey(t *testing.T) {
-	cfg, err := agent.ConfigFromModelFile("../models.txt")
-	if err != nil {
-		t.Fatalf("ConfigFromModelFile: %v", err)
-	}
+func TestEnvModelConfigDoesNotExposeAPIKey(t *testing.T) {
+	env := loadTestEnv(t, "../.env")
+	t.Setenv("UUAGENT_PROXY_URL", env["UUAGENT_PROXY_URL"])
+	t.Setenv("UUAGENT_MODEL", env["UUAGENT_MODEL"])
+	t.Setenv("UUAGENT_API_KEY", env["UUAGENT_API_KEY"])
+
+	cfg := config.Default()
+	config.ApplyEnv(cfg)
+
 	if cfg.Agent.ProxyURL == "" {
-		t.Fatalf("expected proxy url from model file")
+		t.Fatalf("expected proxy url from test env")
 	}
-	if got := cfg.Agent.Routing.Tiers["strong"][0]; got == "" {
-		t.Fatalf("expected model from model file")
+	if got := cfg.Agent.Routing.Tiers[cfg.Agent.Routing.Fallback][0]; got != env["UUAGENT_MODEL"] {
+		t.Fatalf("expected model from test env, got %q", got)
 	}
 	data, _ := json.Marshal(cfg)
-	if strings.Contains(string(data), "apiKey") || strings.Contains(string(data), "api-key") {
+	if strings.Contains(string(data), "apiKey") || strings.Contains(string(data), "api-key") || strings.Contains(string(data), env["UUAGENT_API_KEY"]) {
 		t.Fatalf("api key field leaked into config: %s", string(data))
 	}
+}
+
+func loadTestEnv(t *testing.T, path string) map[string]string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read test env: %v", err)
+	}
+	values := map[string]string{}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		values[strings.TrimSpace(key)] = strings.TrimSpace(value)
+	}
+	for _, key := range []string{"UUAGENT_PROXY_URL", "UUAGENT_MODEL", "UUAGENT_API_KEY"} {
+		if values[key] == "" {
+			t.Fatalf("test env missing %s", key)
+		}
+	}
+	return values
 }
 
 func TestRunOpenAICompatible(t *testing.T) {

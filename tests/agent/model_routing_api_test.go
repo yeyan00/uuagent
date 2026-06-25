@@ -91,6 +91,62 @@ func TestChatRequestHonorsModelOverride_whenConcreteModelProvided(t *testing.T) 
 	}
 }
 
+func TestChatRequestSendsParametersSchemaForEveryTool(t *testing.T) {
+	// Given
+	t.Setenv("UUAGENT_HOME", filepath.Join(t.TempDir(), "home"))
+	var seenTools []struct {
+		Function struct {
+			Name       string         `json:"name"`
+			Parameters map[string]any `json:"parameters"`
+		} `json:"function"`
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Tools []struct {
+				Function struct {
+					Name       string         `json:"name"`
+					Parameters map[string]any `json:"parameters"`
+				} `json:"function"`
+			} `json:"tools"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		seenTools = body.Tools
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer upstream.Close()
+	cfg := config.Default()
+	cfg.Agent.ProxyURL = upstream.URL + "/v1"
+	r := newModelsSettingsRouter(cfg)
+
+	// When
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(`{"prompt":"format this","session_id":"tool-schema-session"}`))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	// Then
+	if w.Code != http.StatusOK {
+		t.Fatalf("chat status=%d body=%s", w.Code, w.Body.String())
+	}
+	if len(seenTools) == 0 {
+		t.Fatalf("expected tools to be sent")
+	}
+	for _, tool := range seenTools {
+		if tool.Function.Parameters == nil {
+			t.Fatalf("tool %q missing function.parameters object schema", tool.Function.Name)
+		}
+		if got := tool.Function.Parameters["type"]; got != "object" {
+			t.Fatalf("tool %q parameters.type = %#v, want object", tool.Function.Name, got)
+		}
+		if _, ok := tool.Function.Parameters["properties"].(map[string]any); !ok {
+			t.Fatalf("tool %q missing parameters.properties object", tool.Function.Name)
+		}
+	}
+}
+
 func TestChatRequestUsesConfiguredProxyAPIKey_whenCallingLLM(t *testing.T) {
 	// Given
 	t.Setenv("UUAGENT_HOME", filepath.Join(t.TempDir(), "home"))

@@ -22,11 +22,12 @@ type Event struct {
 // Message OpenAI-compatible chat message. Content may be a plain string or a
 // multimodal []ContentPart array for vision-capable models.
 type Message struct {
-	Role       string     `json:"role"`
-	Content    any        `json:"content,omitempty"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
-	ToolName   string     `json:"tool_name,omitempty"`
+	Role       string         `json:"role"`
+	Content    any            `json:"content,omitempty"`
+	ToolCalls  []ToolCall     `json:"tool_calls,omitempty"`
+	ToolCallID string         `json:"tool_call_id,omitempty"`
+	ToolName   string         `json:"tool_name,omitempty"`
+	Metadata   map[string]any `json:"metadata,omitempty"`
 }
 
 // ContentPart is an OpenAI-compatible multimodal content part.

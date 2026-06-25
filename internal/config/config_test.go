@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -29,6 +30,66 @@ func TestEnsureUserLayoutWritesFullStarterConfig(t *testing.T) {
 	}
 	if len(cfg.Agents) == 0 || cfg.Agents[0].ID != "default" {
 		t.Fatalf("starter config missing default agent: %+v", cfg.Agents)
+	}
+}
+
+func TestEnsureUserLayoutInstallsPackagedCLIProxyAPIAssets(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("UUAGENT_HOME", filepath.Join(root, "home"))
+	packaged := filepath.Join(root, "package", "plugins", "cliproxyapi")
+	if err := os.MkdirAll(packaged, 0755); err != nil {
+		t.Fatal(err)
+	}
+	binaryName := "cli-proxy-api"
+	if runtime.GOOS == "windows" {
+		binaryName += ".exe"
+	}
+	if err := os.WriteFile(filepath.Join(packaged, binaryName), []byte("binary"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(packaged, "management.html"), []byte("<html>panel</html>"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("UUAGENT_PACKAGED_PLUGIN_ROOT", filepath.Join(root, "package", "plugins"))
+
+	if _, err := EnsureUserLayout(); err != nil {
+		t.Fatalf("EnsureUserLayout: %v", err)
+	}
+
+	installed := filepath.Join(UserDir(), "plugins", "cliproxyapi")
+	if data, err := os.ReadFile(filepath.Join(installed, binaryName)); err != nil || string(data) != "binary" {
+		t.Fatalf("expected packaged binary installed, data=%q err=%v", data, err)
+	}
+	if data, err := os.ReadFile(filepath.Join(installed, "management.html")); err != nil || string(data) != "<html>panel</html>" {
+		t.Fatalf("expected packaged panel installed, data=%q err=%v", data, err)
+	}
+}
+
+func TestEnsureUserLayoutInstallsEmbeddedCLIProxyAPIAssets(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("UUAGENT_HOME", filepath.Join(root, "home"))
+	t.Setenv("UUAGENT_PACKAGED_PLUGIN_ROOT", filepath.Join(root, "missing-package", "plugins"))
+	binaryName := "cli-proxy-api"
+	if runtime.GOOS == "windows" {
+		binaryName += ".exe"
+	}
+	if _, err := embeddedPluginFS.ReadFile("embedded_plugins/cliproxyapi/" + binaryName); err != nil {
+		t.Skip("embedded CLIProxyAPI binary is supplied by scripts/package-windows.ps1")
+	}
+	if _, err := embeddedPluginFS.ReadFile("embedded_plugins/cliproxyapi/management.html"); err != nil {
+		t.Skip("embedded CLIProxyAPI panel is supplied by scripts/package-windows.ps1")
+	}
+
+	if _, err := EnsureUserLayout(); err != nil {
+		t.Fatalf("EnsureUserLayout: %v", err)
+	}
+
+	installed := filepath.Join(UserDir(), "plugins", "cliproxyapi")
+	if info, err := os.Stat(filepath.Join(installed, binaryName)); err != nil || info.IsDir() || info.Size() == 0 {
+		t.Fatalf("expected embedded binary installed, info=%+v err=%v", info, err)
+	}
+	if info, err := os.Stat(filepath.Join(installed, "management.html")); err != nil || info.IsDir() || info.Size() == 0 {
+		t.Fatalf("expected embedded management panel installed, info=%+v err=%v", info, err)
 	}
 }
 
@@ -64,6 +125,22 @@ func TestLoadAutoLayersUserCwdExplicitAndEnv(t *testing.T) {
 	}
 	if got := cfg.Agent.Routing.Tiers[cfg.Agent.Routing.Fallback][0]; got != "env-model" {
 		t.Fatalf("expected env model override, got %s", got)
+	}
+}
+
+func TestDefaultConfigIncludesHookAndAutoCompactDefaults(t *testing.T) {
+	cfg := Default()
+	if cfg.Hooks.TimeoutMS != 5000 {
+		t.Fatalf("expected default hook timeout 5000, got %d", cfg.Hooks.TimeoutMS)
+	}
+	if cfg.Hooks.FailPolicy != "warn" {
+		t.Fatalf("expected default hook fail policy warn, got %q", cfg.Hooks.FailPolicy)
+	}
+	if cfg.Agent.Context.CompactReservedTokens != 10000 {
+		t.Fatalf("expected compact reserved tokens 10000, got %d", cfg.Agent.Context.CompactReservedTokens)
+	}
+	if !cfg.Agent.Context.CompactAutoContinue {
+		t.Fatalf("expected compact auto continue enabled")
 	}
 }
 

@@ -25,10 +25,12 @@ func Default() *Config {
 				MaxCharsPerEntry: 2000,
 			},
 			Context: ContextConfig{
-				MaxTokens:         32000,
-				CompressThreshold: 0.75,
-				KeepLastMessages:  12,
-				AutoCompress:      true,
+				MaxTokens:             32000,
+				CompressThreshold:     0.75,
+				KeepLastMessages:      12,
+				AutoCompress:          true,
+				CompactReservedTokens: 10000,
+				CompactAutoContinue:   true,
 			},
 			Subagent: SubagentConfig{
 				MaxConcurrent: 3,
@@ -48,6 +50,11 @@ func Default() *Config {
 			MaxTurns:    0,
 		}},
 		Goal: GoalConfig{MaxTurns: 20},
+		Hooks: HookConfig{
+			TimeoutMS:  5000,
+			FailPolicy: "warn",
+			Events:     map[string][]HookCommand{},
+		},
 		Skills: []SkillConfig{{
 			Name:        "mock-planner",
 			Description: "Built-in simulated planning skill",

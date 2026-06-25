@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"syscall"
@@ -68,8 +69,7 @@ func main() {
 	// CLIProxyAPI management panel and model proxy.
 	// TODO: embed CLIProxyAPI SDK and register /v1/* plus /v0/management/* routes.
 
-	// Serve the Web UI from web/dist during development and tests. Release builds should run npm build first.
-	r.StaticFS("/ui", http.Dir("web/dist"))
+	r.StaticFS("/ui", http.Dir(defaultWebUIDir()))
 	r.GET("/", func(c *gin.Context) {
 		c.Redirect(http.StatusMovedPermanently, "/ui/")
 	})
@@ -128,6 +128,33 @@ func openBrowser(url string) {
 		cmd = exec.Command("xdg-open", url)
 	}
 	_ = cmd.Start()
+}
+
+func defaultWebUIDir() string {
+	cwd, _ := os.Getwd()
+	exePath, _ := os.Executable()
+	return resolveWebUIDir(cwd, exePath, func(path string) bool {
+		info, err := os.Stat(filepath.Join(path, "index.html"))
+		return err == nil && !info.IsDir()
+	})
+}
+
+func resolveWebUIDir(cwd, exePath string, exists func(string) bool) string {
+	candidates := []string{filepath.Join(cwd, "web", "dist")}
+	if exePath != "" {
+		exeDir := filepath.Dir(exePath)
+		candidates = append(candidates,
+			filepath.Join(exeDir, "web", "dist"),
+			filepath.Join(exeDir, "..", "web", "dist"),
+		)
+	}
+	for _, candidate := range candidates {
+		clean := filepath.Clean(candidate)
+		if exists(clean) {
+			return clean
+		}
+	}
+	return filepath.Clean(filepath.Join(cwd, "web", "dist"))
 }
 
 func padRight(s string, len int) string {

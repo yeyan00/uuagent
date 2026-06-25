@@ -55,16 +55,16 @@ type ContextStats struct {
 }
 
 type CompactArchive struct {
-	ID                 string             `json:"id"`
-	SessionID          string             `json:"session_id"`
-	Summary            contextmgr.Summary `json:"summary"`
-	Messages           []types.Message    `json:"messages"`
-	FromIndex          int                `json:"from_index"`
-	ToIndex            int                `json:"to_index"`
-	TokenBefore        int                `json:"token_before"`
-	TokenAfter         int                `json:"token_after"`
-	ExpectedMsgCount   int                `json:"expected_msg_count"`
-	CreatedAt          time.Time          `json:"created_at"`
+	ID               string             `json:"id"`
+	SessionID        string             `json:"session_id"`
+	Summary          contextmgr.Summary `json:"summary"`
+	Messages         []types.Message    `json:"messages"`
+	FromIndex        int                `json:"from_index"`
+	ToIndex          int                `json:"to_index"`
+	TokenBefore      int                `json:"token_before"`
+	TokenAfter       int                `json:"token_after"`
+	ExpectedMsgCount int                `json:"expected_msg_count"`
+	CreatedAt        time.Time          `json:"created_at"`
 }
 
 // Session is one conversation thread.
@@ -167,6 +167,17 @@ func (s *Store) Get(id string) (*Session, bool) {
 // Append adds a text message.
 func (s *Session) Append(role, content string) {
 	s.AppendMessage(types.Message{Role: role, Content: content})
+}
+
+func (s *Session) AppendSyntheticCompactionContinue(text string) {
+	s.AppendMessage(types.Message{
+		Role:    "user",
+		Content: text,
+		Metadata: map[string]any{
+			"synthetic":           true,
+			"compaction_continue": true,
+		},
+	})
 }
 
 // UpdateTitle updates the human-readable session title.

@@ -87,6 +87,9 @@ agent:
     compress_threshold: 0.8
     keep_last_messages: 12
     auto_compress: true
+    compact_reserved_tokens: 10000
+    compact_auto_continue: true
+    compact_prune_tool_outputs: false
   max_turns: 50
   default_permission: "workspace-write"
 
@@ -100,6 +103,32 @@ agents:
     enabled_mcp_servers: ["mock"]
     permission_mode: "workspace-write"
     max_turns: 50
+
+hooks:
+  timeout_ms: 5000
+  fail_policy: warn
+  events:
+    tool.execute.before:
+      - command: "python hooks/tool_before.py"
+        fail_policy: fail
+    llm.after:
+      - command: "python hooks/llm_after.py"
+```
+
+## External Command Hooks
+
+Hooks run external commands with a JSON payload on stdin. If the command writes JSON to stdout, returned keys mutate the event payload; empty stdout means no mutation. Non-zero exit, timeout, or invalid JSON follows `fail_policy`: `fail`, `warn`, or `ignore`.
+
+Supported events include `tool.execute.before`, `tool.execute.after`, `chat.headers`, `chat.params`, `llm.before`, `llm.after`, and `experimental.compaction.autocontinue`. Header hooks cannot replace `Authorization`.
+
+Example hook:
+
+```python
+import json
+import sys
+
+payload = json.load(sys.stdin)
+print(json.dumps({"response": payload.get("response", "") + "\n\nChecked by hook."}))
 ```
 
 ## Runtime Data Layout
@@ -163,8 +192,12 @@ npm run dev
 # Full validation: Go tests + Web Vitest + Web build.
 bash scripts/test.sh
 
-# Build Go binary.
-go build -o uuagent ./cmd/uuagent
+# Windows single-exe package. Copies CLIProxyAPI from ~/.uuagent/plugins/cliproxyapi,
+# builds the Web UI, embeds CLIProxyAPI assets, builds dist/uuagent.exe, and smokes setup.
+powershell -ExecutionPolicy Bypass -File scripts/package-windows.ps1
+
+# Faster local package when tests already passed.
+powershell -ExecutionPolicy Bypass -File scripts/package-windows.ps1 -SkipTests
 ```
 
 ## VS Code
@@ -185,14 +218,14 @@ go install github.com/go-delve/delve/cmd/dlv@latest
 
 This release is a usable MVP for Windows testing. Key features:
 
-- **CLIProxyAPI Extension**: Place `cli-proxy-api.exe` and packaged `management.html` together under `~/.uuagent/plugins/cliproxyapi/`. The Extensions page reports missing/installed state, enables Start only when the binary exists, points CLIProxyAPI at the packaged panel without runtime downloads, and provides Start/Stop/Restart plus logs/status.
+- **CLIProxyAPI Extension**: `scripts/package-windows.ps1` embeds `cli-proxy-api.exe` and packaged `management.html` from `~/.uuagent/plugins/cliproxyapi/` into `dist/uuagent.exe`. On first setup, UUAgent releases them back to `~/.uuagent/plugins/cliproxyapi/` so the single exe can run the sidecar offline. The Extensions page reports missing/installed state, enables Start only when the binary exists, points CLIProxyAPI at the packaged panel without runtime downloads, and provides Start/Stop/Restart plus logs/status.
 - **CLIProxyAPI Credentials**: Extensions shows masked local management and proxy tokens with copy actions. `Use for Models` applies the CLIProxyAPI proxy URL and local proxy token to Settings > Models.
 - **Top-level Chat Navigation**: Chat now appears beside Projects in the main rail; Projects remains the project/session browser, and Chat prompts users to choose or create a project when none is active.
 - **Built-in Proxy URL**: Models can use the built-in proxy URL and optional local sidecar proxy token configured in Settings > Models.
 - **Agent Subagent Allow-list**: Agents can restrict which subagents are enabled via the `enabled_subagents` field.
 - **Goal Mode**: Supports delegated activity with subagent task execution and plan/todo tracking in the Web UI.
 
-**Note**: Windows packaging is in progress. Real MCP client support and knowledge base features are planned for future releases.
+**Note**: Real MCP client support and knowledge base features are planned for future releases.
 
 ## Project Status
 

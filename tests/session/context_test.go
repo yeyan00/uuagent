@@ -34,6 +34,23 @@ func TestDefaultCompressionThresholdIsSeventyFivePercent(t *testing.T) {
 	}
 }
 
+func TestSessionAppendSyntheticCompactionContinuePersistsMetadata(t *testing.T) {
+	store := session.NewStoreAt(t.TempDir())
+	s := store.GetOrCreate("s1")
+	s.AppendSyntheticCompactionContinue("continue text")
+	snap := s.Snapshot()
+	if len(snap.Messages) != 1 {
+		t.Fatalf("expected one message, got %d", len(snap.Messages))
+	}
+	msg := snap.Messages[0]
+	if msg.Role != "user" || msg.Content != "continue text" {
+		t.Fatalf("unexpected synthetic message: %+v", msg)
+	}
+	if msg.Metadata == nil || msg.Metadata["synthetic"] != true || msg.Metadata["compaction_continue"] != true {
+		t.Fatalf("missing synthetic metadata: %+v", msg.Metadata)
+	}
+}
+
 func TestSessionCompactArchivePreservesCompactedMessages(t *testing.T) {
 	// Given
 	store := session.NewStoreAt(t.TempDir())

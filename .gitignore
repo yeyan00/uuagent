@@ -10,7 +10,7 @@
 *.test
 *.out
 tests/.env
-tests/models.txt
+
 
 # Go
 vendor/
@@ -47,6 +47,8 @@ logs/
 .uuagent-server.pid
 .uuagent-server.log
 cmd/uuagent/__debug_bin.exe
+internal/config/embedded_plugins/cliproxyapi/*
+!internal/config/embedded_plugins/cliproxyapi/.gitkeep
 
 # Worktrees
 .worktrees/
@@ -61,8 +63,8 @@ docs/TEST_TODO.md
 .tools
 docs/tmp.txt
 docs/approval-chain-plan.md
-docs/superpowers/plans/2026-06-17-skills-management.md
+docs/superpowers/
 docs/approval-chain-plan.md
-docs/核心关注功能.txt
+docs/main.txt
 .omo
 .playwright-mcp

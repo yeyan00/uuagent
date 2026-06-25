@@ -16,6 +16,7 @@ import (
 
 	"github.com/yeyan00/uuagent/internal/config"
 	"github.com/yeyan00/uuagent/internal/contextmgr"
+	"github.com/yeyan00/uuagent/internal/hooks"
 	"github.com/yeyan00/uuagent/internal/mcp"
 	"github.com/yeyan00/uuagent/internal/memory"
 	"github.com/yeyan00/uuagent/internal/paths"
@@ -43,6 +44,7 @@ type Agent struct {
 	tools            *tools.Registry
 	skills           *skills.Registry
 	mcp              mcp.Client
+	hooks            *hooks.Runner
 	memory           *memory.Manager
 	projects         *project.Store
 	fixedModel       string
@@ -80,6 +82,7 @@ func New(cfg *config.Config) *Agent {
 		tools:            tools.NewRegistry(workspace),
 		skills:           skills.NewRegistryFromConfig(cfg),
 		mcp:              mcp.NewMockClient(),
+		hooks:            hooks.New(agentHookConfig(cfg.Hooks)),
 		memory:           memory.NewManager(),
 		projects:         project.NewStore(""),
 		httpClient:       &http.Client{Timeout: 120 * time.Second},
@@ -89,6 +92,22 @@ func New(cfg *config.Config) *Agent {
 }
 
 var ErrSessionProjectConflict = errors.New("session is bound to another project")
+
+func agentHookConfig(cfg config.HookConfig) hooks.Config {
+	events := map[string][]hooks.Command{}
+	for event, commands := range cfg.Events {
+		for _, command := range commands {
+			events[event] = append(events[event], hooks.Command{
+				Command:    command.Command,
+				Cwd:        command.Cwd,
+				Env:        command.Env,
+				TimeoutMS:  command.TimeoutMS,
+				FailPolicy: command.FailPolicy,
+			})
+		}
+	}
+	return hooks.Config{TimeoutMS: cfg.TimeoutMS, FailPolicy: cfg.FailPolicy, Events: events}
+}
 
 // NewWithModel creates a restricted child agent. It is used by subagents and tests.
 func NewWithModel(model string, blockedTools map[string]bool) *Agent {
@@ -152,6 +171,7 @@ func (a *Agent) ReloadConfig(cfg *config.Config) {
 	}
 	a.cfg = cfg
 	a.router = router.New(cfg.Agent.Routing)
+	a.hooks = hooks.New(agentHookConfig(cfg.Hooks))
 	a.skills = skills.NewRegistryFromConfig(cfg)
 }
 
@@ -607,6 +627,16 @@ func (a *Agent) runWithResolvedProfile(ctx context.Context, sessionID, projectID
 			sess.AppendMessage(Message{Role: "assistant", Content: response, ToolCalls: toolCalls})
 			sess.AddRunUsage(runID, usage.withFallback(messages, response))
 			if len(toolCalls) == 0 {
+				continued, err := a.maybeAutoCompactAfterTurn(ctx, sess, runID, sessionID, model, usage, turn == 0)
+				if err != nil {
+					sess.UpdateRunStatus(runID, "failed")
+					events <- Event{Type: "error", RunID: runID, Text: err.Error()}
+					return
+				}
+				if continued {
+					events <- Event{Type: "status", RunID: runID, Text: "context compacted; continuing..."}
+					continue
+				}
 				a.queueAutoDraftMemory(prompt, response, memoryProject)
 				sess.UpdateRunStatus(runID, "done")
 				events <- Event{Type: "done", RunID: runID}
@@ -616,7 +646,12 @@ func (a *Agent) runWithResolvedProfile(ctx context.Context, sessionID, projectID
 			for i, tc := range toolCalls {
 				name := toolCallName(tc)
 				events <- Event{Type: "tool_start", RunID: runID, ToolName: name, ToolID: tc.ID, Args: toolCallArgs(tc)}
-				result := a.executeTool(ctx, tc, policy, profile, toolWorkspace, nil)
+				result, err := a.executeToolWithHooks(ctx, runID, sess.ID, tc, policy, profile, toolWorkspace, nil)
+				if err != nil {
+					sess.UpdateRunStatus(runID, "failed")
+					events <- Event{Type: "error", RunID: runID, Text: err.Error()}
+					return
+				}
 				events <- Event{Type: "tool_result", RunID: runID, ToolName: name, ToolID: tc.ID, Text: result}
 				if isApprovalRequiredResult(result) {
 					a.storePendingApproval(pendingApproval{Session: sess, RunID: runID, Model: model, Prompt: prompt, Profile: profile, Policy: policy, ToolCall: tc, ToolName: name, RemainingToolCalls: append([]ToolCall(nil), toolCalls[i+1:]...), ToolWorkspace: toolWorkspace})
@@ -700,7 +735,12 @@ func (a *Agent) ApproveRunEvents(ctx context.Context, runID string) (<-chan Even
 		args["approved"] = true
 		p.ToolCall.Function.Arguments = mustJSON(args)
 		events <- Event{Type: "tool_start", RunID: runID, ToolName: p.ToolName, ToolID: p.ToolCall.ID, Args: toolCallArgs(p.ToolCall)}
-		result := a.executeTool(ctx, p.ToolCall, p.Policy, p.Profile, p.ToolWorkspace, p.ApprovedPaths)
+		result, err := a.executeToolWithHooks(ctx, runID, p.Session.ID, p.ToolCall, p.Policy, p.Profile, p.ToolWorkspace, p.ApprovedPaths)
+		if err != nil {
+			p.Session.UpdateRunStatus(runID, "failed")
+			events <- Event{Type: "error", RunID: runID, Text: err.Error()}
+			return
+		}
 		events <- Event{Type: "tool_result", RunID: runID, ToolName: p.ToolName, ToolID: p.ToolCall.ID, Text: result}
 		p.Session.AppendTool(p.ToolCall.ID, p.ToolName, result)
 		if approvedPath != "" && !isApprovalRequiredResult(result) {
@@ -709,7 +749,12 @@ func (a *Agent) ApproveRunEvents(ctx context.Context, runID string) (<-chan Even
 		for i, tc := range p.RemainingToolCalls {
 			name := toolCallName(tc)
 			events <- Event{Type: "tool_start", RunID: runID, ToolName: name, ToolID: tc.ID, Args: toolCallArgs(tc)}
-			result := a.executeTool(ctx, tc, p.Policy, p.Profile, p.ToolWorkspace, p.ApprovedPaths)
+			result, err := a.executeToolWithHooks(ctx, runID, p.Session.ID, tc, p.Policy, p.Profile, p.ToolWorkspace, p.ApprovedPaths)
+			if err != nil {
+				p.Session.UpdateRunStatus(runID, "failed")
+				events <- Event{Type: "error", RunID: runID, Text: err.Error()}
+				return
+			}
 			events <- Event{Type: "tool_result", RunID: runID, ToolName: name, ToolID: tc.ID, Text: result}
 			if isApprovalRequiredResult(result) {
 				a.storePendingApproval(pendingApproval{Session: p.Session, RunID: runID, Model: p.Model, Prompt: p.Prompt, Profile: p.Profile, Policy: p.Policy, ToolCall: tc, ToolName: name, RemainingToolCalls: append([]ToolCall(nil), p.RemainingToolCalls[i+1:]...), ToolWorkspace: p.ToolWorkspace, ApprovedPaths: p.ApprovedPaths})
@@ -762,7 +807,12 @@ func (a *Agent) ApproveRunEvents(ctx context.Context, runID string) (<-chan Even
 			for i, tc := range toolCalls {
 				name := toolCallName(tc)
 				events <- Event{Type: "tool_start", RunID: runID, ToolName: name, ToolID: tc.ID, Args: toolCallArgs(tc)}
-				result := a.executeTool(ctx, tc, p.Policy, p.Profile, p.ToolWorkspace, p.ApprovedPaths)
+				result, err := a.executeToolWithHooks(ctx, runID, p.Session.ID, tc, p.Policy, p.Profile, p.ToolWorkspace, p.ApprovedPaths)
+				if err != nil {
+					p.Session.UpdateRunStatus(runID, "failed")
+					events <- Event{Type: "error", RunID: runID, Text: err.Error()}
+					return
+				}
 				events <- Event{Type: "tool_result", RunID: runID, ToolName: name, ToolID: tc.ID, Text: result}
 				if isApprovalRequiredResult(result) {
 					a.storePendingApproval(pendingApproval{Session: p.Session, RunID: runID, Model: p.Model, Prompt: p.Prompt, Profile: p.Profile, Policy: p.Policy, ToolCall: tc, ToolName: name, RemainingToolCalls: append([]ToolCall(nil), toolCalls[i+1:]...), ToolWorkspace: p.ToolWorkspace, ApprovedPaths: p.ApprovedPaths})
@@ -892,6 +942,11 @@ type chatCompletionRequest struct {
 	ReasoningEffort  string           `json:"reasoning_effort,omitempty"`
 	IncludeReasoning bool             `json:"include_reasoning,omitempty"`
 	ToolChoice       any              `json:"tool_choice,omitempty"`
+}
+
+type llmHookResult struct {
+	Response string
+	Changed  bool
 }
 
 type chatCompletionResponse struct {
@@ -1036,7 +1091,17 @@ func (a *Agent) callLLM(ctx context.Context, model string, messages []Message, p
 			toolDefs = append(toolDefs, delegateTaskToolDefinition())
 		}
 		if a.isMCPServerEnabled("mock") && (len(policy.AllowedMCPServers) == 0 || policy.AllowedMCPServers["mock"]) {
-			toolDefs = append(toolDefs, map[string]any{"type": "function", "function": map[string]any{"name": "mcp_echo", "description": "Echo arguments through the mock MCP client."}})
+			toolDefs = append(toolDefs, map[string]any{
+				"type": "function",
+				"function": map[string]any{
+					"name":        "mcp_echo",
+					"description": "Echo arguments through the mock MCP client.",
+					"parameters": map[string]any{
+						"type":       "object",
+						"properties": map[string]any{},
+					},
+				},
+			})
 		}
 	}
 	payload := chatCompletionRequest{Model: model, Messages: messages, Tools: toolDefs, Stream: stream}
@@ -1049,7 +1114,14 @@ func (a *Agent) callLLM(ctx context.Context, model string, messages []Message, p
 			payload.ReasoningEffort = effort
 		}
 	}
-	body, err := json.Marshal(payload)
+	payloadMap, err := chatCompletionPayloadMap(payload)
+	if err != nil {
+		return "", nil, tokenUsage{}, err
+	}
+	if err := a.applyLLMParamHooks(ctx, model, payloadMap); err != nil {
+		return "", nil, tokenUsage{}, err
+	}
+	body, err := json.Marshal(payloadMap)
 	if err != nil {
 		return "", nil, tokenUsage{}, err
 	}
@@ -1065,6 +1137,9 @@ func (a *Agent) callLLM(ctx context.Context, model string, messages []Message, p
 	if apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
+	if err := a.applyLLMHeaderHooks(ctx, model, req, payloadMap); err != nil {
+		return "", nil, tokenUsage{}, err
+	}
 
 	resp, err := a.httpClient.Do(req)
 	if err != nil {
@@ -1078,10 +1153,155 @@ func (a *Agent) callLLM(ctx context.Context, model string, messages []Message, p
 	ct := resp.Header.Get("Content-Type")
 	if stream && strings.Contains(ct, "text/event-stream") {
 		text, calls, err := parseChatStream(resp.Body, callbacks)
-		return text, calls, tokenUsage{}, err
+		if err != nil {
+			return "", nil, tokenUsage{}, err
+		}
+		mutated, err := a.applyLLMAfterHooks(ctx, model, payloadMap, text, calls, tokenUsage{})
+		if err != nil {
+			return "", nil, tokenUsage{}, err
+		}
+		return mutated, calls, tokenUsage{}, nil
 	}
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024*1024))
-	return parseChatJSON(data, callbacks)
+	text, calls, usage, err := parseChatJSON(data, streamCallbacks{Reasoning: callbacks.Reasoning})
+	if err != nil {
+		return "", nil, tokenUsage{}, err
+	}
+	mutated, err := a.applyLLMAfterHooks(ctx, model, payloadMap, text, calls, usage)
+	if err != nil {
+		return "", nil, tokenUsage{}, err
+	}
+	if mutated != "" && callbacks.Content != nil {
+		callbacks.Content(mutated)
+	}
+	return mutated, calls, usage, nil
+}
+
+func chatCompletionPayloadMap(payload chatCompletionRequest) (map[string]any, error) {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (a *Agent) applyLLMParamHooks(ctx context.Context, model string, payload map[string]any) error {
+	base := map[string]any{"model": model, "params": payload}
+	for _, event := range []string{hooks.EventChatParams, hooks.EventLLMBefore} {
+		input := cloneHookPayload(base)
+		input["event"] = event
+		result, err := a.hooks.Run(ctx, event, input)
+		if err != nil {
+			return err
+		}
+		if params, ok := mapStringAny(result.Output["params"]); ok {
+			applyAllowedChatParams(payload, params)
+		}
+	}
+	return nil
+}
+
+func (a *Agent) applyLLMHeaderHooks(ctx context.Context, model string, req *http.Request, payload map[string]any) error {
+	result, err := a.hooks.Run(ctx, hooks.EventChatHeaders, map[string]any{
+		"event":   hooks.EventChatHeaders,
+		"model":   model,
+		"params":  payload,
+		"headers": map[string]any{},
+	})
+	if err != nil {
+		return err
+	}
+	headers, ok := mapStringAny(result.Output["headers"])
+	if !ok {
+		return nil
+	}
+	for key, value := range headers {
+		if strings.EqualFold(key, "Authorization") {
+			continue
+		}
+		text, ok := value.(string)
+		if ok && strings.TrimSpace(key) != "" {
+			req.Header.Set(key, text)
+		}
+	}
+	return nil
+}
+
+func (a *Agent) applyLLMAfterHooks(ctx context.Context, model string, payload map[string]any, response string, calls []ToolCall, usage tokenUsage) (string, error) {
+	result, err := a.hooks.Run(ctx, hooks.EventLLMAfter, map[string]any{
+		"event":      hooks.EventLLMAfter,
+		"model":      model,
+		"params":     payload,
+		"response":   response,
+		"tool_calls": calls,
+		"usage":      usage,
+	})
+	if err != nil {
+		return "", err
+	}
+	mutated, ok := result.Output["response"].(string)
+	if !ok {
+		return response, nil
+	}
+	return mutated, nil
+}
+
+func applyAllowedChatParams(payload map[string]any, params map[string]any) {
+	for _, key := range []string{"temperature", "max_tokens", "top_p", "presence_penalty", "frequency_penalty", "stop"} {
+		if value, ok := params[key]; ok {
+			payload[key] = value
+		}
+	}
+}
+
+func cloneHookPayload(input map[string]any) map[string]any {
+	out := map[string]any{}
+	for key, value := range input {
+		out[key] = value
+	}
+	return out
+}
+
+func (a *Agent) maybeAutoCompactAfterTurn(ctx context.Context, sess *session.Session, runID, sessionID, model string, usage tokenUsage, firstTurn bool) (bool, error) {
+	cfg := a.cfg.Agent.Context
+	if !firstTurn || !cfg.AutoCompress || strings.TrimSpace(os.Getenv("UUAGENT_DISABLE_AUTOCOMPACT")) != "" {
+		return false, nil
+	}
+	maxTokens := cfg.MaxTokens
+	threshold := cfg.CompressThreshold
+	if cfg.CompactReservedTokens > 0 && cfg.MaxTokens > cfg.CompactReservedTokens {
+		maxTokens = cfg.MaxTokens - cfg.CompactReservedTokens
+		threshold = 1
+	}
+	archive, ok := sess.CompactArchive(maxTokens, threshold, cfg.KeepLastMessages)
+	if !ok {
+		return false, nil
+	}
+	shouldContinue := cfg.CompactAutoContinue
+	result, err := a.hooks.Run(ctx, hooks.EventCompactionAutoContinue, map[string]any{
+		"event":      hooks.EventCompactionAutoContinue,
+		"session_id": sessionID,
+		"run_id":     runID,
+		"model":      model,
+		"archive_id": archive.ID,
+		"usage":      usage,
+		"continue":   shouldContinue,
+	})
+	if err != nil {
+		return false, err
+	}
+	if value, ok := result.Output["continue"].(bool); ok {
+		shouldContinue = value
+	}
+	if !shouldContinue {
+		return false, nil
+	}
+	sess.AppendSyntheticCompactionContinue("Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.")
+	return true, nil
 }
 
 func parseChatJSON(data []byte, callbacks streamCallbacks) (string, []ToolCall, tokenUsage, error) {
@@ -1201,6 +1421,55 @@ func streamResult(content string, toolsByIndex map[int]*streamToolCall) (string,
 		}
 	}
 	return content, calls
+}
+
+func (a *Agent) executeToolWithHooks(ctx context.Context, runID, sessionID string, tc ToolCall, policy runtimePolicy, profile config.AgentProfile, workspace string, approvedPaths []string) (string, error) {
+	name := toolCallName(tc)
+	args := map[string]any{}
+	if argText := strings.TrimSpace(toolCallArgs(tc)); argText != "" {
+		if err := json.Unmarshal([]byte(argText), &args); err != nil {
+			return "invalid tool args: " + err.Error(), nil
+		}
+	}
+	before, err := a.hooks.Run(ctx, hooks.EventToolBefore, map[string]any{
+		"event":      hooks.EventToolBefore,
+		"session_id": sessionID,
+		"run_id":     runID,
+		"call_id":    tc.ID,
+		"tool":       name,
+		"args":       args,
+		"workspace":  workspace,
+	})
+	if err != nil {
+		return "", err
+	}
+	if mutatedArgs, ok := mapStringAny(before.Output["args"]); ok {
+		args = mutatedArgs
+		tc.Function.Arguments = mustJSON(args)
+	}
+	output := a.executeTool(ctx, tc, policy, profile, workspace, approvedPaths)
+	after, err := a.hooks.Run(ctx, hooks.EventToolAfter, map[string]any{
+		"event":      hooks.EventToolAfter,
+		"session_id": sessionID,
+		"run_id":     runID,
+		"call_id":    tc.ID,
+		"tool":       name,
+		"args":       args,
+		"output":     output,
+		"metadata":   map[string]any{},
+	})
+	if err != nil {
+		return "", err
+	}
+	if mutatedOutput, ok := after.Output["output"].(string); ok {
+		output = mutatedOutput
+	}
+	return output, nil
+}
+
+func mapStringAny(value any) (map[string]any, bool) {
+	out, ok := value.(map[string]any)
+	return out, ok
 }
 
 func (a *Agent) executeTool(ctx context.Context, tc ToolCall, policy runtimePolicy, profile config.AgentProfile, workspace string, approvedPaths []string) string {

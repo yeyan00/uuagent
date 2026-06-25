@@ -1,14 +1,20 @@
 package config
 
 import (
+	"embed"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/yeyan00/uuagent/internal/paths"
 	"gopkg.in/yaml.v3"
 )
+
+//go:embed embedded_plugins/cliproxyapi/*
+var embeddedPluginFS embed.FS
 
 // Config is the complete UUAgent configuration. YAML is the canonical on-disk
 // format because it is friendly for hand editing and can represent nested
@@ -18,8 +24,23 @@ type Config struct {
 	Agent      AgentConfig       `yaml:"agent" json:"agent"`
 	Agents     []AgentProfile    `yaml:"agents" json:"agents"`
 	Goal       GoalConfig        `yaml:"goal" json:"goal"`
+	Hooks      HookConfig        `yaml:"hooks" json:"hooks"`
 	Skills     []SkillConfig     `yaml:"skills" json:"skills"`
 	MCPServers []MCPServerConfig `yaml:"mcp_servers" json:"mcp_servers"`
+}
+
+type HookConfig struct {
+	TimeoutMS  int                      `yaml:"timeout_ms" json:"timeout_ms"`
+	FailPolicy string                   `yaml:"fail_policy" json:"fail_policy"`
+	Events     map[string][]HookCommand `yaml:"events" json:"events"`
+}
+
+type HookCommand struct {
+	Command    string            `yaml:"command" json:"command"`
+	Cwd        string            `yaml:"cwd" json:"cwd,omitempty"`
+	Env        map[string]string `yaml:"env" json:"env,omitempty"`
+	TimeoutMS  int               `yaml:"timeout_ms" json:"timeout_ms,omitempty"`
+	FailPolicy string            `yaml:"fail_policy" json:"fail_policy,omitempty"`
 }
 
 // AgentConfig controls global agent behavior.
@@ -99,10 +120,13 @@ type MemoryConfig struct {
 
 // ContextConfig controls automatic local compression.
 type ContextConfig struct {
-	MaxTokens         int     `yaml:"max_tokens" json:"max_tokens"`
-	CompressThreshold float64 `yaml:"compress_threshold" json:"compress_threshold"`
-	KeepLastMessages  int     `yaml:"keep_last_messages" json:"keep_last_messages"`
-	AutoCompress      bool    `yaml:"auto_compress" json:"auto_compress"`
+	MaxTokens               int     `yaml:"max_tokens" json:"max_tokens"`
+	CompressThreshold       float64 `yaml:"compress_threshold" json:"compress_threshold"`
+	KeepLastMessages        int     `yaml:"keep_last_messages" json:"keep_last_messages"`
+	AutoCompress            bool    `yaml:"auto_compress" json:"auto_compress"`
+	CompactReservedTokens   int     `yaml:"compact_reserved_tokens" json:"compact_reserved_tokens"`
+	CompactAutoContinue     bool    `yaml:"compact_auto_continue" json:"compact_auto_continue"`
+	CompactPruneToolOutputs bool    `yaml:"compact_prune_tool_outputs" json:"compact_prune_tool_outputs"`
 }
 
 // SubagentConfig controls delegated subagents.
@@ -229,7 +253,85 @@ func EnsureUserLayout() (string, error) {
 			return root, err
 		}
 	}
+	if err := installPackagedCLIProxyAPI(root); err != nil {
+		return root, err
+	}
+	if err := installEmbeddedCLIProxyAPI(root); err != nil {
+		return root, err
+	}
 	return root, nil
+}
+
+func installPackagedCLIProxyAPI(userRoot string) error {
+	packagedRoot := strings.TrimSpace(os.Getenv("UUAGENT_PACKAGED_PLUGIN_ROOT"))
+	if packagedRoot == "" {
+		packagedRoot = "plugins"
+	}
+	sourceDir := filepath.Join(filepath.Clean(packagedRoot), "cliproxyapi")
+	if _, err := os.Stat(sourceDir); err != nil {
+		return nil
+	}
+	binaryName := "cli-proxy-api"
+	if runtime.GOOS == "windows" {
+		binaryName += ".exe"
+	}
+	targetDir := filepath.Join(userRoot, "plugins", "cliproxyapi")
+	for _, name := range []string{binaryName, "management.html"} {
+		if err := copyPackagedFile(filepath.Join(sourceDir, name), filepath.Join(targetDir, name)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func installEmbeddedCLIProxyAPI(userRoot string) error {
+	binaryName := "cli-proxy-api"
+	if runtime.GOOS == "windows" {
+		binaryName += ".exe"
+	}
+	targetDir := filepath.Join(userRoot, "plugins", "cliproxyapi")
+	for _, name := range []string{binaryName, "management.html"} {
+		data, err := embeddedPluginFS.ReadFile("embedded_plugins/cliproxyapi/" + name)
+		if err != nil {
+			return nil
+		}
+		if err := writePackagedFile(data, filepath.Join(targetDir, name)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func copyPackagedFile(sourcePath, targetPath string) error {
+	source, err := os.Open(sourcePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	defer source.Close()
+	data, err := io.ReadAll(source)
+	if err != nil {
+		return err
+	}
+	return writePackagedFile(data, targetPath)
+}
+
+func writePackagedFile(data []byte, targetPath string) error {
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+		return err
+	}
+	if _, err := os.Stat(targetPath); err == nil {
+		return nil
+	}
+	target, err := os.OpenFile(targetPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+	if err != nil {
+		return err
+	}
+	defer target.Close()
+	_, err = target.Write(data)
+	return err
 }
 
 // ApplyEnv overlays runtime model proxy settings.

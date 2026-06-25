@@ -46,6 +46,9 @@ agent:
     compress_threshold: 0.8
     keep_last_messages: 12
     auto_compress: true
+    compact_reserved_tokens: 10000
+    compact_auto_continue: true
+    compact_prune_tool_outputs: false
 
   subagent:
     max_concurrent: 3
@@ -57,6 +60,26 @@ agent:
 
   ui:
     theme: light
+
+hooks:
+  timeout_ms: 5000
+  fail_policy: warn
+  events:
+    tool.execute.before:
+      - command: "python hooks/tool_before.py"
+        fail_policy: fail
+    tool.execute.after:
+      - command: "python hooks/tool_after.py"
+    chat.headers:
+      - command: "python hooks/chat_headers.py"
+    chat.params:
+      - command: "python hooks/chat_params.py"
+    llm.before:
+      - command: "python hooks/llm_before.py"
+    llm.after:
+      - command: "python hooks/llm_after.py"
+    experimental.compaction.autocontinue:
+      - command: "python hooks/compact_continue.py"
 
 # Web-configurable Agent Profiles.
 # User-level profiles belong in ~/.uuagent/config.yaml.

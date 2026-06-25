@@ -3,6 +3,7 @@ package agent_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +15,177 @@ import (
 	"github.com/yeyan00/uuagent/internal/config"
 	"github.com/yeyan00/uuagent/internal/types"
 )
+
+func TestMain(m *testing.M) {
+	if os.Getenv("GO_WANT_HELPER_PROCESS") == "1" {
+		runAgentHookHelper()
+		return
+	}
+	os.Exit(m.Run())
+}
+
+func TestToolExecuteBeforeHookMutatesArgs(t *testing.T) {
+	t.Setenv("UUAGENT_HOME", t.TempDir())
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "hooked.txt"), []byte("hooked content"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	var toolResult string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		if calls == 1 {
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"Need file.","tool_calls":[{"id":"tc-read","type":"function","function":{"name":"read","arguments":"{\"path\":\"original.txt\"}"}}]}}]}`))
+			return
+		}
+		var req struct {
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		for _, msg := range req.Messages {
+			if msg.Role == "tool" {
+				toolResult = msg.Content
+			}
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"done"}}]}`))
+	}))
+	defer ts.Close()
+
+	cfg := config.Default()
+	cfg.Agent.ProxyURL = ts.URL + "/v1"
+	cfg.Hooks.Events["tool.execute.before"] = []config.HookCommand{{Command: agentHookHelperCommand("tool_before_path"), FailPolicy: "fail"}}
+	a := agent.New(cfg)
+	events, err := a.RunWithAgentProjectParts(context.Background(), "tool-before-hook", "", workspace, []types.ContentPart{{Type: "text", Text: "read file"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for evt := range events {
+		if evt.Type == "error" {
+			t.Fatal(evt.Text)
+		}
+	}
+	if !strings.Contains(toolResult, "hooked content") {
+		t.Fatalf("expected hook-mutated tool result, got %q", toolResult)
+	}
+}
+
+func TestToolExecuteAfterHookMutatesOutput(t *testing.T) {
+	t.Setenv("UUAGENT_HOME", t.TempDir())
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "file.txt"), []byte("raw content"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	var toolResult string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		if calls == 1 {
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"Need file.","tool_calls":[{"id":"tc-read","type":"function","function":{"name":"read","arguments":"{\"path\":\"file.txt\"}"}}]}}]}`))
+			return
+		}
+		var req struct {
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		for _, msg := range req.Messages {
+			if msg.Role == "tool" {
+				toolResult = msg.Content
+			}
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"done"}}]}`))
+	}))
+	defer ts.Close()
+
+	cfg := config.Default()
+	cfg.Agent.ProxyURL = ts.URL + "/v1"
+	cfg.Hooks.Events["tool.execute.after"] = []config.HookCommand{{Command: agentHookHelperCommand("tool_after_output"), FailPolicy: "fail"}}
+	a := agent.New(cfg)
+	events, err := a.RunWithAgentProjectParts(context.Background(), "tool-after-hook", "", workspace, []types.ContentPart{{Type: "text", Text: "read file"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for evt := range events {
+		if evt.Type == "error" {
+			t.Fatal(evt.Text)
+		}
+	}
+	if toolResult != "redacted by hook" {
+		t.Fatalf("expected hook-mutated output, got %q", toolResult)
+	}
+}
+
+func TestToolExecuteBeforeHookFailPolicyBlocksTool(t *testing.T) {
+	t.Setenv("UUAGENT_HOME", t.TempDir())
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "file.txt"), []byte("raw content"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"Need file.","tool_calls":[{"id":"tc-read","type":"function","function":{"name":"read","arguments":"{\"path\":\"file.txt\"}"}}]}}]}`))
+	}))
+	defer ts.Close()
+
+	cfg := config.Default()
+	cfg.Agent.ProxyURL = ts.URL + "/v1"
+	cfg.Agent.MaxTurns = 2
+	cfg.Hooks.Events["tool.execute.before"] = []config.HookCommand{{Command: agentHookHelperCommand("exit_2"), FailPolicy: "fail"}}
+	a := agent.New(cfg)
+	events, err := a.RunWithAgentProjectParts(context.Background(), "tool-before-fail", "", workspace, []types.ContentPart{{Type: "text", Text: "read file"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotError string
+	for evt := range events {
+		if evt.Type == "error" {
+			gotError = evt.Text
+		}
+	}
+	if !strings.Contains(gotError, "hook command failed") {
+		t.Fatalf("expected hook failure error, got %q", gotError)
+	}
+}
+
+func agentHookHelperCommand(mode string) string {
+	return fmt.Sprintf("%s --agent-hook-helper %s", os.Args[0], mode)
+}
+
+func runAgentHookHelper() {
+	if len(os.Args) < 3 || os.Args[1] != "--agent-hook-helper" {
+		os.Exit(2)
+	}
+	var payload map[string]any
+	_ = json.NewDecoder(os.Stdin).Decode(&payload)
+	switch os.Args[2] {
+	case "tool_before_path":
+		fmt.Print(`{"args":{"path":"hooked.txt"}}`)
+	case "tool_after_output":
+		fmt.Print(`{"output":"redacted by hook"}`)
+	case "chat_headers":
+		fmt.Print(`{"headers":{"X-Hook-Trace":"trace-123"}}`)
+	case "chat_params":
+		fmt.Print(`{"params":{"temperature":0.25,"max_tokens":77}}`)
+	case "llm_after_response":
+		fmt.Print(`{"response":"mutated by hook"}`)
+	case "llm_after_drop_tools":
+		fmt.Print(`{"response":"mutated text with original tool calls","tool_calls":[]}`)
+	case "autocontinue_false":
+		fmt.Print(`{"continue":false}`)
+	case "exit_2":
+		fmt.Fprint(os.Stderr, "blocked by hook")
+		os.Exit(2)
+	default:
+		os.Exit(2)
+	}
+}
 
 func TestAgentToolLoopSendsToolResultBackToModel(t *testing.T) {
 	t.Setenv("UUAGENT_HOME", t.TempDir())

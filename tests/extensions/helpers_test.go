@@ -105,7 +105,7 @@ func main() {
 	done := make(chan struct{})
 	server := &http.Server{Addr: fmt.Sprintf("127.0.0.1:%d", port)}
 	http.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
-	http.HandleFunc("/exit", func(w http.ResponseWriter, _ *http.Request) { close(done); _, _ = w.Write([]byte("bye")) })
+	http.HandleFunc("/exit", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("bye")); close(done) })
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 	go func() { <-signals; close(done) }()
